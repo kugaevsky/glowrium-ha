@@ -1,0 +1,76 @@
+{
+  "config": {
+    "flow_title": "{name}",
+    "step": {
+      "user": {
+        "description": "Выберите устройство Glowrium для настройки.",
+        "data": {
+          "address": "Устройство"
+        }
+      },
+      "bluetooth_confirm": {
+        "description": "Настроить {name}?"
+      }
+    },
+    "abort": {
+      "already_configured": "Устройство уже настроено",
+      "already_in_progress": "Настройка уже выполняется",
+      "no_devices_found": "Ненастроенные устройства Glowrium не найдены"
+    }
+  },
+  "entity": {
+    "binary_sensor": {
+      "activated": {
+        "name": "Активировано"
+      }
+    },
+    "button": {
+      "sync_location": {
+        "name": "Синхронизировать координаты"
+      }
+    },
+    "number": {
+      "ramp": {
+        "name": "Время рампы"
+      },
+      "schedule_gradual": {
+        "name": "Плавность расписания"
+      },
+      "schedule_brightness": {
+        "name": "Яркость расписания"
+      }
+    },
+    "select": {
+      "operating_mode": {
+        "name": "Режим работы"
+      },
+      "lighting_mode": {
+        "name": "Режим освещения"
+      }
+    },
+    "sensor": {
+      "latitude": {
+        "name": "Широта"
+      },
+      "longitude": {
+        "name": "Долгота"
+      }
+    },
+    "switch": {
+      "indicator": {
+        "name": "Индикатор"
+      },
+      "dst": {
+        "name": "Летнее время"
+      }
+    },
+    "time": {
+      "schedule_start": {
+        "name": "Начало расписания"
+      },
+      "schedule_end": {
+        "name": "Конец расписания"
+      }
+    }
+  }
+}

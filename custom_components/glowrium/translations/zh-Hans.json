@@ -1,0 +1,76 @@
+{
+  "config": {
+    "flow_title": "{name}",
+    "step": {
+      "user": {
+        "description": "选择要设置的 Glowrium 设备。",
+        "data": {
+          "address": "设备"
+        }
+      },
+      "bluetooth_confirm": {
+        "description": "是否要设置 {name}？"
+      }
+    },
+    "abort": {
+      "already_configured": "设备已配置",
+      "already_in_progress": "配置流程已在进行中",
+      "no_devices_found": "未找到未配置的 Glowrium 设备"
+    }
+  },
+  "entity": {
+    "binary_sensor": {
+      "activated": {
+        "name": "已激活"
+      }
+    },
+    "button": {
+      "sync_location": {
+        "name": "同步位置"
+      }
+    },
+    "number": {
+      "ramp": {
+        "name": "渐变时间"
+      },
+      "schedule_gradual": {
+        "name": "定时渐变"
+      },
+      "schedule_brightness": {
+        "name": "定时亮度"
+      }
+    },
+    "select": {
+      "operating_mode": {
+        "name": "运行模式"
+      },
+      "lighting_mode": {
+        "name": "照明模式"
+      }
+    },
+    "sensor": {
+      "latitude": {
+        "name": "纬度"
+      },
+      "longitude": {
+        "name": "经度"
+      }
+    },
+    "switch": {
+      "indicator": {
+        "name": "指示灯"
+      },
+      "dst": {
+        "name": "夏令时"
+      }
+    },
+    "time": {
+      "schedule_start": {
+        "name": "定时开始"
+      },
+      "schedule_end": {
+        "name": "定时结束"
+      }
+    }
+  }
+}

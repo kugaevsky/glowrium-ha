@@ -1,0 +1,27 @@
+name: Feature request
+description: Suggest an improvement, or support for a new device model
+labels: ["enhancement"]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: What problem would this solve?
+      description: Describe the use case, not just the solution.
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed solution
+  - type: input
+    id: model
+    attributes:
+      label: Device model (if requesting support for a new one)
+      placeholder: "e.g. Glowrium G3"
+  - type: textarea
+    id: context
+    attributes:
+      label: Anything else?
+      description: >
+        For a new model, a btsnoop capture from the vendor app and the device-info
+        string (`facebd80`) make it far easier to add. See CONTRIBUTING.md.

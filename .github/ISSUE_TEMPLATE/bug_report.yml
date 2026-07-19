@@ -1,0 +1,64 @@
+name: Bug report
+description: Report a problem with the Glowrium integration
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time to file a bug. Please fill in as much as you can —
+        it makes problems far quicker to reproduce and fix.
+  - type: input
+    id: ha_version
+    attributes:
+      label: Home Assistant version
+      placeholder: "2026.7.1"
+    validations:
+      required: true
+  - type: input
+    id: integration_version
+    attributes:
+      label: Glowrium integration version
+      placeholder: "0.1.0"
+    validations:
+      required: true
+  - type: input
+    id: model
+    attributes:
+      label: Device model
+      description: The Glowrium model, e.g. G7. If unknown, paste the device-info string from the device page.
+      placeholder: "G7"
+    validations:
+      required: true
+  - type: dropdown
+    id: bluetooth
+    attributes:
+      label: Bluetooth connection
+      options:
+        - Local adapter on the Home Assistant host
+        - ESPHome Bluetooth Proxy
+    validations:
+      required: true
+  - type: textarea
+    id: what_happened
+    attributes:
+      label: What happened?
+      description: What did you do, what did you expect, and what happened instead?
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Relevant log output
+      description: >
+        Settings → System → Logs (or `docker logs`). Enable debug logging for
+        `custom_components.glowrium` first if you can.
+      render: shell
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Checklist
+      options:
+        - label: The vendor app was disconnected from the lamp while testing (only one BLE connection is allowed at a time).
+          required: true
+        - label: I searched existing issues and this is not a duplicate.
+          required: true

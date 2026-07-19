@@ -1,0 +1,17 @@
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+.coverage
+coverage.xml
+.DS_Store
+
+# Local secrets (e.g. HA long-lived token used for dev deploys)
+.env
+.env.*
+
+# Claude Code artifacts
+CLAUDE.md
+CLAUDE.local.md
+.claude/

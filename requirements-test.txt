@@ -1,0 +1,11 @@
+pytest-homeassistant-custom-component
+ruff
+
+# homeassistant.components.bluetooth pulls in usb -> serialx -> aioesphomeapi;
+# these are not in the base homeassistant / PHACC distribution. The
+# aiousbwatcher / serialx / dbus-fast pins come from the usb & bluetooth
+# integration manifests in HA 2026.7.
+aiousbwatcher==1.1.2
+serialx==1.8.2
+dbus-fast==5.0.22
+aioesphomeapi
