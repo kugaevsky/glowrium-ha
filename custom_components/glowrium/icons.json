@@ -26,12 +26,7 @@
     },
     "select": {
       "operating_mode": {
-        "default": "mdi:tune",
-        "state": {
-          "Manual": "mdi:hand-back-right",
-          "Circadian": "mdi:sun-clock",
-          "Schedule": "mdi:calendar-clock"
-        }
+        "default": "mdi:tune"
       },
       "lighting_mode": {
         "default": "mdi:weather-sunset"
