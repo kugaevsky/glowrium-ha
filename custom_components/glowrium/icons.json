@@ -1,0 +1,68 @@
+{
+  "entity": {
+    "binary_sensor": {
+      "activated": {
+        "default": "mdi:decagram-outline",
+        "state": {
+          "on": "mdi:check-decagram"
+        }
+      }
+    },
+    "button": {
+      "sync_location": {
+        "default": "mdi:crosshairs-gps"
+      }
+    },
+    "number": {
+      "ramp": {
+        "default": "mdi:tunnel"
+      },
+      "schedule_gradual": {
+        "default": "mdi:transition"
+      },
+      "schedule_brightness": {
+        "default": "mdi:brightness-percent"
+      }
+    },
+    "select": {
+      "operating_mode": {
+        "default": "mdi:tune",
+        "state": {
+          "manual": "mdi:hand-back-right",
+          "circadian": "mdi:sun-clock",
+          "schedule": "mdi:calendar-clock"
+        }
+      },
+      "lighting_mode": {
+        "default": "mdi:weather-sunset"
+      }
+    },
+    "switch": {
+      "indicator": {
+        "default": "mdi:led-on",
+        "state": {
+          "off": "mdi:led-off"
+        }
+      },
+      "dst": {
+        "default": "mdi:clock-plus-outline"
+      }
+    },
+    "sensor": {
+      "latitude": {
+        "default": "mdi:latitude"
+      },
+      "longitude": {
+        "default": "mdi:longitude"
+      }
+    },
+    "time": {
+      "schedule_start": {
+        "default": "mdi:clock-start"
+      },
+      "schedule_end": {
+        "default": "mdi:clock-end"
+      }
+    }
+  }
+}

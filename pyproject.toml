@@ -1,0 +1,44 @@
+[tool.ruff]
+target-version = "py314"
+line-length = 88
+
+[tool.ruff.lint]
+select = [
+    "A",
+    "ASYNC",
+    "B",
+    "C4",
+    "D",
+    "E",
+    "F",
+    "G",
+    "I",
+    "LOG",
+    "N",
+    "PERF",
+    "PIE",
+    "PL",
+    "PT",
+    "PTH",
+    "RET",
+    "RUF",
+    "SIM",
+    "SLF",
+    "TID",
+    "TRY",
+    "UP",
+    "W",
+]
+ignore = ["D203", "D213", "TRY003", "RUF012"]
+
+[tool.ruff.lint.per-file-ignores]
+"custom_components/glowrium/cbor.py" = ["PLR2004", "PLR0911", "PLR0912"]
+"tests/*" = ["PLR2004", "SLF001"]
+
+[tool.ruff.lint.isort]
+force-sort-within-sections = true
+combine-as-imports = true
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"

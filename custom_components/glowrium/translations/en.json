@@ -1,0 +1,81 @@
+{
+  "config": {
+    "flow_title": "{name}",
+    "step": {
+      "user": {
+        "description": "Choose the Glowrium device to set up.",
+        "data": {
+          "address": "Device"
+        }
+      },
+      "bluetooth_confirm": {
+        "description": "Do you want to set up {name}?"
+      }
+    },
+    "abort": {
+      "already_configured": "Device is already configured",
+      "already_in_progress": "Configuration flow is already in progress",
+      "no_devices_found": "No unconfigured Glowrium devices found"
+    }
+  },
+  "entity": {
+    "binary_sensor": {
+      "activated": {
+        "name": "Activated"
+      }
+    },
+    "button": {
+      "sync_location": {
+        "name": "Sync location"
+      }
+    },
+    "number": {
+      "ramp": {
+        "name": "Ramp time"
+      },
+      "schedule_gradual": {
+        "name": "Schedule gradual"
+      },
+      "schedule_brightness": {
+        "name": "Schedule brightness"
+      }
+    },
+    "select": {
+      "operating_mode": {
+        "name": "Operating mode",
+        "state": {
+          "manual": "Manual",
+          "circadian": "Circadian",
+          "schedule": "Schedule"
+        }
+      },
+      "lighting_mode": {
+        "name": "Lighting mode"
+      }
+    },
+    "sensor": {
+      "latitude": {
+        "name": "Latitude"
+      },
+      "longitude": {
+        "name": "Longitude"
+      }
+    },
+    "switch": {
+      "indicator": {
+        "name": "Indicator light"
+      },
+      "dst": {
+        "name": "Daylight saving time"
+      }
+    },
+    "time": {
+      "schedule_start": {
+        "name": "Schedule start"
+      },
+      "schedule_end": {
+        "name": "Schedule end"
+      }
+    }
+  }
+}

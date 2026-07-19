@@ -1,0 +1,81 @@
+{
+  "config": {
+    "flow_title": "{name}",
+    "step": {
+      "user": {
+        "description": "Wähle das einzurichtende Glowrium-Gerät.",
+        "data": {
+          "address": "Gerät"
+        }
+      },
+      "bluetooth_confirm": {
+        "description": "Möchtest du {name} einrichten?"
+      }
+    },
+    "abort": {
+      "already_configured": "Gerät ist bereits konfiguriert",
+      "already_in_progress": "Der Konfigurationsvorgang läuft bereits",
+      "no_devices_found": "Keine nicht konfigurierten Glowrium-Geräte gefunden"
+    }
+  },
+  "entity": {
+    "binary_sensor": {
+      "activated": {
+        "name": "Aktiviert"
+      }
+    },
+    "button": {
+      "sync_location": {
+        "name": "Standort synchronisieren"
+      }
+    },
+    "number": {
+      "ramp": {
+        "name": "Rampenzeit"
+      },
+      "schedule_gradual": {
+        "name": "Zeitplan-Übergang"
+      },
+      "schedule_brightness": {
+        "name": "Zeitplan-Helligkeit"
+      }
+    },
+    "select": {
+      "operating_mode": {
+        "name": "Betriebsmodus",
+        "state": {
+          "manual": "Manuell",
+          "circadian": "Zirkadian",
+          "schedule": "Zeitplan"
+        }
+      },
+      "lighting_mode": {
+        "name": "Beleuchtungsmodus"
+      }
+    },
+    "sensor": {
+      "latitude": {
+        "name": "Breitengrad"
+      },
+      "longitude": {
+        "name": "Längengrad"
+      }
+    },
+    "switch": {
+      "indicator": {
+        "name": "Kontrollleuchte"
+      },
+      "dst": {
+        "name": "Sommerzeit"
+      }
+    },
+    "time": {
+      "schedule_start": {
+        "name": "Zeitplan-Start"
+      },
+      "schedule_end": {
+        "name": "Zeitplan-Ende"
+      }
+    }
+  }
+}

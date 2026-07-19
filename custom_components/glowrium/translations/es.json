@@ -1,0 +1,81 @@
+{
+  "config": {
+    "flow_title": "{name}",
+    "step": {
+      "user": {
+        "description": "Elige el dispositivo Glowrium que quieres configurar.",
+        "data": {
+          "address": "Dispositivo"
+        }
+      },
+      "bluetooth_confirm": {
+        "description": "¿Quieres configurar {name}?"
+      }
+    },
+    "abort": {
+      "already_configured": "El dispositivo ya está configurado",
+      "already_in_progress": "El flujo de configuración ya está en curso",
+      "no_devices_found": "No se han encontrado dispositivos Glowrium sin configurar"
+    }
+  },
+  "entity": {
+    "binary_sensor": {
+      "activated": {
+        "name": "Activado"
+      }
+    },
+    "button": {
+      "sync_location": {
+        "name": "Sincronizar ubicación"
+      }
+    },
+    "number": {
+      "ramp": {
+        "name": "Tiempo de rampa"
+      },
+      "schedule_gradual": {
+        "name": "Transición del horario"
+      },
+      "schedule_brightness": {
+        "name": "Brillo del horario"
+      }
+    },
+    "select": {
+      "operating_mode": {
+        "name": "Modo de funcionamiento",
+        "state": {
+          "manual": "Manual",
+          "circadian": "Circadiano",
+          "schedule": "Horario"
+        }
+      },
+      "lighting_mode": {
+        "name": "Modo de iluminación"
+      }
+    },
+    "sensor": {
+      "latitude": {
+        "name": "Latitud"
+      },
+      "longitude": {
+        "name": "Longitud"
+      }
+    },
+    "switch": {
+      "indicator": {
+        "name": "Luz indicadora"
+      },
+      "dst": {
+        "name": "Horario de verano"
+      }
+    },
+    "time": {
+      "schedule_start": {
+        "name": "Inicio del horario"
+      },
+      "schedule_end": {
+        "name": "Fin del horario"
+      }
+    }
+  }
+}

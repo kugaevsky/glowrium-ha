@@ -1,0 +1,28 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="256" height="256" viewBox="0 0 256 256">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#FFCB4D"/>
+      <stop offset="0.52" stop-color="#54B466"/>
+      <stop offset="1" stop-color="#17823F"/>
+    </linearGradient>
+    <radialGradient id="sun" cx="0.5" cy="0.5" r="0.5">
+      <stop offset="0" stop-color="#FFF7DD"/>
+      <stop offset="0.7" stop-color="#FFE7A6"/>
+      <stop offset="1" stop-color="#FFCB4D"/>
+    </radialGradient>
+  </defs>
+  <rect x="0" y="0" width="256" height="256" rx="60" fill="url(#bg)"/>
+  <g stroke="#FFF0C4" stroke-width="8" stroke-linecap="round">
+    <line x1="128" y1="30" x2="128" y2="44"/>
+    <line x1="168" y1="46" x2="159" y2="57"/>
+    <line x1="185" y1="84" x2="171" y2="84"/>
+    <line x1="88"  y1="46" x2="97"  y2="57"/>
+    <line x1="71"  y1="84" x2="85"  y2="84"/>
+  </g>
+  <circle cx="128" cy="84" r="31" fill="url(#sun)"/>
+  <g fill="#FFFFFF">
+    <path d="M128 138 L128 206" stroke="#FFFFFF" stroke-width="13" stroke-linecap="round"/>
+    <path d="M129 156 C103 158 80 145 68 118 C98 109 123 124 129 156 Z"/>
+    <path d="M127 156 C153 158 176 145 188 118 C158 109 133 124 127 156 Z"/>
+  </g>
+</svg>
