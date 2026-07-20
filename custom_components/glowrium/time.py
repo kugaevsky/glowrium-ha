@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import datetime
-from typing import Any
 
 from homeassistant.components.time import TimeEntity
 from homeassistant.const import EntityCategory
@@ -11,15 +10,8 @@ from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 
 from . import GlowriumConfigEntry
-from .const import (
-    KEY_TIMER,
-    MODE_SCHEDULE,
-    TIMER_DEFAULT,
-    TIMER_END_H,
-    TIMER_END_M,
-    TIMER_START_H,
-    TIMER_START_M,
-)
+from .const import MODE_SCHEDULE
+from .coordinator import GlowriumCoordinator
 from .entity import GlowriumEntity
 
 
@@ -43,19 +35,13 @@ class _GlowriumTimerTime(GlowriumEntity, TimeEntity):
         """Schedule times only apply in Schedule mode."""
         return super().available and self._coordinator.mode_allows(MODE_SCHEDULE)
 
-    def _slot(self) -> bytes | None:
-        value = self._coordinator.state.get(KEY_TIMER)
-        if isinstance(value, (bytes, bytearray)) and len(value) >= len(TIMER_DEFAULT):
-            return bytes(value)
-        return None
-
 
 class GlowriumTimerStart(_GlowriumTimerTime):
     """Schedule start (on) time."""
 
     _attr_translation_key = "schedule_start"
 
-    def __init__(self, coordinator: Any) -> None:
+    def __init__(self, coordinator: GlowriumCoordinator) -> None:
         """Initialize the schedule-start time."""
         super().__init__(coordinator)
         self._attr_unique_id = f"{coordinator.address}_schedule_start"
@@ -63,10 +49,7 @@ class GlowriumTimerStart(_GlowriumTimerTime):
     @property
     def native_value(self) -> datetime.time | None:
         """Return the schedule start time."""
-        slot = self._slot()
-        if slot is None:
-            return None
-        return datetime.time(slot[TIMER_START_H], slot[TIMER_START_M])
+        return self._coordinator.schedule_start
 
     async def async_set_value(self, value: datetime.time) -> None:
         """Set the schedule start time."""
@@ -78,7 +61,7 @@ class GlowriumTimerEnd(_GlowriumTimerTime):
 
     _attr_translation_key = "schedule_end"
 
-    def __init__(self, coordinator: Any) -> None:
+    def __init__(self, coordinator: GlowriumCoordinator) -> None:
         """Initialize the schedule-end time."""
         super().__init__(coordinator)
         self._attr_unique_id = f"{coordinator.address}_schedule_end"
@@ -86,10 +69,7 @@ class GlowriumTimerEnd(_GlowriumTimerTime):
     @property
     def native_value(self) -> datetime.time | None:
         """Return the schedule end time."""
-        slot = self._slot()
-        if slot is None:
-            return None
-        return datetime.time(slot[TIMER_END_H], slot[TIMER_END_M])
+        return self._coordinator.schedule_end
 
     async def async_set_value(self, value: datetime.time) -> None:
         """Set the schedule end time."""

@@ -2,23 +2,14 @@
 
 from __future__ import annotations
 
-from typing import Any
-
 from homeassistant.components.number import NumberEntity, NumberMode
 from homeassistant.const import PERCENTAGE, EntityCategory, UnitOfTime
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 
 from . import GlowriumConfigEntry
-from .const import (
-    KEY_RAMP,
-    KEY_TIMER,
-    MODE_CIRCADIAN,
-    MODE_SCHEDULE,
-    TIMER_BRIGHTNESS,
-    TIMER_DEFAULT,
-    TIMER_GRADUAL,
-)
+from .const import MODE_CIRCADIAN, MODE_SCHEDULE
+from .coordinator import GlowriumCoordinator
 from .entity import GlowriumEntity
 
 
@@ -49,7 +40,7 @@ class GlowriumRampNumber(GlowriumEntity, NumberEntity):
     _attr_native_unit_of_measurement = UnitOfTime.MINUTES
     _attr_mode = NumberMode.BOX
 
-    def __init__(self, coordinator: Any) -> None:
+    def __init__(self, coordinator: GlowriumCoordinator) -> None:
         """Initialize the ramp-time number."""
         super().__init__(coordinator)
         self._attr_unique_id = f"{coordinator.address}_ramp"
@@ -62,10 +53,7 @@ class GlowriumRampNumber(GlowriumEntity, NumberEntity):
     @property
     def native_value(self) -> int | None:
         """Return the ramp time in minutes."""
-        value = self._coordinator.state.get(KEY_RAMP)
-        if isinstance(value, (bytes, bytearray)) and value:
-            return int.from_bytes(value[:2], "big") // 60
-        return None
+        return self._coordinator.ramp_minutes
 
     async def async_set_native_value(self, value: float) -> None:
         """Set the ramp time in minutes."""
@@ -82,12 +70,6 @@ class _GlowriumTimerNumber(GlowriumEntity, NumberEntity):
         """Schedule settings only apply in Schedule mode."""
         return super().available and self._coordinator.mode_allows(MODE_SCHEDULE)
 
-    def _slot(self) -> bytes | None:
-        value = self._coordinator.state.get(KEY_TIMER)
-        if isinstance(value, (bytes, bytearray)) and len(value) >= len(TIMER_DEFAULT):
-            return bytes(value)
-        return None
-
 
 class GlowriumTimerGradual(_GlowriumTimerNumber):
     """Schedule gradual on/off fade duration (minutes)."""
@@ -99,7 +81,7 @@ class GlowriumTimerGradual(_GlowriumTimerNumber):
     _attr_native_unit_of_measurement = UnitOfTime.MINUTES
     _attr_mode = NumberMode.BOX
 
-    def __init__(self, coordinator: Any) -> None:
+    def __init__(self, coordinator: GlowriumCoordinator) -> None:
         """Initialize the schedule-gradual number."""
         super().__init__(coordinator)
         self._attr_unique_id = f"{coordinator.address}_schedule_gradual"
@@ -107,10 +89,7 @@ class GlowriumTimerGradual(_GlowriumTimerNumber):
     @property
     def native_value(self) -> int | None:
         """Return the gradual fade in minutes."""
-        slot = self._slot()
-        if slot is None:
-            return None
-        return int.from_bytes(slot[TIMER_GRADUAL : TIMER_GRADUAL + 2], "big") // 60
+        return self._coordinator.schedule_gradual_minutes
 
     async def async_set_native_value(self, value: float) -> None:
         """Set the gradual fade in minutes."""
@@ -127,7 +106,7 @@ class GlowriumTimerBrightness(_GlowriumTimerNumber):
     _attr_native_unit_of_measurement = PERCENTAGE
     _attr_mode = NumberMode.SLIDER
 
-    def __init__(self, coordinator: Any) -> None:
+    def __init__(self, coordinator: GlowriumCoordinator) -> None:
         """Initialize the schedule-brightness number."""
         super().__init__(coordinator)
         self._attr_unique_id = f"{coordinator.address}_schedule_brightness"
@@ -135,8 +114,7 @@ class GlowriumTimerBrightness(_GlowriumTimerNumber):
     @property
     def native_value(self) -> int | None:
         """Return the schedule brightness percentage."""
-        slot = self._slot()
-        return slot[TIMER_BRIGHTNESS] if slot is not None else None
+        return self._coordinator.schedule_brightness
 
     async def async_set_native_value(self, value: float) -> None:
         """Set the schedule brightness percentage."""

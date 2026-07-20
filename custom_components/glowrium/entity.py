@@ -41,5 +41,5 @@ class GlowriumEntity(Entity):
 
     @property
     def available(self) -> bool:
-        """Return True while the device is connected."""
+        """Return True while the device is present (advertising) or connected."""
         return self._coordinator.available

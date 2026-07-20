@@ -33,6 +33,10 @@ keyed by the device-info `pkey`. To add a model:
 2. Confirm the circadian preset indices against a btsnoop capture from the vendor app.
 3. Update the "Supported devices" table in the README.
 
+See **[ARCHITECTURE.md — How to add a new model](ARCHITECTURE.md#how-to-add-a-new-model)**
+for the detailed capture → decode → `models.py` walkthrough, plus the full GATT/CBOR
+protocol reference behind it.
+
 ## Testing on hardware
 
 A macOS/Linux machine with a Bluetooth adapter can drive the coordinator against a real lamp

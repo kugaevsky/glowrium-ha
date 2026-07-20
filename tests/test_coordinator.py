@@ -3,7 +3,9 @@
 from datetime import datetime
 from unittest.mock import AsyncMock, MagicMock
 
+from bleak.exc import BleakError
 from homeassistant.core import HomeAssistant
+import pytest
 
 from custom_components.glowrium import cbor
 from custom_components.glowrium.const import (
@@ -302,3 +304,36 @@ async def test_model_resolution(hass: HomeAssistant) -> None:
     coordinator.device_info = {"pkey": "Glowrium-XXXX"}
     assert coordinator.model.name == "Glowrium"
     assert "Sun SYNC" in coordinator.model.lighting_modes
+
+
+async def test_write_retries_once_after_a_dropped_link(hass: HomeAssistant) -> None:
+    """A write that fails once reconnects and retries before succeeding."""
+    coordinator, client = _connected_coordinator(hass)
+    client.write_gatt_char = AsyncMock(side_effect=[BleakError("dropped"), None])
+    reconnects: list[int] = []
+
+    async def _reconnect() -> None:
+        reconnects.append(1)
+        client.is_connected = True
+        coordinator._client = client
+
+    coordinator._connect_locked = _reconnect
+    await coordinator.async_set_power(True)
+    assert client.write_gatt_char.await_count == 2  # failed, then retried
+    assert reconnects  # a reconnect happened before the retry
+    assert coordinator.state[KEY_POWER] is True
+
+
+async def test_write_raises_after_two_failures(hass: HomeAssistant) -> None:
+    """A write that keeps failing surfaces the error after a single retry."""
+    coordinator, client = _connected_coordinator(hass)
+    client.write_gatt_char = AsyncMock(side_effect=BleakError("down"))
+
+    async def _reconnect() -> None:
+        client.is_connected = True
+        coordinator._client = client
+
+    coordinator._connect_locked = _reconnect
+    with pytest.raises(BleakError):
+        await coordinator.async_set_power(True)
+    assert client.write_gatt_char.await_count == 2  # tried twice, then gave up

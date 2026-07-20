@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Callable
-from datetime import datetime, timedelta
+from datetime import datetime, time, timedelta
 import logging
 from typing import Any
 
@@ -16,7 +16,7 @@ from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers.event import async_track_time_interval
 from homeassistant.util import dt as dt_util
 
-from . import cbor
+from . import cbor, protocol
 from .const import (
     ACTIVATE_MISC_VALUE,
     DST_OFF,
@@ -46,7 +46,6 @@ from .const import (
     RAMP_DEFAULT,
     STATE_KEYS,
     TIMER_BRIGHTNESS,
-    TIMER_DEFAULT,
     TIMER_END_H,
     TIMER_END_M,
     TIMER_GRADUAL,
@@ -58,6 +57,7 @@ from .models import GlowriumModel, resolve_model
 
 _LOGGER = logging.getLogger(__name__)
 _RECONNECT_INTERVAL = timedelta(seconds=30)
+_WRITE_ATTEMPTS = 2  # the initial write plus one reconnect-and-retry
 
 
 def _encode_device_time(now: datetime | None = None) -> bytes:
@@ -182,6 +182,34 @@ class GlowriumCoordinator:
         current = self.operating_mode
         return current is None or current == mode
 
+    # Decoded read accessors - the byte layouts they wrap live in protocol.py,
+    # so entities read meaningful values instead of the raw state dict.
+
+    @property
+    def ramp_minutes(self) -> int | None:
+        """Circadian ramp duration in minutes (0x2f), or None if not yet read."""
+        return protocol.ramp_minutes(self.state)
+
+    @property
+    def schedule_start(self) -> time | None:
+        """Schedule on-time from the 0x11 slot, or None if not yet read."""
+        return protocol.schedule_start(self.state)
+
+    @property
+    def schedule_end(self) -> time | None:
+        """Schedule off-time from the 0x11 slot, or None if not yet read."""
+        return protocol.schedule_end(self.state)
+
+    @property
+    def schedule_brightness(self) -> int | None:
+        """Schedule target brightness (%) from the 0x11 slot, or None."""
+        return protocol.schedule_brightness(self.state)
+
+    @property
+    def schedule_gradual_minutes(self) -> int | None:
+        """Schedule gradual-fade duration in minutes, or None if not yet read."""
+        return protocol.schedule_gradual_minutes(self.state)
+
     @callback
     def async_add_listener(
         self, update_callback: Callable[[], None]
@@ -288,47 +316,53 @@ class GlowriumCoordinator:
         )
 
     async def _async_ensure_connected(self) -> None:
+        """Connect if not already connected (acquires the connection lock)."""
         if self._is_connected:
             return
         async with self._lock:
-            if self._is_connected:
-                return
-            device = self._ble_device()
-            if device is None:
-                raise BleakError(f"{self.address} is not in range")
-            client = await establish_connection(
-                BleakClientWithServiceCache,
-                device,
-                self.name,
-                disconnected_callback=self._async_on_disconnect,
+            await self._connect_locked()
+
+    async def _connect_locked(self) -> None:
+        """Establish the GATT link and prime device state.
+
+        The caller must hold ``_lock``; ``_async_ensure_connected`` and the
+        write path both funnel through here so a command can never race the
+        connect/reconnect the device performs underneath.
+        """
+        if self._is_connected:
+            return
+        device = self._ble_device()
+        if device is None:
+            raise BleakError(f"{self.address} is not in range")
+        client = await establish_connection(
+            BleakClientWithServiceCache,
+            device,
+            self.name,
+            disconnected_callback=self._async_on_disconnect,
+        )
+        self._client = client
+        await client.start_notify(NOTIFY_UUID, self._on_notify)
+        # Ask the device to report the properties we track. The G7 drops the
+        # link if asked for an id it does not expose, so treat a rejection as
+        # non-fatal: another Glowrium model with a different property set can
+        # still be controlled, just with limited state.
+        try:
+            await client.write_gatt_char(NOTIFY_UUID, bytes(STATE_KEYS), response=True)
+        except (BleakError, TimeoutError) as err:
+            _LOGGER.warning(
+                "%s rejected the state request (%s) - a different Glowrium "
+                "model? Control may be limited",
+                self.address,
+                err,
             )
-            self._client = client
-            await client.start_notify(NOTIFY_UUID, self._on_notify)
-            # Ask the device to report the properties we track. The G7 drops the
-            # link if asked for an id it does not expose, so treat a rejection as
-            # non-fatal: another Glowrium model with a different property set can
-            # still be controlled, just with limited state.
+        if not self.device_info:
             try:
-                await client.write_gatt_char(
-                    NOTIFY_UUID, bytes(STATE_KEYS), response=True
-                )
+                raw = await client.read_gatt_char(INFO_UUID)
+                self.device_info = _parse_device_info(bytes(raw))
             except (BleakError, TimeoutError) as err:
-                _LOGGER.warning(
-                    "%s rejected the state request (%s) - a different Glowrium "
-                    "model? Control may be limited",
-                    self.address,
-                    err,
-                )
-            if not self.device_info:
-                try:
-                    raw = await client.read_gatt_char(INFO_UUID)
-                    self.device_info = _parse_device_info(bytes(raw))
-                except (BleakError, TimeoutError) as err:
-                    _LOGGER.debug(
-                        "Device-info read from %s failed: %s", self.address, err
-                    )
-            await self._async_activate_if_needed()
-            self._async_notify_listeners()
+                _LOGGER.debug("Device-info read from %s failed: %s", self.address, err)
+        await self._async_activate_if_needed()
+        self._async_notify_listeners()
 
     @callback
     def _async_on_disconnect(self, _client: BleakClientWithServiceCache) -> None:
@@ -354,8 +388,14 @@ class GlowriumCoordinator:
             self._async_notify_listeners()
 
     async def _write_raw(self, payload: dict[int, Any]) -> None:
-        """Write a command to an already-connected device (no lock, no notify)."""
-        assert self._client is not None
+        """Write one command frame to the connected device.
+
+        The caller must hold ``_lock`` and have ensured a connection: the
+        connect path uses this for the bring-up sequence, and the command path
+        (``_async_write``) wraps it with the lock and a retry.
+        """
+        if self._client is None:
+            raise BleakError("write attempted while disconnected")
         await self._client.write_gatt_char(
             WRITE_UUID, cbor.encode(payload), response=True
         )
@@ -363,8 +403,28 @@ class GlowriumCoordinator:
         self.state.update(payload)
 
     async def _async_write(self, payload: dict[int, Any]) -> None:
-        await self._async_ensure_connected()
-        await self._write_raw(payload)
+        """Serialize a command under the connection lock, with one reconnect.
+
+        The write runs inside ``_lock`` so it cannot race the ~30-60 min GATT
+        churn the device performs; if it still fails (the link dropped
+        mid-command) the connection is rebuilt once and the write retried
+        before the error is surfaced to the caller.
+        """
+        async with self._lock:
+            for attempt in range(1, _WRITE_ATTEMPTS + 1):
+                try:
+                    await self._connect_locked()
+                    await self._write_raw(payload)
+                    break
+                except (BleakError, TimeoutError) as err:
+                    self._client = None
+                    if attempt == _WRITE_ATTEMPTS:
+                        raise
+                    _LOGGER.debug(
+                        "Write to %s failed (%s); reconnecting and retrying",
+                        self.address,
+                        err,
+                    )
         self._async_notify_listeners()
 
     async def _async_activate_if_needed(self) -> None:
@@ -444,8 +504,7 @@ class GlowriumCoordinator:
 
     async def async_set_ramp(self, minutes: int) -> None:
         """Set the circadian ramp time in minutes (0 = Sun Sync auto)."""
-        seconds = max(0, min(minutes, 0xFFFF // 60)) * 60
-        self._desired_ramp = seconds.to_bytes(2, "big")
+        self._desired_ramp = protocol.be2_minutes_to_bytes(minutes)
         await self._async_write(self._mode_payload(ramp=self._desired_ramp))
 
     async def async_set_operating_mode(self, mode: str) -> None:
@@ -482,34 +541,26 @@ class GlowriumCoordinator:
             return
         await self._async_write({KEY_LATITUDE: float(lat), KEY_LONGITUDE: float(lon)})
 
-    def _timer_slot(self) -> bytearray:
-        """Return an editable copy of the schedule slot (0x11), or a default."""
-        value = self.state.get(KEY_TIMER)
-        if isinstance(value, (bytes, bytearray)) and len(value) >= len(TIMER_DEFAULT):
-            return bytearray(value)
-        return bytearray(TIMER_DEFAULT)
-
     async def async_set_timer_start(self, hour: int, minute: int) -> None:
         """Set the schedule start time."""
-        slot = self._timer_slot()
+        slot = protocol.editable_timer_slot(self.state)
         slot[TIMER_START_H], slot[TIMER_START_M] = hour, minute
         await self._async_write({KEY_TIMER: bytes(slot)})
 
     async def async_set_timer_end(self, hour: int, minute: int) -> None:
         """Set the schedule end time."""
-        slot = self._timer_slot()
+        slot = protocol.editable_timer_slot(self.state)
         slot[TIMER_END_H], slot[TIMER_END_M] = hour, minute
         await self._async_write({KEY_TIMER: bytes(slot)})
 
     async def async_set_timer_brightness(self, value: int) -> None:
         """Set the schedule brightness (0..100)."""
-        slot = self._timer_slot()
+        slot = protocol.editable_timer_slot(self.state)
         slot[TIMER_BRIGHTNESS] = max(0, min(100, value))
         await self._async_write({KEY_TIMER: bytes(slot)})
 
     async def async_set_timer_gradual(self, minutes: int) -> None:
         """Set the schedule gradual on/off fade duration in minutes."""
-        slot = self._timer_slot()
-        seconds = max(0, min(minutes, 0xFFFF // 60)) * 60
-        slot[TIMER_GRADUAL : TIMER_GRADUAL + 2] = seconds.to_bytes(2, "big")
+        slot = protocol.editable_timer_slot(self.state)
+        slot[TIMER_GRADUAL : TIMER_GRADUAL + 2] = protocol.be2_minutes_to_bytes(minutes)
         await self._async_write({KEY_TIMER: bytes(slot)})

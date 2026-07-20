@@ -154,6 +154,10 @@ device computes its own circadian sunrise/sunset curve from the coordinates it
 stores, which is why **Sync location** simply writes your Home Assistant home
 coordinates and lets the lamp do the astronomy.
 
+For a deeper tour — the GATT/CBOR protocol, the activation handshake, the
+availability model, and a step-by-step guide to adding another Glowrium model —
+see **[ARCHITECTURE.md](ARCHITECTURE.md)**.
+
 ## Development
 
 ```bash
