@@ -5,6 +5,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 from bleak.exc import BleakError
 from homeassistant.core import HomeAssistant
+from homeassistant.exceptions import HomeAssistantError
 import pytest
 
 from custom_components.glowrium import cbor
@@ -19,7 +20,10 @@ from custom_components.glowrium.const import (
     KEY_TIMER,
     NOTIFY_UUID,
     STATE_KEYS,
+    TIMER_BRIGHTNESS,
     TIMER_DEFAULT,
+    TIMER_START_H,
+    TIMER_START_M,
     WRITE_UUID,
 )
 from custom_components.glowrium.coordinator import (
@@ -191,6 +195,7 @@ async def test_sync_location(hass: HomeAssistant) -> None:
 async def test_set_timer_start(hass: HomeAssistant) -> None:
     """Setting the schedule start edits only the start bytes of the 0x11 slot."""
     coordinator, client = _connected_coordinator(hass)
+    coordinator.state[KEY_TIMER] = bytes(TIMER_DEFAULT)  # slot must be read first
     await coordinator.async_set_timer_start(7, 15)
     expected = bytearray(TIMER_DEFAULT)
     expected[4], expected[5] = 7, 15
@@ -202,6 +207,7 @@ async def test_set_timer_start(hass: HomeAssistant) -> None:
 async def test_set_timer_gradual(hass: HomeAssistant) -> None:
     """Gradual is stored as 2-byte big-endian seconds (5 min -> 300 = 0x012c)."""
     coordinator, client = _connected_coordinator(hass)
+    coordinator.state[KEY_TIMER] = bytes(TIMER_DEFAULT)  # slot must be read first
     await coordinator.async_set_timer_gradual(5)
     expected = bytearray(TIMER_DEFAULT)
     expected[9:11] = (300).to_bytes(2, "big")
@@ -449,3 +455,40 @@ async def test_empty_ramp_does_not_latch(hass: HomeAssistant) -> None:
     assert coordinator._desired_ramp is None
     coordinator._ingest(bytes.fromhex("a1182f420e10"))  # {0x2f: b"\x0e\x10"}
     assert coordinator._desired_ramp == bytes.fromhex("0e10")
+
+
+async def test_schedule_setters_refuse_when_slot_unread(hass: HomeAssistant) -> None:
+    """Changing one schedule field must not invent the other four.
+
+    The 0x11 slot packs enabled, both times, brightness and fade into one write,
+    so falling back to a default silently overwrote settings the user chose.
+    """
+    coordinator, client = _connected_coordinator(hass)
+    for call in (
+        coordinator.async_set_timer_start(7, 30),
+        coordinator.async_set_timer_end(19, 0),
+        coordinator.async_set_timer_brightness(80),
+        coordinator.async_set_timer_gradual(15),
+    ):
+        with pytest.raises(HomeAssistantError):
+            await call
+    client.write_gatt_char.assert_not_awaited()
+
+
+async def test_schedule_setters_work_once_slot_is_known(hass: HomeAssistant) -> None:
+    """With the slot read, a setter changes only its own field."""
+    coordinator, client = _connected_coordinator(hass)
+    coordinator.state[KEY_TIMER] = bytes.fromhex("010200ff0a121212640000")
+    await coordinator.async_set_timer_start(7, 30)
+    written = cbor.decode(client.write_gatt_char.await_args_list[-1].args[1])[KEY_TIMER]
+    assert written[TIMER_START_H], written[TIMER_START_M] == (7, 30)
+    assert written[0] == 0x01  # enabled flag preserved, not forced
+    assert written[TIMER_BRIGHTNESS] == 0x64  # brightness untouched
+
+
+async def test_ramp_refuses_when_lighting_mode_unread(hass: HomeAssistant) -> None:
+    """Setting the ramp must not silently reset the lighting mode to index 1."""
+    coordinator, client = _connected_coordinator(hass)
+    with pytest.raises(HomeAssistantError):
+        await coordinator.async_set_ramp(30)
+    client.write_gatt_char.assert_not_awaited()

@@ -13,6 +13,7 @@ from bleak.exc import BleakError
 from bleak_retry_connector import BleakClientWithServiceCache, establish_connection
 from homeassistant.components import bluetooth
 from homeassistant.core import HomeAssistant, callback
+from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers.event import async_track_time_interval
 from homeassistant.util import dt as dt_util
 
@@ -359,6 +360,22 @@ class GlowriumCoordinator:
         await self._async_activate_if_needed()
         self._async_notify_listeners()
 
+    def _require_read(self, value: Any, field: str) -> Any:
+        """Return ``value``, or raise if the device has not reported ``field``.
+
+        The schedule slot and the lighting-mode frame are read-modify-write: one
+        write carries several fields at once. Substituting a default to change a
+        single field silently overwrites the rest with values the user never
+        chose, so refuse instead and say why.
+        """
+        if value is None or value == b"":
+            raise HomeAssistantError(
+                f"{self.name}: cannot change this yet because the device has not "
+                f"reported its current {field}. It should populate once the lamp "
+                "is connected."
+            )
+        return value
+
     async def _request_state(self, client: BleakClientWithServiceCache) -> None:
         """Prime the state mirror, preferring a read over a request.
 
@@ -550,7 +567,9 @@ class GlowriumCoordinator:
         ramp (0x2f) is otherwise clobbered whenever the mode is set.
         """
         mode_value = (
-            mode if mode is not None else self.state.get(KEY_LIGHTING_MODE, 1)
+            mode
+            if mode is not None
+            else self._require_read(self.state.get(KEY_LIGHTING_MODE), "lighting mode")
         )
         # Ramp keeps its default. Setting a mode rewrites ramp on the device
         # regardless, so there is no "leave it alone" option here and falling
@@ -613,24 +632,24 @@ class GlowriumCoordinator:
 
     async def async_set_timer_start(self, hour: int, minute: int) -> None:
         """Set the schedule start time."""
-        slot = protocol.editable_timer_slot(self.state)
+        slot = self._require_read(protocol.editable_timer_slot(self.state), "schedule")
         slot[TIMER_START_H], slot[TIMER_START_M] = hour, minute
         await self._async_write({KEY_TIMER: bytes(slot)})
 
     async def async_set_timer_end(self, hour: int, minute: int) -> None:
         """Set the schedule end time."""
-        slot = protocol.editable_timer_slot(self.state)
+        slot = self._require_read(protocol.editable_timer_slot(self.state), "schedule")
         slot[TIMER_END_H], slot[TIMER_END_M] = hour, minute
         await self._async_write({KEY_TIMER: bytes(slot)})
 
     async def async_set_timer_brightness(self, value: int) -> None:
         """Set the schedule brightness (0..100)."""
-        slot = protocol.editable_timer_slot(self.state)
+        slot = self._require_read(protocol.editable_timer_slot(self.state), "schedule")
         slot[TIMER_BRIGHTNESS] = max(0, min(100, value))
         await self._async_write({KEY_TIMER: bytes(slot)})
 
     async def async_set_timer_gradual(self, minutes: int) -> None:
         """Set the schedule gradual on/off fade duration in minutes."""
-        slot = protocol.editable_timer_slot(self.state)
+        slot = self._require_read(protocol.editable_timer_slot(self.state), "schedule")
         slot[TIMER_GRADUAL : TIMER_GRADUAL + 2] = protocol.be2_minutes_to_bytes(minutes)
         await self._async_write({KEY_TIMER: bytes(slot)})
