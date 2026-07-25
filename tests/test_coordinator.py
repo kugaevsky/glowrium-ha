@@ -17,6 +17,8 @@ from custom_components.glowrium.const import (
     KEY_POWER,
     KEY_SCHEDULE,
     KEY_TIMER,
+    NOTIFY_UUID,
+    STATE_KEYS,
     TIMER_DEFAULT,
     WRITE_UUID,
 )
@@ -337,3 +339,113 @@ async def test_write_raises_after_two_failures(hass: HomeAssistant) -> None:
     with pytest.raises(BleakError):
         await coordinator.async_set_power(True)
     assert client.write_gatt_char.await_count == 2  # tried twice, then gave up
+
+
+async def test_state_request_sent_once_then_never_again(hass: HomeAssistant) -> None:
+    """A device that rejects the state request is not asked on later connects.
+
+    Re-sending it is what destroyed the link on every command for models that
+    answer ATT "Insufficient authorization" (0x08) and disconnect.
+    """
+    coordinator = GlowriumCoordinator(hass, "AA:BB:CC:DD:EE:FF", "Glowrium-G8")
+    client = MagicMock()
+    client.is_connected = True
+    client.read_gatt_char = AsyncMock(side_effect=BleakError("unreadable"))
+    client.write_gatt_char = AsyncMock(
+        side_effect=BleakError("Insufficient authorization (8)")
+    )
+
+    await coordinator._request_state(client)
+    assert client.write_gatt_char.await_count == 1
+    assert coordinator._state_request_rejected is True
+
+    # Later connects must not re-send it.
+    await coordinator._request_state(client)
+    await coordinator._request_state(client)
+    assert client.write_gatt_char.await_count == 1
+
+
+async def test_state_request_repeats_while_accepted(hass: HomeAssistant) -> None:
+    """An unreadable device that accepts the request keeps being asked."""
+    coordinator = GlowriumCoordinator(hass, "AA:BB:CC:DD:EE:FF", "Glowrium-G7")
+    client = MagicMock()
+    client.is_connected = True
+    client.read_gatt_char = AsyncMock(side_effect=BleakError("unreadable"))
+    client.write_gatt_char = AsyncMock()
+
+    await coordinator._request_state(client)
+    await coordinator._request_state(client)
+    assert client.write_gatt_char.await_count == 2
+    assert coordinator._state_request_rejected is False
+    client.write_gatt_char.assert_awaited_with(
+        NOTIFY_UUID, bytes(STATE_KEYS), response=True
+    )
+
+
+async def test_activation_skipped_when_state_unreadable(hass: HomeAssistant) -> None:
+    """A device whose state cannot be read is never activated, and never waits.
+
+    0x14 can never arrive on such a device, so the 3 s wait would run on every
+    connect - including the connect the command path performs.
+    """
+    coordinator = GlowriumCoordinator(hass, "AA:BB:CC:DD:EE:FF", "Glowrium-G8")
+    client = MagicMock()
+    client.is_connected = True
+    coordinator._client = client
+    coordinator._state_request_rejected = True
+    activated = []
+    coordinator.async_activate = AsyncMock(side_effect=lambda: activated.append(1))
+
+    await coordinator._async_activate_if_needed()
+
+    assert not activated  # must not replay the vendor bring-up blind
+    assert coordinator._activation_checked is True  # and must not re-wait
+
+
+async def test_state_primed_by_read_without_a_request(hass: HomeAssistant) -> None:
+    """A readable device is read, and the unreliable request is not sent."""
+    coordinator = GlowriumCoordinator(hass, "AA:BB:CC:DD:EE:FF", "Glowrium-G8")
+    client = MagicMock()
+    client.is_connected = True
+    client.write_gatt_char = AsyncMock()
+    client.read_gatt_char = AsyncMock(return_value=bytearray.fromhex("a206f5081846"))
+
+    await coordinator._request_state(client)
+
+    client.read_gatt_char.assert_awaited_once_with(NOTIFY_UUID)
+    client.write_gatt_char.assert_not_awaited()  # no request needed
+    assert coordinator.state[KEY_POWER] is True
+    assert coordinator.state[KEY_BRIGHTNESS] == 70
+
+
+async def test_falls_back_to_request_when_read_fails(hass: HomeAssistant) -> None:
+    """If the read is unavailable the batched request is still tried, once."""
+    coordinator = GlowriumCoordinator(hass, "AA:BB:CC:DD:EE:FF", "Glowrium-G7")
+    client = MagicMock()
+    client.is_connected = True
+    client.read_gatt_char = AsyncMock(side_effect=BleakError("not readable"))
+    client.write_gatt_char = AsyncMock(side_effect=BleakError("rejected"))
+
+    await coordinator._request_state(client)
+    assert client.write_gatt_char.await_count == 1
+    assert coordinator._state_request_rejected is True
+
+    await coordinator._request_state(client)  # never asked again
+    assert client.write_gatt_char.await_count == 1
+
+
+async def test_split_notification_updates_state(hass: HomeAssistant) -> None:
+    """A notification carrying a split map still updates the entities."""
+    coordinator = GlowriumCoordinator(hass, "AA:BB:CC:DD:EE:FF", "Glowrium-G8")
+    coordinator._on_notify(None, bytearray.fromhex("a306f5081846"))  # promises 3, has 2
+    assert coordinator.state[KEY_POWER] is True
+    assert coordinator.state[KEY_BRIGHTNESS] == 70
+
+
+async def test_empty_ramp_does_not_latch(hass: HomeAssistant) -> None:
+    """A zero-length ramp must not block seeding the remembered ramp later."""
+    coordinator = GlowriumCoordinator(hass, "AA:BB:CC:DD:EE:FF", "Glowrium-G7")
+    coordinator._ingest(bytes.fromhex("a1182f40"))  # {0x2f: b""}
+    assert coordinator._desired_ramp is None
+    coordinator._ingest(bytes.fromhex("a1182f420e10"))  # {0x2f: b"\x0e\x10"}
+    assert coordinator._desired_ramp == bytes.fromhex("0e10")
