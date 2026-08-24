@@ -106,27 +106,37 @@ All control happens over one vendor service, `facebd00-7261-6262-6974-696f74626c
 
 ### Priming state on connect
 
-`NOTIFY_UUID` is readable, and one read returns the lamp's entire property map in
-a single response. So right after subscribing to notifications the coordinator
-**reads** it (`_request_state` in `coordinator.py`) and merges whatever comes
-back. Only if that read yields nothing does it fall back to *writing* the raw
-bytes of `STATE_KEYS` (a tuple of property ids) to the same characteristic, which
-asks the lamp to report those properties instead.
+`NOTIFY_UUID` is readable, so right after subscribing to notifications the
+coordinator **reads** it (`_request_state` in `coordinator.py`) and merges
+whatever comes back. It then *writes* the raw bytes of `STATE_KEYS` (a tuple of
+property ids) to the same characteristic — asking the lamp to report them —
+unless the read happened to carry every key already.
 
-Reading first is both cheaper and sturdier. The request-write is unreliable on
-some models — a G8 (`Glowrium-C064`) answers it with ATT `Insufficient
-authorization`, a not-connected error, or a timeout depending on route and
-timing, and drops the GATT link while doing so. Because `_connect_locked` also
-runs from the command path, a request that tears down the link would do so on
-*every command*, not just on connect.
+> ⚠️ **The read does not return the whole property map.** Measured on real
+> hardware, it carries only the low property block, up to `0x15`. The indicator
+> (`0x17`), lighting mode (`0x2b`), ramp (`0x2f`) and DST (`0x35`) are **not** in
+> it and arrive solely through the `STATE_KEYS` request. Skipping the request
+> after a successful read leaves those four entities `unknown` for the whole
+> session.
+
+Reading first is still worth it: it fills most of the map in one cheap round
+trip, and it is sturdier than the request-and-notify path, which is subject to
+the map being split across notifications (see below). The request-write is also
+unreliable on some models — a G8 (`Glowrium-C064`) answers it with ATT
+`Insufficient authorization`, a not-connected error, or a timeout depending on
+route and timing, and drops the GATT link while doing so.
 
 > ⚠️ **Only request ids the vendor app itself requests.** Asking the G7 for an id
 > it does not expose makes it drop the GATT link. `STATE_KEYS` is exactly the set
-> observed in the app's captures. A model that rejects the request outright is
-> handled as **non-fatal**: the coordinator logs one warning naming the model,
-> sets `_state_request_rejected` so it is never asked again this session, and
-> carries on with whatever state it has. Commands still work; reported state just
-> stays optimistic.
+> observed in the app's captures. A model that refuses the request is handled as
+> **non-fatal**: after `_STATE_REQUEST_ATTEMPTS` (3) consecutive failures the
+> coordinator logs one warning naming the model and mutes the request for
+> `_STATE_REQUEST_COOLDOWN` (10 minutes). Both numbers matter. A dropped link
+> raises the same `BleakError` as a refusal, so giving up on the first failure
+> costs a weak-signal lamp every property the read does not carry — and muting
+> for the *session* is just as wrong: on a real G7 three consecutive failures
+> accumulated 70 s after start-up purely from a bad link. Expiring the mute lets
+> that heal itself while still sparing a genuinely refusing model.
 
 ### Device-info string (`facebd80`)
 
@@ -332,9 +342,15 @@ Two independent triggers, both funnelling into a single guarded reconnect task
 
 Establishing a connection (`_async_ensure_connected`, serialized by an
 `asyncio.Lock`) uses `bleak_retry_connector.establish_connection`, subscribes to
-notifications, reads device-info once, primes state by reading `facebd02`
-(falling back to the `STATE_KEYS` request only if that yields nothing), and runs
-activation if needed. It caps `establish_connection` at `_CONNECT_ATTEMPTS` (2) rather than
+notifications, reads device-info once, primes state by reading `facebd02` and
+then requesting whatever keys that read did not carry, and runs activation if
+needed. **The whole thing is capped at `_CONNECT_TIMEOUT` (20 s), including the
+wait for the lock** — setup awaits this same path, so without a ceiling a lamp
+that is out of range leaves the config entry stuck in "setup in progress"
+indefinitely instead of coming up with its entities unavailable. For the same
+reason the reconnect poll is armed *after* the first connect attempt, not before
+it: it takes the same lock, and arming it first lets it hold setup behind a
+connect of its own. It caps `establish_connection` at `_CONNECT_ATTEMPTS` (2) rather than
 the library default of 4: against an unreachable device each attempt can burn a
 20 s bleak timeout plus a backoff, all while the lock is held — and the poll above
 comes round again in 30 s anyway.
@@ -343,6 +359,26 @@ comes round again in 30 s anyway.
 holds the lock across connect-and-write, so a command cannot race the periodic
 GATT churn; if the write still fails mid-command, the coordinator reconnects once
 and retries before surfacing the error.
+
+**A command connects without priming** (`_connect_locked(prime=False)`). It needs
+the link and its own write, nothing else — and priming costs a device-info read,
+a state read, the batched request and up to 3 s waiting for the activation flag,
+all before the write is attempted and all inside the command budget. On a lamp
+where the connect alone is marginal, that is what turns a working command into a
+reported failure. The reconnect poll notices a link nothing has primed
+(`_primed_client`) and fetches the properties afterwards, off the command's
+critical path.
+
+**A failed write is checked against what the device reports before it is
+believed.** Writes use write-with-response, and on a marginal link it is the
+*acknowledgement* that goes missing: measured on a real G7 at RSSI −88, both
+attempts of a `light.turn_on` raised `GATT Protocol Error: Unlikely Error` while
+the lamp lit and notified its new state 32 ms before the error surfaced. So on
+failure the coordinator waits up to `_CONFIRM_TIMEOUT` (2 s) for the device to
+report the state the command asked for, and stays quiet if it does. Only keys in
+`STATE_KEYS` are compared — a mode command also carries fixed parameters (`0x2c`,
+`0x32`) the device never reports back. The cost is that a command which really
+did fail takes those 2 s longer to say so.
 
 **A command is capped at `_COMMAND_TIMEOUT` (15 s)**, covering the wait for the
 lock as well as the connect-and-write itself. Without that ceiling an unreachable

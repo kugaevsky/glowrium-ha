@@ -25,8 +25,13 @@ type GlowriumConfigEntry = ConfigEntry[GlowriumCoordinator]
 async def async_setup_entry(hass: HomeAssistant, entry: GlowriumConfigEntry) -> bool:
     """Set up Glowrium from a config entry."""
     coordinator = GlowriumCoordinator(hass, entry.data[CONF_ADDRESS], entry.title)
-    await coordinator.async_start()
+    # Published before it is started, not after: async_start registers the
+    # bluetooth callbacks and the reconnect poll, so a setup cancelled part-way
+    # through it would otherwise leave a live coordinator that async_unload_entry
+    # cannot reach - one more of them competing for the single BLE connection on
+    # every cancelled attempt.
     entry.runtime_data = coordinator
+    await coordinator.async_start(entry)
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
     return True
 

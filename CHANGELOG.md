@@ -15,13 +15,39 @@ All notable changes to this project are documented here. The format is based on
   lamp still responded to commands. The pairs that did arrive are now kept. Thanks
   to [@pentafive](https://github.com/pentafive), who diagnosed this on a G8 and sent
   the fix ([#5](https://github.com/kugaevsky/glowrium-ha/pull/5)).
-- **State is primed by reading `facebd02` instead of asking the lamp to report.**
-  One read returns the whole property map. The old request-write is unreliable on
-  some models — a G8 answers it with ATT `Insufficient authorization`, a
-  not-connected error or a timeout, and drops the link while doing so — and because
-  the connect path also runs from the command path, that tore down the connection on
-  every command. The request is now only a fallback, tried once and never re-sent
-  after a rejection.
+- **A command that the lamp actually carried out is no longer reported as failed.**
+  Writes ask for an acknowledgement, and on a weak signal it is the acknowledgement
+  that goes missing — so the lamp switched, told Home Assistant its new state, and
+  the user got an error toast anyway while watching the light change. A failed write
+  now waits up to 2 s for the device to report the state it was asked for, and stays
+  quiet if it does. A command that genuinely failed still reports the error, 2 s
+  later than before.
+- **Commands are no longer slowed down by fetching state.** A command now connects
+  and writes; the property fetch that used to run first — a device-info read, a
+  state read, the batched request and a wait for the activation flag, all inside the
+  command's own time budget — happens afterwards in the background. On a lamp with a
+  marginal signal that fetch was the difference between a command working and being
+  reported as failed.
+- **Reloading the integration is quick again.** Unloading waited for whatever connect
+  currently held the connection lock, which on an unreachable lamp meant the best
+  part of ten seconds.
+- **The config entry no longer hangs in "setup in progress" when the lamp is out of
+  range.** The initial connect and the background reconnect share a lock, and
+  neither had a deadline: with the lamp unreachable, the reconnect could hold the
+  lock while setup waited behind it forever, so the integration never finished
+  loading and never reached a retry either. Connects are now capped at 20 s
+  (including the wait for the lock) and the reconnect poll starts only after the
+  first attempt, so the entry comes up with its entities unavailable and reconnects
+  in the background as it always did.
+- **State is primed by reading `facebd02` before asking the lamp to report.** One
+  read fills most of the property map in a single cheap round trip. It does not
+  carry everything, though — measured on real hardware it stops at `0x15`, so the
+  indicator, lighting mode, ramp and DST still come from the request, which is sent
+  unless the read already covered every key. A model that refuses the request is
+  left alone after three consecutive refusals, and only for ten minutes: on a weak
+  signal a dropped link is indistinguishable from a refusal, so giving up on the
+  first one — or giving up for the whole session — costs a perfectly good lamp four
+  of its properties until Home Assistant is restarted.
 - **Changing one schedule field no longer overwrites the other four.** The `0x11`
   slot packs the enabled flag, both times, brightness and fade into a single write,
   so substituting a default to change one of them silently rewrote the rest and
