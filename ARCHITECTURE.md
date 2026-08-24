@@ -112,8 +112,10 @@ whatever comes back. It then *writes* the raw bytes of `STATE_KEYS` (a tuple of
 property ids) to the same characteristic — asking the lamp to report them —
 unless the read happened to carry every key already.
 
-> ⚠️ **The read does not return the whole property map.** Measured on real
-> hardware, it carries only the low property block, up to `0x15`. The indicator
+> ⚠️ **The read does not return the whole property map.** Observed on a G7 and
+> reported for a G8 (issue #3): it carries only the low property block, up to
+> `0x15`. Treat that boundary as an observation on two devices, not as a
+> documented firmware guarantee. The indicator
 > (`0x17`), lighting mode (`0x2b`), ramp (`0x2f`) and DST (`0x35`) are **not** in
 > it and arrive solely through the `STATE_KEYS` request. Skipping the request
 > after a successful read leaves those four entities `unknown` for the whole
@@ -345,12 +347,20 @@ Establishing a connection (`_async_ensure_connected`, serialized by an
 notifications, reads device-info once, primes state by reading `facebd02` and
 then requesting whatever keys that read did not carry, and runs activation if
 needed. **The whole thing is capped at `_CONNECT_TIMEOUT` (20 s), including the
-wait for the lock** — setup awaits this same path, so without a ceiling a lamp
-that is out of range leaves the config entry stuck in "setup in progress"
-indefinitely instead of coming up with its entities unavailable. For the same
-reason the reconnect poll is armed *after* the first connect attempt, not before
-it: it takes the same lock, and arming it first lets it hold setup behind a
-connect of its own. It caps `establish_connection` at `_CONNECT_ATTEMPTS` (2) rather than
+wait for the lock**, and deliberately shorter than `_COMMAND_TIMEOUT`: a
+background connect holds the lock while a command waits for it inside its own
+budget, so a holder allowed longer than the waiter makes a switch press fail on
+a reachable lamp. It is shorter than `_RECONNECT_INTERVAL` too, so priming
+spawned by one poll tick finishes before the next.
+
+**Setup does not wait for any of this.** The first connect is a background task
+tied to the config entry, so `async_setup_entry` returns in milliseconds whether
+or not the lamp answers. It used to be awaited, which left the entry in "setup
+in progress" for as long as the connect took — and a reload landing inside that
+window cancelled the setup and left the entry in `setup_error`. Availability
+follows advertisement presence, so an advertising lamp comes up **available with
+its entities `unknown`** until the first state arrives; that blip is the cost of
+not blocking setup. It caps `establish_connection` at `_CONNECT_ATTEMPTS` (2) rather than
 the library default of 4: against an unreachable device each attempt can burn a
 20 s bleak timeout plus a backoff, all while the lock is held — and the poll above
 comes round again in 30 s anyway.
@@ -371,11 +381,14 @@ critical path.
 
 **A failed write is checked against what the device reports before it is
 believed.** Writes use write-with-response, and on a marginal link it is the
-*acknowledgement* that goes missing: measured on a real G7 at RSSI −88, both
+*acknowledgement* that goes missing: observed once on a G7 at RSSI −88, both
 attempts of a `light.turn_on` raised `GATT Protocol Error: Unlikely Error` while
 the lamp lit and notified its new state 32 ms before the error surfaced. So on
 failure the coordinator waits up to `_CONFIRM_TIMEOUT` (2 s) for the device to
-report the state the command asked for, and stays quiet if it does. Only keys in
+report the state the command asked for, and stays quiet if it does. The report
+must be **newer than the write** — the state mirror is never invalidated, so
+matching a stale mirror would vouch for a write that never landed — and the
+check only runs when a write actually reached the characteristic. Only keys in
 `STATE_KEYS` are compared — a mode command also carries fixed parameters (`0x2c`,
 `0x32`) the device never reports back. The cost is that a command which really
 did fail takes those 2 s longer to say so.
