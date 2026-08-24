@@ -23,7 +23,6 @@ from custom_components.glowrium.const import (
     KEY_TIMER,
     NOTIFY_UUID,
     STATE_KEYS,
-    TIMER_BRIGHTNESS,
     TIMER_DEFAULT,
     TIMER_START_H,
     TIMER_START_M,
@@ -546,14 +545,23 @@ async def test_schedule_setters_refuse_when_slot_unread(hass: HomeAssistant) -> 
 
 
 async def test_schedule_setters_work_once_slot_is_known(hass: HomeAssistant) -> None:
-    """With the slot read, a setter changes only its own field."""
+    """With the slot read, a setter changes only its own field.
+
+    The slot below is deliberately unlike TIMER_DEFAULT in every byte a setter
+    could clobber: a fixture that shares the enabled flag or the brightness with
+    the default cannot tell "preserved the user's value" from "substituted the
+    default", which is the regression this exists to catch.
+    """
     coordinator, client = _connected_coordinator(hass)
-    coordinator.state[KEY_TIMER] = bytes.fromhex("010200ff0a121212640000")
+    slot = bytes.fromhex("000300fe091111115a0102")
+    assert slot != TIMER_DEFAULT
+    coordinator.state[KEY_TIMER] = slot
     await coordinator.async_set_timer_start(7, 30)
     written = cbor.decode(client.write_gatt_char.await_args_list[-1].args[1])[KEY_TIMER]
-    assert written[TIMER_START_H], written[TIMER_START_M] == (7, 30)
-    assert written[0] == 0x01  # enabled flag preserved, not forced
-    assert written[TIMER_BRIGHTNESS] == 0x64  # brightness untouched
+    assert (written[TIMER_START_H], written[TIMER_START_M]) == (7, 30)
+    # Every other byte is the user's, untouched.
+    untouched = [i for i in range(len(slot)) if i not in (TIMER_START_H, TIMER_START_M)]
+    assert [written[i] for i in untouched] == [slot[i] for i in untouched]
 
 
 async def test_ramp_refuses_when_lighting_mode_unread(hass: HomeAssistant) -> None:
@@ -832,3 +840,33 @@ async def test_unload_does_not_wait_out_a_connect(
     finally:
         coordinator._lock.release()
     assert coordinator._client is None
+
+
+async def test_a_device_report_reaches_the_entities(hass: HomeAssistant) -> None:
+    """Ingesting a frame must notify listeners, not just update the mirror.
+
+    Entities re-render from a coordinator listener. Updating `state` without
+    firing them leaves every entity in Home Assistant showing stale values
+    while the coordinator quietly knows better - invisible in any test that
+    inspects `state` directly.
+    """
+    coordinator, _ = _connected_coordinator(hass)
+    fired: list[int] = []
+    remove = coordinator.async_add_listener(lambda: fired.append(1))
+
+    coordinator._ingest(cbor.encode({KEY_POWER: True}))
+    assert fired == [1]
+
+    remove()
+    coordinator._ingest(cbor.encode({KEY_POWER: False}))
+    assert fired == [1]  # and a removed listener stops hearing about it
+
+
+async def test_a_command_reaches_the_entities(hass: HomeAssistant) -> None:
+    """A successful command notifies listeners too, on its optimistic echo."""
+    coordinator, _ = _connected_coordinator(hass)
+    fired: list[int] = []
+    coordinator.async_add_listener(lambda: fired.append(1))
+
+    await coordinator.async_set_power(True)
+    assert fired == [1]
