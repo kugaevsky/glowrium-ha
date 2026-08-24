@@ -130,3 +130,21 @@ def test_trailing_bytes_are_rejected() -> None:
         cbor.decode(bytes.fromhex("a114f4081832"))
     with pytest.raises(ValueError, match="trailing bytes"):
         cbor.decode_frame(bytes.fromhex("a106f5deadbeef"))
+
+
+def test_trailing_bytes_raise_their_own_type() -> None:
+    """Trailing bytes are distinguishable from a merely malformed frame.
+
+    The coordinator reports them separately, because on a model that never
+    produced them before they mean something changed. Still a ValueError, so
+    callers that only care that decoding failed keep working.
+    """
+    with pytest.raises(cbor.TrailingBytesError) as err:
+        cbor.decode_frame(bytes.fromhex("a106f5deadbeef"))
+    assert err.value.count == 4
+    assert isinstance(err.value, ValueError)
+
+    # A truncated frame is NOT this error - nothing was left over.
+    with pytest.raises((ValueError, IndexError)) as other:
+        cbor.decode(bytes.fromhex("a306f508"))
+    assert not isinstance(other.value, cbor.TrailingBytesError)

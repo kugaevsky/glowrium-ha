@@ -2,6 +2,7 @@
 
 import asyncio
 from datetime import datetime
+import logging
 from unittest.mock import AsyncMock, MagicMock
 
 from bleak.exc import BleakError
@@ -537,3 +538,43 @@ async def test_command_budget_covers_waiting_for_the_lock(
     finally:
         coordinator._lock.release()
     assert err.value.translation_key == "cannot_connect"
+
+
+async def test_trailing_bytes_are_reported_as_themselves(
+    hass: HomeAssistant, caplog: pytest.LogCaptureFixture
+) -> None:
+    """A frame with trailing bytes is warned about once, not buried in debug.
+
+    Rejecting these is what #5 changed, so on a model whose frames were always
+    fully consumed this is the regression that change risks - it has to be
+    visible as itself rather than as a generic undecodable frame.
+    """
+    coordinator = GlowriumCoordinator(hass, "AA:BB:CC:DD:EE:FF", "Glowrium-G7")
+    frame = bytes.fromhex("a106f5deadbeef")  # {6: True} plus 4 stray bytes
+
+    with caplog.at_level(logging.DEBUG, logger=coordinator_module.__name__):
+        assert coordinator._ingest(frame) is False
+        assert not coordinator.state  # the frame is still rejected wholesale
+
+        warnings = [r for r in caplog.records if r.levelno == logging.WARNING]
+        assert len(warnings) == 1
+        assert "4 trailing bytes" in warnings[0].getMessage()
+        assert frame.hex() in warnings[0].getMessage()
+        assert "Undecodable frame" not in caplog.text
+
+        # A second such frame must not warn again - notifications are constant.
+        caplog.clear()
+        assert coordinator._ingest(frame) is False
+        assert not [r for r in caplog.records if r.levelno == logging.WARNING]
+        assert "trailing bytes" in caplog.text  # still recorded, at debug
+
+
+async def test_malformed_frame_is_not_reported_as_trailing_bytes(
+    hass: HomeAssistant, caplog: pytest.LogCaptureFixture
+) -> None:
+    """A truncated frame keeps the generic message and raises no warning."""
+    coordinator = GlowriumCoordinator(hass, "AA:BB:CC:DD:EE:FF", "Glowrium-G7")
+    with caplog.at_level(logging.DEBUG, logger=coordinator_module.__name__):
+        assert coordinator._ingest(bytes.fromhex("81")) is False
+    assert "Undecodable frame" in caplog.text
+    assert not [r for r in caplog.records if r.levelno == logging.WARNING]

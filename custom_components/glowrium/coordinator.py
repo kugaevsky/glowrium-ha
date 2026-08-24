@@ -125,6 +125,9 @@ class GlowriumCoordinator:
         # Set once the device rejects the batched state request, so it is not
         # re-sent on every reconnect (and every command) - see _request_state.
         self._state_request_rejected = False
+        # Set once a frame has been rejected for trailing bytes, so the warning
+        # is raised once per session instead of on every notification.
+        self._trailing_warned = False
 
     @property
     def activated(self) -> bool | None:
@@ -431,6 +434,35 @@ class GlowriumCoordinator:
                 err,
             )
 
+    def _log_trailing_bytes(self, data: bytes, count: int) -> None:
+        """Report a frame rejected for trailing bytes: once loudly, then quietly.
+
+        Notifications arrive continuously, so an unconditional warning would
+        flood the log; one per session is enough to surface the problem while
+        the hex dump below gives whoever reports it everything needed to decode
+        the frame by hand.
+        """
+        if self._trailing_warned:
+            _LOGGER.debug(
+                "%s: frame %s again carries %d trailing bytes",
+                self.address,
+                data.hex(),
+                count,
+            )
+            return
+        self._trailing_warned = True
+        _LOGGER.warning(
+            "%s (model %s, firmware %s) sent a frame with %d trailing bytes "
+            "and it was dropped: %s. The frame declared less than it carried, "
+            "so accepting the remainder could mean acting on a corrupt state. "
+            "Please report this frame - it is exactly the hex dump needed",
+            self.address,
+            self.model_id or "unknown",
+            self.sw_version or "unknown",
+            count,
+            data.hex(),
+        )
+
     def _ingest(self, data: bytes) -> bool:
         """Merge a CBOR property map from the device into the state mirror.
 
@@ -440,6 +472,14 @@ class GlowriumCoordinator:
         """
         try:
             decoded, short = cbor.decode_frame(data)
+        except cbor.TrailingBytesError as err:
+            # Reported apart from a merely malformed frame, and loudly the first
+            # time: rejecting these is what changed in #5, and on a model whose
+            # frames were always fully consumed before, this is the regression
+            # that change risks. Buried in "Undecodable frame" at debug level it
+            # would never be noticed.
+            self._log_trailing_bytes(data, err.count)
+            return False
         except (ValueError, IndexError) as err:
             _LOGGER.debug("Undecodable frame %s: %s", data.hex(), err)
             return False
