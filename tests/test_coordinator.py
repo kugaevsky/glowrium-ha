@@ -1526,3 +1526,32 @@ async def test_a_link_that_answers_nothing_is_dropped(hass: HomeAssistant) -> No
 
     assert coordinator._client is None
     assert coordinator._is_connected is False
+
+
+async def test_a_connect_whose_read_fails_is_not_primed_either(
+    hass: HomeAssistant, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The rule holds on the connect path too, not just when the poll primes.
+
+    A link established but never read from is the same wedged link either way;
+    marking it primed here would stop the poll going back for the properties
+    just as surely.
+    """
+    coordinator, client = _connected_coordinator(hass)
+    coordinator._client = None
+    client.is_connected = True
+    client.start_notify = AsyncMock()
+    client.read_gatt_char = AsyncMock(side_effect=BleakError("Not connected"))
+    client.write_gatt_char = AsyncMock(side_effect=BleakError("Not connected"))
+    monkeypatch.setattr(
+        coordinator_module, "establish_connection", AsyncMock(return_value=client)
+    )
+
+    def _in_range() -> object:
+        return object()
+
+    coordinator._ble_device = _in_range
+
+    await coordinator._connect_locked()
+
+    assert coordinator._primed_client is not client
