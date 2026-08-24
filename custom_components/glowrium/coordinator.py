@@ -6,12 +6,14 @@ import asyncio
 from collections.abc import Callable
 from datetime import datetime, time, timedelta
 import logging
+from time import monotonic
 from typing import Any
 
 from bleak.backends.device import BLEDevice
 from bleak.exc import BleakError
 from bleak_retry_connector import BleakClientWithServiceCache, establish_connection
 from homeassistant.components import bluetooth
+from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers.event import async_track_time_interval
@@ -68,6 +70,35 @@ _CONNECT_ATTEMPTS = 2
 # Hard ceiling on one user-facing command, so a button reports a clear failure
 # in seconds instead of appearing to hang while the retries stack up.
 _COMMAND_TIMEOUT = 15.0
+# Ceiling on a background connect, including the wait for _lock. Without it a
+# connect to an unreachable device holds the lock indefinitely: setup awaits
+# this same path, so the entry hangs in "setup in progress" forever rather than
+# coming up with its entities unavailable, and any queued command starves behind
+# it. Entity availability follows advertisement presence, not the GATT link, so
+# giving up here costs nothing - the reconnect poll comes round again in 30 s.
+_CONNECT_TIMEOUT = 20.0
+# How long a failed command waits for the device to report the state it asked
+# for before the failure is believed. A write-with-response on a marginal link
+# can reach the lamp and be acted on while the acknowledgement is lost, which
+# bleak reports as failure - measured on a real G7, the confirming notification
+# arrived 22-32 ms BEFORE the error was raised, so this is grace for a slower
+# link rather than a wait anyone should routinely pay.
+_CONFIRM_TIMEOUT = 2.0
+# Ceiling on the disconnect during unload, so reloading the integration does
+# not wait out whatever connect currently holds the lock.
+_STOP_TIMEOUT = 3.0
+# The batched state request is muted after this many consecutive failures. One
+# failure means nothing on a weak link - a dropped connection surfaces as the
+# same BleakError as an outright refusal - and giving up after one leaves every
+# property outside the connect-time read unread.
+_STATE_REQUEST_ATTEMPTS = 3
+# ...and muted only for this long, not for the session. A model that genuinely
+# refuses the request must not have its link torn down on every connect, but a
+# lamp on a weak signal fails the same way and then recovers: measured on a real
+# G7, three consecutive failures accumulated 70 s after start-up purely from a
+# bad link, which permanently cost it four properties until Home Assistant was
+# restarted. Muting expires so that heals itself.
+_STATE_REQUEST_COOLDOWN = 600.0
 
 
 def _encode_device_time(now: datetime | None = None) -> bytes:
@@ -122,12 +153,25 @@ class GlowriumCoordinator:
         self._present = False
         self._reconnecting = False
         self._activation_checked = False
-        # Set once the device rejects the batched state request, so it is not
-        # re-sent on every reconnect (and every command) - see _request_state.
-        self._state_request_rejected = False
+        # The batched state request is muted until this time after a run of
+        # failures, rather than for the session - see _request_state.
+        self._state_request_muted_until = 0.0
+        self._state_request_failures = 0
+        # The client whose state has been primed. A command connects without
+        # priming (see _connect_locked), so this is how the poll notices there
+        # is a connection whose properties were never fetched.
+        self._primed_client: BleakClientWithServiceCache | None = None
         # Set once a frame has been rejected for trailing bytes, so the warning
         # is raised once per session instead of on every notification.
         self._trailing_warned = False
+        # Set whenever the device reports state, so a command awaiting
+        # confirmation wakes on the report instead of polling for it.
+        self._state_reported = asyncio.Event()
+
+    @property
+    def _state_request_muted(self) -> bool:
+        """True while the batched state request is in its post-failure cooldown."""
+        return monotonic() < self._state_request_muted_until
 
     @property
     def activated(self) -> bool | None:
@@ -244,8 +288,18 @@ class GlowriumCoordinator:
         for update_callback in list(self._listeners):
             update_callback()
 
-    async def async_start(self) -> None:
-        """Watch for the device and keep it connected."""
+    async def async_start(self, entry: ConfigEntry) -> None:
+        """Watch for the device and keep it connected.
+
+        Returns as soon as the watchers are in place. The first connect runs as
+        a background task rather than being awaited: setup awaits this method,
+        and a lamp that is out of range would otherwise hold the entry open for
+        the whole connect budget - long enough for a reload to land inside it,
+        cancel the setup and leave the entry in ``setup_error``. Waiting buys
+        nothing, because entity availability follows advertisement presence
+        rather than the GATT link. Tying the task to ``entry`` means it is
+        cancelled on unload, so a half-finished connect cannot outlive us.
+        """
         self._cancel_bluetooth = bluetooth.async_register_callback(
             self.hass,
             self._async_on_advertisement,
@@ -259,11 +313,19 @@ class GlowriumCoordinator:
         self._present = bluetooth.async_address_present(
             self.hass, self.address, connectable=True
         )
+        entry.async_create_background_task(
+            self.hass,
+            self._async_initial_connect(),
+            f"glowrium initial connect {self.address}",
+        )
         # Advertisement callbacks are throttled, so also poll: reconnect within
         # _RECONNECT_INTERVAL after any drop, regardless of advertisement timing.
         self._cancel_poll = async_track_time_interval(
             self.hass, self._async_poll_reconnect, _RECONNECT_INTERVAL
         )
+
+    async def _async_initial_connect(self) -> None:
+        """Connect once at start-up, off the setup path."""
         try:
             await self._async_ensure_connected()
         except (BleakError, TimeoutError) as err:
@@ -280,13 +342,19 @@ class GlowriumCoordinator:
         if self._cancel_poll is not None:
             self._cancel_poll()
             self._cancel_poll = None
-        async with self._lock:
-            if self._client is not None:
-                try:
-                    await self._client.disconnect()
-                except BleakError as err:
-                    _LOGGER.debug("Disconnect of %s failed: %s", self.address, err)
-                self._client = None
+        # Bounded: a connect in flight holds _lock for up to _CONNECT_TIMEOUT,
+        # and unload waiting behind it is what made reloading the integration
+        # take the best part of ten seconds. The watchers above are already
+        # cancelled, so dropping the client without a clean disconnect is safe -
+        # the link dies with the reference.
+        client, self._client = self._client, None
+        if client is None:
+            return
+        try:
+            async with asyncio.timeout(_STOP_TIMEOUT), self._lock:
+                await client.disconnect()
+        except (BleakError, TimeoutError) as err:
+            _LOGGER.debug("Disconnect of %s failed: %s", self.address, err)
 
     @callback
     def _async_on_advertisement(
@@ -314,9 +382,30 @@ class GlowriumCoordinator:
 
     @callback
     def _async_poll_reconnect(self, _now: Any) -> None:
-        if not self._is_connected and not self._reconnecting:
-            self._reconnecting = True
-            self.hass.async_create_task(self._async_reconnect())
+        if not self._is_connected:
+            if not self._reconnecting:
+                self._reconnecting = True
+                self.hass.async_create_task(self._async_reconnect())
+            return
+        # Connected, but by a command, which skips priming to stay fast. Fetch
+        # the properties now, off the command's critical path.
+        if self._client is not self._primed_client:
+            self.hass.async_create_task(self._async_prime())
+
+    async def _async_prime(self) -> None:
+        """Fetch device properties for a link that was established by a command."""
+        try:
+            async with asyncio.timeout(_CONNECT_TIMEOUT), self._lock:
+                client = self._client
+                if client is None or client is self._primed_client:
+                    return
+                await self._request_state(client)
+                await self._async_activate_if_needed()
+                self._primed_client = client
+        except (BleakError, TimeoutError) as err:
+            _LOGGER.debug("Priming state of %s failed: %s", self.address, err)
+        else:
+            self._async_notify_listeners()
 
     async def _async_reconnect(self) -> None:
         try:
@@ -332,18 +421,33 @@ class GlowriumCoordinator:
         )
 
     async def _async_ensure_connected(self) -> None:
-        """Connect if not already connected (acquires the connection lock)."""
+        """Connect if not already connected, under a bounded wait for the lock.
+
+        Every background connect - setup, the reconnect poll and the
+        advertisement callback - funnels through here, so the ceiling applies to
+        all of them. It has to cover the wait for ``_lock`` too: the starvation
+        that hung setup was one holder grinding through connect attempts to an
+        unreachable lamp while another waited on the lock with no deadline.
+        """
         if self._is_connected:
             return
-        async with self._lock:
+        async with asyncio.timeout(_CONNECT_TIMEOUT), self._lock:
             await self._connect_locked()
 
-    async def _connect_locked(self) -> None:
-        """Establish the GATT link and prime device state.
+    async def _connect_locked(self, *, prime: bool = True) -> None:
+        """Establish the GATT link, and unless told otherwise prime the state.
 
         The caller must hold ``_lock``; ``_async_ensure_connected`` and the
         write path both funnel through here so a command can never race the
         connect/reconnect the device performs underneath.
+
+        A command passes ``prime=False``. It needs the link and its own write,
+        nothing else - and priming is expensive: a device-info read, a state
+        read, the batched request, and up to 3 s waiting for the activation
+        flag, all before the write is even attempted and all inside the command
+        budget. On a lamp where the connect alone is marginal, that is what
+        turns a working command into a reported failure. The poll picks the
+        priming up afterwards (see ``_async_poll_reconnect``).
         """
         if self._is_connected:
             return
@@ -369,8 +473,11 @@ class GlowriumCoordinator:
                 self.device_info = _parse_device_info(bytes(raw))
             except (BleakError, TimeoutError) as err:
                 _LOGGER.debug("Device-info read from %s failed: %s", self.address, err)
+        if not prime:
+            return
         await self._request_state(client)
         await self._async_activate_if_needed()
+        self._primed_client = client
         self._async_notify_listeners()
 
     def _require_read(self, value: Any, translation_key: str) -> Any:
@@ -394,45 +501,68 @@ class GlowriumCoordinator:
         return value
 
     async def _request_state(self, client: BleakClientWithServiceCache) -> None:
-        """Prime the state mirror, preferring a read over a request.
+        """Prime the state mirror: read first, then ask for whatever is missing.
 
-        ``NOTIFY_UUID`` is readable, and one read returns the device's whole
-        property map in a single response. That is both cheaper and sturdier
-        than asking the device to report: the request-and-notify path is subject
-        to the map being split across notifications (see ``_ingest``), and the
-        request write itself is unreliable on some models - a G8
-        (``Glowrium-C064``) answers it with ATT ``Insufficient authorization``,
-        a not-connected error, or a timeout depending on route and timing, and
-        drops the link while doing so.
+        ``NOTIFY_UUID`` is readable, and one read returns a property map in a
+        single response - cheaper and sturdier than asking the device to report,
+        since the request-and-notify path is subject to the map being split
+        across notifications (see ``_ingest``), and the request write itself is
+        unreliable on some models: a G8 (``Glowrium-C064``) answers it with ATT
+        ``Insufficient authorization``, a not-connected error, or a timeout
+        depending on route and timing, and drops the link while doing so.
 
-        Since ``_connect_locked`` also runs from the command path, a request
-        that tears down the link would do so on every command. So: read first,
-        and only fall back to the request if the read gave us nothing - once. A
-        device that rejects the request is never asked again this session.
+        **But the read does not return everything.** Measured on real hardware,
+        it carries only the low property block - up to 0x15 - so the indicator
+        (0x17), lighting mode (0x2b), ramp (0x2f) and DST (0x35) never appear in
+        it. Treating a successful read as the whole story left those four unread
+        for the entire session. So the read primes what it can, and the request
+        still goes out unless the read happened to cover every key we want.
+
+        A model that genuinely refuses the request is stopped from being asked
+        again, but only after ``_STATE_REQUEST_ATTEMPTS`` consecutive failures:
+        a dropped link raises the same error as a refusal, and on a weak link
+        the first attempt fails routinely.
         """
         try:
             raw = bytes(await client.read_gatt_char(NOTIFY_UUID))
         except (BleakError, TimeoutError) as err:
             _LOGGER.debug("%s state read failed: %s", self.address, err)
         else:
-            if self._ingest(raw):
-                return
-        if self._state_request_rejected:
+            self._ingest(raw)
+        if all(key in self.state for key in STATE_KEYS):
+            return  # the read covered everything; no need to ask as well
+        if self._state_request_muted:
             return
         try:
             await client.write_gatt_char(NOTIFY_UUID, bytes(STATE_KEYS), response=True)
         except (BleakError, TimeoutError) as err:
-            self._state_request_rejected = True
+            self._state_request_failures += 1
+            if self._state_request_failures < _STATE_REQUEST_ATTEMPTS:
+                _LOGGER.debug(
+                    "%s state request failed (%d/%d): %s",
+                    self.address,
+                    self._state_request_failures,
+                    _STATE_REQUEST_ATTEMPTS,
+                    err,
+                )
+                return
+            self._state_request_muted_until = monotonic() + _STATE_REQUEST_COOLDOWN
+            self._state_request_failures = 0
             _LOGGER.warning(
-                "%s (model %s, firmware %s) could not be read and rejected the "
-                "state request: %s. Not asking again this session - commands "
-                "will still work, but reported state stays optimistic. Please "
-                "report this model",
+                "%s (model %s, firmware %s) rejected the state request %d times "
+                "in a row, most recently: %s. Pausing it for %d minutes - "
+                "commands still work, but properties the connect-time read does "
+                "not carry stay unknown until then. If this repeats on a lamp "
+                "with a good signal, please report this model",
                 self.address,
                 self.model_id or "unknown",
                 self.sw_version or "unknown",
+                _STATE_REQUEST_ATTEMPTS,
                 err,
+                int(_STATE_REQUEST_COOLDOWN // 60),
             )
+        else:
+            self._state_request_failures = 0
 
     def _log_trailing_bytes(self, data: bytes, count: int) -> None:
         """Report a frame rejected for trailing bytes: once loudly, then quietly.
@@ -492,6 +622,7 @@ class GlowriumCoordinator:
                 len(decoded),
             )
         self.state.update(decoded)
+        self._state_reported.set()
         # Seed the remembered ramp from the device the first time we see it, so
         # it survives an HA restart (the device persists its own ramp). Guard on
         # truthiness, not "is not None": an empty ramp would otherwise latch and
@@ -545,7 +676,7 @@ class GlowriumCoordinator:
             async with asyncio.timeout(_COMMAND_TIMEOUT), self._lock:
                 for attempt in range(1, _WRITE_ATTEMPTS + 1):
                     try:
-                        await self._connect_locked()
+                        await self._connect_locked(prime=False)
                         await self._write_raw(payload)
                         break
                     except (BleakError, TimeoutError) as err:
@@ -558,13 +689,57 @@ class GlowriumCoordinator:
                             err,
                         )
         except (BleakError, TimeoutError) as err:
-            _LOGGER.debug("Command to %s failed: %s", self.address, err)
-            raise HomeAssistantError(
-                translation_domain=DOMAIN,
-                translation_key="cannot_connect",
-                translation_placeholders={"name": self.name},
-            ) from err
+            if await self._async_device_confirms(payload):
+                _LOGGER.debug(
+                    "Command to %s reported %s, but the device reports the state "
+                    "it asked for - treating it as delivered",
+                    self.address,
+                    err,
+                )
+            else:
+                _LOGGER.debug("Command to %s failed: %s", self.address, err)
+                raise HomeAssistantError(
+                    translation_domain=DOMAIN,
+                    translation_key="cannot_connect",
+                    translation_placeholders={"name": self.name},
+                ) from err
         self._async_notify_listeners()
+
+    async def _async_device_confirms(self, payload: dict[int, Any]) -> bool:
+        """Return True if the device reports the state ``payload`` asked for.
+
+        A write-with-response can reach the lamp, be acted on, and still fail:
+        on a weak link the acknowledgement is what goes missing, so bleak raises
+        while the lamp does exactly as it was told and notifies its new state.
+        Reporting that as a failure told the user the command had not worked
+        while they watched the light change.
+
+        The notification path is an independent channel, so it settles the
+        question the acknowledgement could not. Only keys in ``STATE_KEYS`` are
+        compared - a mode command also carries fixed parameters (0x2c, 0x32) the
+        device never reports back, and requiring those to match would mean no
+        mode command could ever confirm.
+
+        This says the device's reported state now matches the request, which is
+        not quite the same as the write having landed: a command that asks for
+        the state the lamp is already in confirms immediately. That is a benign
+        confusion - the lamp ends up as the user asked either way - and it is
+        the reason this only runs once a write has already failed.
+        """
+        tracked = {key: value for key, value in payload.items() if key in STATE_KEYS}
+        if not tracked:
+            return False
+        try:
+            async with asyncio.timeout(_CONFIRM_TIMEOUT):
+                while True:
+                    # Cleared before the check, never after: a report arriving
+                    # between the two would otherwise be waited past.
+                    self._state_reported.clear()
+                    if all(self.state.get(k) == v for k, v in tracked.items()):
+                        return True
+                    await self._state_reported.wait()
+        except TimeoutError:
+            return False
 
     async def _async_activate_if_needed(self) -> None:
         """Bring the device up once if it reports as not yet activated (0x14).
@@ -573,8 +748,8 @@ class GlowriumCoordinator:
         """
         if self._activation_checked:
             return
-        if self._state_request_rejected:
-            # This device never reports its properties, so 0x14 can never
+        if self._state_request_muted:
+            # This device is not reporting its properties, so 0x14 can never
             # arrive. Waiting for it on every connect - and _connect_locked
             # runs from the command path - is pure latency, and a device whose
             # activation flag cannot be read must never be activated blind.
