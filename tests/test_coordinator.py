@@ -1439,3 +1439,24 @@ async def test_background_work_is_tied_to_the_entry(hass: HomeAssistant) -> None
     coordinator._client = MagicMock(is_connected=True)
     coordinator._async_poll_reconnect(None)
     assert len(spawned) == 2  # and so does the priming
+
+
+def test_no_path_holds_the_lock_longer_than_a_command_will_wait() -> None:
+    """The timing constants have to make sense relative to each other.
+
+    Every test that exercises a timeout patches it, so the shipped numbers are
+    otherwise unconstrained - and they interact. A background connect holds the
+    connection lock; a command waits for that same lock inside its own budget.
+    If the holder is allowed longer than the waiter, pressing a switch during a
+    background connect reports failure on a perfectly reachable lamp, having
+    attempted nothing at all.
+    """
+    connect = coordinator_module._CONNECT_TIMEOUT
+    command = coordinator_module._COMMAND_TIMEOUT
+    poll = coordinator_module._RECONNECT_INTERVAL.total_seconds()
+
+    assert connect < command, "a lock holder outlasting the waiter is an inversion"
+    assert connect >= coordinator_module._STOP_TIMEOUT
+    # Priming is spawned from the poll and takes the same lock, so it must be
+    # finished before the next tick or the ticks pile up on top of each other.
+    assert connect < poll

@@ -68,16 +68,24 @@ _WRITE_ATTEMPTS = 2  # the initial write plus one reconnect-and-retry
 # that adds up to minutes while _lock is held, so a queued command cannot even
 # start. Two attempts is enough: the reconnect poll comes round again in 30 s.
 _CONNECT_ATTEMPTS = 2
-# Hard ceiling on one user-facing command, so a button reports a clear failure
-# in seconds instead of appearing to hang while the retries stack up.
+# Ceiling on getting one user-facing command out, so a button reports a clear
+# failure in seconds instead of appearing to hang while the retries stack up.
+# A failed command may then spend up to _CONFIRM_TIMEOUT more deciding whether
+# it failed after all, so the worst a user waits is the sum of the two.
 _COMMAND_TIMEOUT = 15.0
 # Ceiling on a background connect, including the wait for _lock. Without it a
-# connect to an unreachable device holds the lock indefinitely: setup awaits
-# this same path, so the entry hangs in "setup in progress" forever rather than
-# coming up with its entities unavailable, and any queued command starves behind
-# it. Entity availability follows advertisement presence, not the GATT link, so
-# giving up here costs nothing - the reconnect poll comes round again in 30 s.
-_CONNECT_TIMEOUT = 20.0
+# connect to an unreachable device holds the lock indefinitely, and everything
+# else that needs the lock waits behind it with no deadline of its own.
+#
+# It is deliberately SHORTER than _COMMAND_TIMEOUT, and the relationship is the
+# point rather than the number: a background connect holds the lock while a
+# command waits for it inside its own budget, so a holder allowed longer than
+# the waiter means pressing a switch during a background connect reports
+# failure on a reachable lamp, having attempted nothing. It is also shorter
+# than _RECONNECT_INTERVAL, so priming spawned by one poll tick is finished
+# before the next. test_no_path_holds_the_lock_longer_than_a_command_will_wait
+# pins both.
+_CONNECT_TIMEOUT = 10.0
 # How long a failed command waits for the device to report the state it asked
 # for before the failure is believed. A write-with-response on a marginal link
 # can reach the lamp and be acted on while the acknowledgement is lost, which
