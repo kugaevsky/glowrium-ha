@@ -42,3 +42,7 @@ combine-as-imports = true
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 asyncio_mode = "auto"
+# A deadlock here is a real regression class: awaiting the connection lock
+# without a deadline once left the config entry hung forever. Without this
+# such a bug hangs CI instead of failing it.
+timeout = 60
