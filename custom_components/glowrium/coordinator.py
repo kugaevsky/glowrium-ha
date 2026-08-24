@@ -536,9 +536,18 @@ class GlowriumCoordinator:
                 _LOGGER.debug("Device-info read from %s failed: %s", self.address, err)
         if not prime:
             return
-        if await self._request_state(client):
-            await self._async_activate_if_needed()
-            self._primed_client = client
+        if not await self._request_state(client):
+            # Established, but it answers nothing - see _request_state. Drop it
+            # here rather than holding a link that serves nothing until the
+            # poll comes round: the poll rebuilds it either way, and in the
+            # meantime _is_connected would claim a connection a command would
+            # write into before failing.
+            _LOGGER.debug("%s: link answers nothing, dropping", self.address)
+            self._client = None
+            self._async_notify_listeners()
+            return
+        await self._async_activate_if_needed()
+        self._primed_client = client
         self._async_notify_listeners()
 
     def _require_read(self, value: Any, translation_key: str) -> Any:
