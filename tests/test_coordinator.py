@@ -473,8 +473,9 @@ async def test_schedule_setters_refuse_when_slot_unread(hass: HomeAssistant) -> 
         coordinator.async_set_timer_brightness(80),
         coordinator.async_set_timer_gradual(15),
     ):
-        with pytest.raises(HomeAssistantError):
+        with pytest.raises(HomeAssistantError) as err:
             await call
+        assert err.value.translation_key == "schedule_not_read"
     client.write_gatt_char.assert_not_awaited()
 
 
@@ -492,8 +493,9 @@ async def test_schedule_setters_work_once_slot_is_known(hass: HomeAssistant) -> 
 async def test_ramp_refuses_when_lighting_mode_unread(hass: HomeAssistant) -> None:
     """Setting the ramp must not silently reset the lighting mode to index 1."""
     coordinator, client = _connected_coordinator(hass)
-    with pytest.raises(HomeAssistantError):
+    with pytest.raises(HomeAssistantError) as err:
         await coordinator.async_set_ramp(30)
+    assert err.value.translation_key == "lighting_mode_not_read"
     client.write_gatt_char.assert_not_awaited()
 
 

@@ -370,19 +370,23 @@ class GlowriumCoordinator:
         await self._async_activate_if_needed()
         self._async_notify_listeners()
 
-    def _require_read(self, value: Any, field: str) -> Any:
-        """Return ``value``, or raise if the device has not reported ``field``.
+    def _require_read(self, value: Any, translation_key: str) -> Any:
+        """Return ``value``, or raise if the device has not reported it yet.
 
         The schedule slot and the lighting-mode frame are read-modify-write: one
         write carries several fields at once. Substituting a default to change a
         single field silently overwrites the rest with values the user never
         chose, so refuse instead and say why.
+
+        ``translation_key`` names the field in the user's own language. It is a
+        key per field rather than one message with the field name substituted in,
+        because a field name is a translatable noun, not a value.
         """
         if value is None or value == b"":
             raise HomeAssistantError(
-                f"{self.name}: cannot change this yet because the device has not "
-                f"reported its current {field}. It should populate once the lamp "
-                "is connected."
+                translation_domain=DOMAIN,
+                translation_key=translation_key,
+                translation_placeholders={"name": self.name},
             )
         return value
 
@@ -592,7 +596,9 @@ class GlowriumCoordinator:
         mode_value = (
             mode
             if mode is not None
-            else self._require_read(self.state.get(KEY_LIGHTING_MODE), "lighting mode")
+            else self._require_read(
+                self.state.get(KEY_LIGHTING_MODE), "lighting_mode_not_read"
+            )
         )
         # Ramp keeps its default. Setting a mode rewrites ramp on the device
         # regardless, so there is no "leave it alone" option here and falling
@@ -655,24 +661,32 @@ class GlowriumCoordinator:
 
     async def async_set_timer_start(self, hour: int, minute: int) -> None:
         """Set the schedule start time."""
-        slot = self._require_read(protocol.editable_timer_slot(self.state), "schedule")
+        slot = self._require_read(
+            protocol.editable_timer_slot(self.state), "schedule_not_read"
+        )
         slot[TIMER_START_H], slot[TIMER_START_M] = hour, minute
         await self._async_write({KEY_TIMER: bytes(slot)})
 
     async def async_set_timer_end(self, hour: int, minute: int) -> None:
         """Set the schedule end time."""
-        slot = self._require_read(protocol.editable_timer_slot(self.state), "schedule")
+        slot = self._require_read(
+            protocol.editable_timer_slot(self.state), "schedule_not_read"
+        )
         slot[TIMER_END_H], slot[TIMER_END_M] = hour, minute
         await self._async_write({KEY_TIMER: bytes(slot)})
 
     async def async_set_timer_brightness(self, value: int) -> None:
         """Set the schedule brightness (0..100)."""
-        slot = self._require_read(protocol.editable_timer_slot(self.state), "schedule")
+        slot = self._require_read(
+            protocol.editable_timer_slot(self.state), "schedule_not_read"
+        )
         slot[TIMER_BRIGHTNESS] = max(0, min(100, value))
         await self._async_write({KEY_TIMER: bytes(slot)})
 
     async def async_set_timer_gradual(self, minutes: int) -> None:
         """Set the schedule gradual on/off fade duration in minutes."""
-        slot = self._require_read(protocol.editable_timer_slot(self.state), "schedule")
+        slot = self._require_read(
+            protocol.editable_timer_slot(self.state), "schedule_not_read"
+        )
         slot[TIMER_GRADUAL : TIMER_GRADUAL + 2] = protocol.be2_minutes_to_bytes(minutes)
         await self._async_write({KEY_TIMER: bytes(slot)})

@@ -81,6 +81,12 @@
   "exceptions": {
     "cannot_connect": {
       "message": "Der Befehl konnte nicht über Bluetooth an {name} gesendet werden. Das Gerät ist möglicherweise außer Reichweite oder der Bluetooth-Adapter ist ausgelastet; ein Bluetooth-Proxy in der Nähe des Geräts hilft meistens."
+    },
+    "lighting_mode_not_read": {
+      "message": "Änderung noch nicht möglich: {name} hat seinen aktuellen Lichtmodus noch nicht gemeldet. Er erscheint, sobald die Lampe verbunden ist."
+    },
+    "schedule_not_read": {
+      "message": "Änderung noch nicht möglich: {name} hat seinen aktuellen Zeitplan noch nicht gemeldet. Er erscheint, sobald die Lampe verbunden ist."
     }
   }
 }
