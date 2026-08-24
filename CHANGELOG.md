@@ -35,13 +35,16 @@ All notable changes to this project are documented here. The format is based on
   range.** The initial connect and the background reconnect share a lock, and
   neither had a deadline: with the lamp unreachable, the reconnect could hold the
   lock while setup waited behind it forever, so the integration never finished
-  loading and never reached a retry either. Connects are now capped at 20 s
-  (including the wait for the lock) and the reconnect poll starts only after the
-  first attempt, so the entry comes up with its entities unavailable and reconnects
-  in the background as it always did.
+  loading and never reached a retry either. Background connects are now capped
+  (including the wait for the lock), and setup no longer waits for the connect at
+  all — it comes up immediately and connects in the background, so a reload can no
+  longer cancel a setup mid-connect and leave the entry in `setup_error`. The cost
+  is that entities read `unknown` for a moment after a restart until the first
+  state arrives.
 - **State is primed by reading `facebd02` before asking the lamp to report.** One
   read fills most of the property map in a single cheap round trip. It does not
-  carry everything, though — measured on real hardware it stops at `0x15`, so the
+  carry everything, though — observed on a G7 and reported for a G8, it stops at
+  `0x15`, so the
   indicator, lighting mode, ramp and DST still come from the request, which is sent
   unless the read already covered every key. A model that refuses the request is
   left alone after three consecutive refusals, and only for ten minutes: on a weak

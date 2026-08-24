@@ -633,7 +633,7 @@ async def test_trailing_bytes_are_reported_as_themselves(
     frame = bytes.fromhex("a106f5deadbeef")  # {6: True} plus 4 stray bytes
 
     with caplog.at_level(logging.DEBUG, logger=coordinator_module.__name__):
-        assert coordinator._ingest(frame) is False
+        coordinator._ingest(frame)
         assert not coordinator.state  # the frame is still rejected wholesale
 
         warnings = [r for r in caplog.records if r.levelno == logging.WARNING]
@@ -644,7 +644,7 @@ async def test_trailing_bytes_are_reported_as_themselves(
 
         # A second such frame must not warn again - notifications are constant.
         caplog.clear()
-        assert coordinator._ingest(frame) is False
+        coordinator._ingest(frame)
         assert not [r for r in caplog.records if r.levelno == logging.WARNING]
         assert "trailing bytes" in caplog.text  # still recorded, at debug
 
@@ -655,7 +655,7 @@ async def test_malformed_frame_is_not_reported_as_trailing_bytes(
     """A truncated frame keeps the generic message and raises no warning."""
     coordinator = GlowriumCoordinator(hass, "AA:BB:CC:DD:EE:FF", "Glowrium-G7")
     with caplog.at_level(logging.DEBUG, logger=coordinator_module.__name__):
-        assert coordinator._ingest(bytes.fromhex("81")) is False
+        coordinator._ingest(bytes.fromhex("81"))
     assert "Undecodable frame" in caplog.text
     assert not [r for r in caplog.records if r.levelno == logging.WARNING]
 

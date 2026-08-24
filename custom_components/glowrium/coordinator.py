@@ -89,9 +89,9 @@ _CONNECT_TIMEOUT = 10.0
 # How long a failed command waits for the device to report the state it asked
 # for before the failure is believed. A write-with-response on a marginal link
 # can reach the lamp and be acted on while the acknowledgement is lost, which
-# bleak reports as failure - measured on a real G7, the confirming notification
-# arrived 22-32 ms BEFORE the error was raised, so this is grace for a slower
-# link rather than a wait anyone should routinely pay.
+# bleak reports as failure. Observed once on a G7 at RSSI -88: the confirming
+# notification arrived 22-32 ms BEFORE the error was raised, so this is grace
+# for a slower link rather than a wait anyone should routinely pay.
 _CONFIRM_TIMEOUT = 2.0
 # Ceiling on the disconnect during unload, so reloading the integration does
 # not wait out whatever connect currently holds the lock.
@@ -103,10 +103,10 @@ _STOP_TIMEOUT = 3.0
 _STATE_REQUEST_ATTEMPTS = 3
 # ...and muted only for this long, not for the session. A model that genuinely
 # refuses the request must not have its link torn down on every connect, but a
-# lamp on a weak signal fails the same way and then recovers: measured on a real
-# G7, three consecutive failures accumulated 70 s after start-up purely from a
-# bad link, which permanently cost it four properties until Home Assistant was
-# restarted. Muting expires so that heals itself.
+# lamp on a weak signal fails the same way and then recovers: observed on a G7 at
+# RSSI -88, three consecutive failures accumulated about 70 s after start-up
+# purely from a bad link, which permanently cost it four properties until Home
+# Assistant was restarted. Muting expires so that heals itself.
 _STATE_REQUEST_COOLDOWN = 600.0
 
 
@@ -639,12 +639,11 @@ class GlowriumCoordinator:
             data.hex(),
         )
 
-    def _ingest(self, data: bytes) -> bool:
+    def _ingest(self, data: bytes) -> None:
         """Merge a CBOR property map from the device into the state mirror.
 
-        Returns True if any property was taken from ``data``. Shared by the
-        notify callback and the connect-time read so both handle a split map,
-        the remembered ramp and listener notification identically.
+        Shared by the notify callback and the connect-time read so both handle
+        a split map, the remembered ramp and listener notification identically.
         """
         try:
             decoded, short = cbor.decode_frame(data)
@@ -655,12 +654,12 @@ class GlowriumCoordinator:
             # that change risks. Buried in "Undecodable frame" at debug level it
             # would never be noticed.
             self._log_trailing_bytes(data, err.count)
-            return False
+            return
         except (ValueError, IndexError) as err:
             _LOGGER.debug("Undecodable frame %s: %s", data.hex(), err)
-            return False
+            return
         if not isinstance(decoded, dict) or not decoded:
-            return False
+            return
         if short:
             _LOGGER.debug(
                 "%s: property map split across frames; kept %d of them",
@@ -679,7 +678,6 @@ class GlowriumCoordinator:
             if ramp and isinstance(ramp, (bytes, bytearray)):
                 self._desired_ramp = bytes(ramp)
         self._async_notify_listeners()
-        return True
 
     @callback
     def _async_on_disconnect(self, client: BleakClientWithServiceCache) -> None:
@@ -813,15 +811,19 @@ class GlowriumCoordinator:
     async def _async_activate_if_needed(self) -> None:
         """Bring the device up once if it reports as not yet activated (0x14).
 
-        Runs inside the connection lock, right after the initial state request.
+        Runs inside the connection lock, after the state request - which is
+        either a background connect or the priming the poll performs on a link
+        a command established. Never from a command itself: those connect with
+        ``prime=False`` and return before reaching here.
         """
         if self._activation_checked:
             return
         if self._state_request_muted:
             # This device is not reporting its properties, so 0x14 can never
-            # arrive. Waiting for it on every connect - and _connect_locked
-            # runs from the command path - is pure latency, and a device whose
-            # activation flag cannot be read must never be activated blind.
+            # arrive. Waiting for it on every connect is pure latency - and the
+            # wait happens while the lock is held, so it delays anything queued
+            # behind it - while a device whose activation flag cannot be read
+            # must never be activated blind.
             self._activation_checked = True
             return
         # Wait (briefly) for the initial state - including 0x14 - to arrive.
