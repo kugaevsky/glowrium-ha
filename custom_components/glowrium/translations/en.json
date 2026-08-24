@@ -81,6 +81,12 @@
   "exceptions": {
     "cannot_connect": {
       "message": "Failed to send the command to {name} over Bluetooth. The device may be out of range or the Bluetooth adapter busy; a Bluetooth proxy near the device usually fixes this."
+    },
+    "lighting_mode_not_read": {
+      "message": "Cannot change this yet: {name} has not reported its current lighting mode. It should populate once the lamp is connected."
+    },
+    "schedule_not_read": {
+      "message": "Cannot change this yet: {name} has not reported its current schedule. It should populate once the lamp is connected."
     }
   }
 }

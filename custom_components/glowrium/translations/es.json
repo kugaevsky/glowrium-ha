@@ -81,6 +81,12 @@
   "exceptions": {
     "cannot_connect": {
       "message": "No se pudo enviar el comando a {name} por Bluetooth. El dispositivo puede estar fuera de alcance o el adaptador Bluetooth ocupado; un proxy Bluetooth cerca del dispositivo suele solucionarlo."
+    },
+    "lighting_mode_not_read": {
+      "message": "Aún no se puede cambiar: {name} no ha informado de su modo de iluminación actual. Aparecerá cuando la lámpara se conecte."
+    },
+    "schedule_not_read": {
+      "message": "Aún no se puede cambiar: {name} no ha informado de su programación actual. Aparecerá cuando la lámpara se conecte."
     }
   }
 }

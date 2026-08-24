@@ -81,6 +81,12 @@
   "exceptions": {
     "cannot_connect": {
       "message": "无法通过蓝牙向 {name} 发送命令。设备可能超出范围，或蓝牙适配器繁忙；在设备附近部署蓝牙代理通常可以解决此问题。"
+    },
+    "lighting_mode_not_read": {
+      "message": "暂时无法更改：{name} 尚未报告当前的照明模式。灯具连接后即会显示。"
+    },
+    "schedule_not_read": {
+      "message": "暂时无法更改：{name} 尚未报告当前的定时计划。灯具连接后即会显示。"
     }
   }
 }
