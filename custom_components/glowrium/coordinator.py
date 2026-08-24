@@ -20,6 +20,7 @@ from homeassistant.util import dt as dt_util
 from . import cbor, protocol
 from .const import (
     ACTIVATE_MISC_VALUE,
+    DOMAIN,
     DST_OFF,
     DST_ON,
     INFO_UUID,
@@ -59,6 +60,14 @@ from .models import GlowriumModel, resolve_model
 _LOGGER = logging.getLogger(__name__)
 _RECONNECT_INTERVAL = timedelta(seconds=30)
 _WRITE_ATTEMPTS = 2  # the initial write plus one reconnect-and-retry
+# bleak-retry-connector defaults to 4 connect attempts, each of which can sit
+# through a 20 s bleak timeout plus a backoff. Against an unreachable device
+# that adds up to minutes while _lock is held, so a queued command cannot even
+# start. Two attempts is enough: the reconnect poll comes round again in 30 s.
+_CONNECT_ATTEMPTS = 2
+# Hard ceiling on one user-facing command, so a button reports a clear failure
+# in seconds instead of appearing to hang while the retries stack up.
+_COMMAND_TIMEOUT = 15.0
 
 
 def _encode_device_time(now: datetime | None = None) -> bytes:
@@ -343,6 +352,7 @@ class GlowriumCoordinator:
             device,
             self.name,
             disconnected_callback=self._async_on_disconnect,
+            max_attempts=_CONNECT_ATTEMPTS,
         )
         self._client = client
         await client.start_notify(NOTIFY_UUID, self._on_notify)
@@ -479,24 +489,37 @@ class GlowriumCoordinator:
 
         The write runs inside ``_lock`` so it cannot race the ~30-60 min GATT
         churn the device performs; if it still fails (the link dropped
-        mid-command) the connection is rebuilt once and the write retried
-        before the error is surfaced to the caller.
+        mid-command) the connection is rebuilt once and the write retried.
+
+        The whole attempt - including the wait for ``_lock``, which a
+        background reconnect may be holding - is capped by
+        ``_COMMAND_TIMEOUT``, and every failure is reported as a
+        ``HomeAssistantError`` so the user gets a readable message rather than
+        a stack trace after a long hang.
         """
-        async with self._lock:
-            for attempt in range(1, _WRITE_ATTEMPTS + 1):
-                try:
-                    await self._connect_locked()
-                    await self._write_raw(payload)
-                    break
-                except (BleakError, TimeoutError) as err:
-                    self._client = None
-                    if attempt == _WRITE_ATTEMPTS:
-                        raise
-                    _LOGGER.debug(
-                        "Write to %s failed (%s); reconnecting and retrying",
-                        self.address,
-                        err,
-                    )
+        try:
+            async with asyncio.timeout(_COMMAND_TIMEOUT), self._lock:
+                for attempt in range(1, _WRITE_ATTEMPTS + 1):
+                    try:
+                        await self._connect_locked()
+                        await self._write_raw(payload)
+                        break
+                    except (BleakError, TimeoutError) as err:
+                        self._client = None
+                        if attempt == _WRITE_ATTEMPTS:
+                            raise
+                        _LOGGER.debug(
+                            "Write to %s failed (%s); reconnecting and retrying",
+                            self.address,
+                            err,
+                        )
+        except (BleakError, TimeoutError) as err:
+            _LOGGER.debug("Command to %s failed: %s", self.address, err)
+            raise HomeAssistantError(
+                translation_domain=DOMAIN,
+                translation_key="cannot_connect",
+                translation_placeholders={"name": self.name},
+            ) from err
         self._async_notify_listeners()
 
     async def _async_activate_if_needed(self) -> None:

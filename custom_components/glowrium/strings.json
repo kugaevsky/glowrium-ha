@@ -77,5 +77,10 @@
         "name": "Schedule end"
       }
     }
+  },
+  "exceptions": {
+    "cannot_connect": {
+      "message": "Failed to send the command to {name} over Bluetooth. The device may be out of range or the Bluetooth adapter busy; a Bluetooth proxy near the device usually fixes this."
+    }
   }
 }

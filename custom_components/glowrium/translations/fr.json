@@ -77,5 +77,10 @@
         "name": "Fin de la programmation"
       }
     }
+  },
+  "exceptions": {
+    "cannot_connect": {
+      "message": "Impossible d'envoyer la commande à {name} via Bluetooth. L'appareil est peut-être hors de portée ou l'adaptateur Bluetooth occupé ; un proxy Bluetooth à proximité de l'appareil résout généralement le problème."
+    }
   }
 }
