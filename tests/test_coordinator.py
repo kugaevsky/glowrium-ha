@@ -1,5 +1,6 @@
 """Tests for the Glowrium coordinator's command encoding."""
 
+import asyncio
 from datetime import datetime
 from unittest.mock import AsyncMock, MagicMock
 
@@ -8,7 +9,7 @@ from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import HomeAssistantError
 import pytest
 
-from custom_components.glowrium import cbor
+from custom_components.glowrium import cbor, coordinator as coordinator_module
 from custom_components.glowrium.const import (
     KEY_BRIGHTNESS,
     KEY_CIRCADIAN,
@@ -333,7 +334,7 @@ async def test_write_retries_once_after_a_dropped_link(hass: HomeAssistant) -> N
 
 
 async def test_write_raises_after_two_failures(hass: HomeAssistant) -> None:
-    """A write that keeps failing surfaces the error after a single retry."""
+    """A write that keeps failing is reported as a readable HA error."""
     coordinator, client = _connected_coordinator(hass)
     client.write_gatt_char = AsyncMock(side_effect=BleakError("down"))
 
@@ -342,8 +343,10 @@ async def test_write_raises_after_two_failures(hass: HomeAssistant) -> None:
         coordinator._client = client
 
     coordinator._connect_locked = _reconnect
-    with pytest.raises(BleakError):
+    with pytest.raises(HomeAssistantError) as err:
         await coordinator.async_set_power(True)
+    assert err.value.translation_key == "cannot_connect"
+    assert isinstance(err.value.__cause__, BleakError)  # the BLE error is kept
     assert client.write_gatt_char.await_count == 2  # tried twice, then gave up
 
 
@@ -492,3 +495,43 @@ async def test_ramp_refuses_when_lighting_mode_unread(hass: HomeAssistant) -> No
     with pytest.raises(HomeAssistantError):
         await coordinator.async_set_ramp(30)
     client.write_gatt_char.assert_not_awaited()
+
+
+async def test_command_gives_up_instead_of_hanging(
+    hass: HomeAssistant, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An unreachable device fails the command promptly, not after minutes.
+
+    bleak's own retries can keep a connect attempt alive for minutes, which
+    made a button in the UI look like it had hung; the command budget caps it.
+    """
+    coordinator, _client = _connected_coordinator(hass)
+    coordinator._client = None
+    monkeypatch.setattr(coordinator_module, "_COMMAND_TIMEOUT", 0.05)
+
+    async def _never_connects() -> None:
+        await asyncio.Event().wait()
+
+    coordinator._connect_locked = _never_connects
+    with pytest.raises(HomeAssistantError) as err:
+        await coordinator.async_set_power(True)
+    assert err.value.translation_key == "cannot_connect"
+
+
+async def test_command_budget_covers_waiting_for_the_lock(
+    hass: HomeAssistant, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A command blocked by a background reconnect gives up too.
+
+    The reconnect poll holds ``_lock`` while it retries, so the budget has to
+    cover the wait for the lock, not just the write itself.
+    """
+    coordinator, _client = _connected_coordinator(hass)
+    monkeypatch.setattr(coordinator_module, "_COMMAND_TIMEOUT", 0.05)
+    await coordinator._lock.acquire()
+    try:
+        with pytest.raises(HomeAssistantError) as err:
+            await coordinator.async_set_power(True)
+    finally:
+        coordinator._lock.release()
+    assert err.value.translation_key == "cannot_connect"
