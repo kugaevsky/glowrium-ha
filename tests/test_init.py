@@ -8,7 +8,8 @@ from homeassistant.const import CONF_ADDRESS
 from homeassistant.core import HomeAssistant
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
-from custom_components.glowrium.const import DOMAIN
+from custom_components.glowrium import cbor
+from custom_components.glowrium.const import DOMAIN, KEY_BRIGHTNESS, KEY_POWER
 
 
 def _entry() -> MockConfigEntry:
@@ -142,3 +143,88 @@ async def test_the_background_connect_is_cancelled_on_unload(
         await hass.async_block_till_done()
 
     assert cancelled.is_set()
+
+
+async def _setup_without_bluetooth(hass: HomeAssistant) -> MockConfigEntry:
+    """Set up the entry with the radio stubbed out, and return it."""
+    entry = _entry()
+    entry.add_to_hass(hass)
+    with patch(
+        "custom_components.glowrium.coordinator.GlowriumCoordinator.async_start",
+        new_callable=AsyncMock,
+    ):
+        assert await hass.config_entries.async_setup(entry.entry_id)
+        await hass.async_block_till_done()
+    # Availability follows advertisement presence, which the stubbed start
+    # never observed; these tests are about the entities, not about that.
+    entry.runtime_data._present = True
+    entry.runtime_data._async_notify_listeners()
+    await hass.async_block_till_done()
+    return entry
+
+
+async def test_every_platform_produces_entities(hass: HomeAssistant) -> None:
+    """Each platform in PLATFORMS actually contributes entities.
+
+    Nothing in the suite looked at entities at all: removing Platform.LIGHT
+    from the list - so the lamp has no light entity, the one thing the
+    integration exists for - left every test passing.
+    """
+    await _setup_without_bluetooth(hass)
+
+    domains = {
+        state.entity_id.split(".")[0]
+        for state in hass.states.async_all()
+        if "glowrium" in state.entity_id
+    }
+    assert domains == {
+        "binary_sensor",
+        "button",
+        "light",
+        "number",
+        "select",
+        "sensor",
+        "switch",
+        "time",
+    }
+
+
+async def test_the_light_shows_what_the_device_reported(hass: HomeAssistant) -> None:
+    """A device report reaches the light entity, brightness and all.
+
+    This is the whole path - notification, coordinator state, listener,
+    entity - and no test had ever walked it end to end.
+    """
+    entry = await _setup_without_bluetooth(hass)
+    light = next(
+        state.entity_id
+        for state in hass.states.async_all("light")
+        if "glowrium" in state.entity_id
+    )
+    assert hass.states.get(light).state == "unknown"  # nothing read yet
+
+    entry.runtime_data._ingest(cbor.encode({KEY_POWER: True, KEY_BRIGHTNESS: 50}))
+    await hass.async_block_till_done()
+
+    reported = hass.states.get(light)
+    assert reported.state == "on"
+    assert reported.attributes["brightness"] == 128  # 50 % of 255, rounded
+
+
+async def test_turning_the_light_on_reaches_the_lamp(hass: HomeAssistant) -> None:
+    """The service call is carried through to a write, not swallowed."""
+    entry = await _setup_without_bluetooth(hass)
+    light = next(
+        state.entity_id
+        for state in hass.states.async_all("light")
+        if "glowrium" in state.entity_id
+    )
+    coordinator = entry.runtime_data
+    coordinator.async_set_light_state = AsyncMock()
+
+    await hass.services.async_call(
+        "light", "turn_on", {"entity_id": light, "brightness": 255}, blocking=True
+    )
+
+    coordinator.async_set_light_state.assert_awaited_once()
+    assert coordinator.async_set_light_state.await_args.args[0] is True
