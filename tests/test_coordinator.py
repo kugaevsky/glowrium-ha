@@ -1487,3 +1487,42 @@ async def test_stopping_hangs_up_once_not_twice(
 
     assert attempts == [1]
     assert coordinator._client is None
+
+
+async def test_a_prime_that_got_nothing_does_not_count_as_primed(
+    hass: HomeAssistant,
+) -> None:
+    """Priming only counts when the lamp actually answered.
+
+    Marking the link primed regardless meant one failed attempt stopped the
+    poll ever trying again. Seen on real hardware: establish_connection
+    returned a client whose every operation answered "Not connected" while
+    still reporting itself connected, so the poll saw no reason to reconnect
+    and no reason to prime, and the entities sat at one of fourteen
+    indefinitely.
+    """
+    coordinator, client = _connected_coordinator(hass)
+    client.read_gatt_char = AsyncMock(side_effect=BleakError("Not connected"))
+    client.write_gatt_char = AsyncMock(side_effect=BleakError("Not connected"))
+
+    await coordinator._async_prime()
+
+    assert coordinator._primed_client is not client
+
+
+async def test_a_link_that_answers_nothing_is_dropped(hass: HomeAssistant) -> None:
+    """A link that cannot even be read is not a working link.
+
+    bleak can report a client as connected while BlueZ answers "Not connected"
+    to everything. Keeping it means `_is_connected` stays True, so the poll
+    never reconnects and the coordinator is wedged until the device's own
+    churn. Dropping it lets the poll do its job.
+    """
+    coordinator, client = _connected_coordinator(hass)
+    client.read_gatt_char = AsyncMock(side_effect=BleakError("Not connected"))
+    client.write_gatt_char = AsyncMock(side_effect=BleakError("Not connected"))
+
+    await coordinator._async_prime()
+
+    assert coordinator._client is None
+    assert coordinator._is_connected is False

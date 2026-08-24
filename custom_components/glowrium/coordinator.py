@@ -442,7 +442,15 @@ class GlowriumCoordinator:
                 client = self._client
                 if client is None or client is self._primed_client:
                     return
-                await self._request_state(client)
+                if not await self._request_state(client):
+                    # The link answers nothing, however connected it claims to
+                    # be. Drop it so the poll rebuilds one: _is_connected would
+                    # otherwise stay True and nothing would reconnect or
+                    # re-prime, leaving the entities frozen for the whole life
+                    # of a link that never worked.
+                    _LOGGER.debug("%s: link answers nothing, dropping", self.address)
+                    self._client = None
+                    return
                 await self._async_activate_if_needed()
                 self._primed_client = client
         except (BleakError, TimeoutError) as err:
@@ -528,9 +536,9 @@ class GlowriumCoordinator:
                 _LOGGER.debug("Device-info read from %s failed: %s", self.address, err)
         if not prime:
             return
-        await self._request_state(client)
-        await self._async_activate_if_needed()
-        self._primed_client = client
+        if await self._request_state(client):
+            await self._async_activate_if_needed()
+            self._primed_client = client
         self._async_notify_listeners()
 
     def _require_read(self, value: Any, translation_key: str) -> Any:
@@ -575,17 +583,24 @@ class GlowriumCoordinator:
         again, but only after ``_STATE_REQUEST_ATTEMPTS`` consecutive failures:
         a dropped link raises the same error as a refusal, and on a weak link
         the first attempt fails routinely.
+
+        Returns whether the READ answered, which is the caller's evidence that
+        the link is alive at all: bleak can hand back a client that reports
+        itself connected while every operation on it answers "not connected",
+        and a link that cannot even be read is not a working link.
         """
+        read_ok = False
         try:
             raw = bytes(await client.read_gatt_char(NOTIFY_UUID))
         except (BleakError, TimeoutError) as err:
             _LOGGER.debug("%s state read failed: %s", self.address, err)
         else:
+            read_ok = True
             self._ingest(raw)
         if all(key in self.state for key in STATE_KEYS):
-            return  # the read covered everything; no need to ask as well
+            return read_ok  # the read covered everything; no need to ask too
         if self._state_request_muted:
-            return
+            return read_ok
         try:
             await client.write_gatt_char(NOTIFY_UUID, bytes(STATE_KEYS), response=True)
         except (BleakError, TimeoutError) as err:
@@ -598,7 +613,7 @@ class GlowriumCoordinator:
                     _STATE_REQUEST_ATTEMPTS,
                     err,
                 )
-                return
+                return read_ok
             self._state_request_muted_until = monotonic() + _STATE_REQUEST_COOLDOWN
             self._state_request_failures = 0
             _LOGGER.warning(
@@ -616,6 +631,7 @@ class GlowriumCoordinator:
             )
         else:
             self._state_request_failures = 0
+        return read_ok
 
     def _log_trailing_bytes(self, data: bytes, count: int) -> None:
         """Report a frame rejected for trailing bytes: once loudly, then quietly.
