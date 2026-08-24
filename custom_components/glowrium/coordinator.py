@@ -372,25 +372,32 @@ class GlowriumCoordinator:
         client, self._client = self._client, None
         if client is None:
             return
-        # Bounded, because a connect in flight holds _lock for longer than
-        # anyone should wait on unload - that is what made reloading take the
-        # best part of ten seconds. But the link still has to be closed: bleak
-        # does not hang up on garbage collection, and this lamp has one slot,
-        # so an abandoned connection keeps its successor out until the device's
-        # own churn drops it. If the lock cannot be had in time, hang up
-        # anyway; the watchers are cancelled and this coordinator is finished,
-        # so nothing here will touch the client again.
-        try:
-            async with asyncio.timeout(_STOP_TIMEOUT), self._lock:
-                await client.disconnect()
-                return
-        except (BleakError, TimeoutError) as err:
-            _LOGGER.debug("Clean disconnect of %s failed: %s", self.address, err)
+        # The lock and the hang-up are separate problems, so they get separate
+        # deadlines. Waiting for the lock is best-effort: a connect in flight
+        # holds it for longer than anyone should wait on unload, and that is
+        # what made reloading take the best part of ten seconds. Taking it when
+        # it is free keeps the disconnect from racing an in-flight write; not
+        # getting it is no reason to skip the disconnect, since the watchers
+        # are cancelled and this coordinator is finished either way.
+        #
+        # The link itself must be closed exactly once and under its own
+        # ceiling: bleak does not hang up on garbage collection, and this lamp
+        # has one connection slot, so an abandoned link keeps its successor out
+        # until the device's own churn drops it. Trying twice just spends the
+        # ceiling twice against a link that is already gone.
+        held = False
+        with contextlib.suppress(TimeoutError):
+            async with asyncio.timeout(_STOP_TIMEOUT):
+                await self._lock.acquire()
+                held = True
         try:
             async with asyncio.timeout(_STOP_TIMEOUT):
                 await client.disconnect()
         except (BleakError, TimeoutError) as err:
             _LOGGER.debug("Disconnect of %s failed: %s", self.address, err)
+        finally:
+            if held:
+                self._lock.release()
 
     @callback
     def _async_on_advertisement(

@@ -1460,3 +1460,30 @@ def test_no_path_holds_the_lock_longer_than_a_command_will_wait() -> None:
     # Priming is spawned from the poll and takes the same lock, so it must be
     # finished before the next tick or the ticks pile up on top of each other.
     assert connect < poll
+
+
+async def test_stopping_hangs_up_once_not_twice(
+    hass: HomeAssistant, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A disconnect that hangs costs one ceiling, not two.
+
+    Measured on the real integration: reloading took 6.1 s, all of it in
+    unload, because a first bounded disconnect timed out and a fallback then
+    timed out again. The lock and the hang-up are separate problems and need
+    separate deadlines - the lock is best-effort, the disconnect is tried once.
+    """
+    coordinator, client = _connected_coordinator(hass)
+    monkeypatch.setattr(coordinator_module, "_STOP_TIMEOUT", 0.05)
+    attempts: list[int] = []
+
+    async def _hangs() -> None:
+        attempts.append(1)
+        await asyncio.Event().wait()
+
+    client.disconnect = _hangs
+
+    async with asyncio.timeout(0.4):  # comfortably under two ceilings plus slack
+        await coordinator.async_stop()
+
+    assert attempts == [1]
+    assert coordinator._client is None
