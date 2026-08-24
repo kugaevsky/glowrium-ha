@@ -346,7 +346,7 @@ Establishing a connection (`_async_ensure_connected`, serialized by an
 `asyncio.Lock`) uses `bleak_retry_connector.establish_connection`, subscribes to
 notifications, reads device-info once, primes state by reading `facebd02` and
 then requesting whatever keys that read did not carry, and runs activation if
-needed. **The whole thing is capped at `_CONNECT_TIMEOUT` (20 s), including the
+needed. **The whole thing is capped at `_CONNECT_TIMEOUT` (10 s), including the
 wait for the lock**, and deliberately shorter than `_COMMAND_TIMEOUT`: a
 background connect holds the lock while a command waits for it inside its own
 budget, so a holder allowed longer than the waiter makes a switch press fail on
@@ -394,7 +394,9 @@ check only runs when a write actually reached the characteristic. Only keys in
 did fail takes those 2 s longer to say so.
 
 **A command is capped at `_COMMAND_TIMEOUT` (15 s)**, covering the wait for the
-lock as well as the connect-and-write itself. Without that ceiling an unreachable
+lock as well as the connect-and-write itself; a command that fails may then
+spend up to `_CONFIRM_TIMEOUT` more deciding whether it failed after all, so
+the longest a user waits is the sum. Without that ceiling an unreachable
 device lets bleak's own retries stack up for minutes, and the button in the UI
 looks like it has hung. Any failure — timeout or `BleakError` — is re-raised as a
 `HomeAssistantError` carrying the translated `cannot_connect` message, so the user
