@@ -632,6 +632,12 @@ class GlowriumCoordinator:
 
         The device expects the keys in the order mode, 0x2c, ramp, 0x32; the
         ramp (0x2f) is otherwise clobbered whenever the mode is set.
+
+        Note the asymmetry, which is deliberate and can look like a regression:
+        an unread ramp falls back to a default, an unread mode refuses. On a lamp
+        that has not reported 0x2b - and some models never do - switching to
+        Circadian or setting the ramp therefore raises rather than quietly
+        writing index 1. See the comment on ramp_value below for why.
         """
         mode_value = (
             mode
