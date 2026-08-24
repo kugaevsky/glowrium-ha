@@ -17,6 +17,22 @@ _LEN_BYTES = {24: 1, 25: 2, 26: 4, 27: 8}
 _RAN_OUT = (IndexError, ValueError)
 
 
+class TrailingBytesError(ValueError):
+    """A frame carried more bytes than the item it declared.
+
+    Its own type, rather than a plain ``ValueError``, so a caller can tell this
+    apart from a frame that is simply malformed: on a device whose frames were
+    always fully consumed before, trailing bytes mean something changed and are
+    worth reporting as themselves. Subclasses ``ValueError`` so callers that
+    only care that decoding failed need no change.
+    """
+
+    def __init__(self, count: int) -> None:
+        """Record how many bytes were left over."""
+        super().__init__(f"{count} trailing bytes")
+        self.count = count
+
+
 class _Decoder:
     def __init__(self, data: bytes, tolerant: bool = False) -> None:
         self._b = data
@@ -81,7 +97,7 @@ class _Decoder:
     def expect_consumed(self) -> None:
         """Raise if the buffer holds more than the item just decoded."""
         if self._i != len(self._b):
-            raise ValueError(f"{len(self._b) - self._i} trailing bytes")
+            raise TrailingBytesError(len(self._b) - self._i)
 
     def _byte(self) -> int:
         v = self._b[self._i]
