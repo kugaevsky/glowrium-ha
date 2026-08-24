@@ -167,6 +167,12 @@ class GlowriumCoordinator:
         # Set whenever the device reports state, so a command awaiting
         # confirmation wakes on the report instead of polling for it.
         self._state_reported = asyncio.Event()
+        # Monotonic counters, not values: confirmation needs to know that a
+        # report is NEWER than the write it is vouching for, and that a write
+        # actually reached the characteristic. Comparing the mirror alone
+        # cannot tell a fresh report from an hours-old one.
+        self._reports = 0
+        self._writes_sent = 0
 
     @property
     def _state_request_muted(self) -> bool:
@@ -622,6 +628,7 @@ class GlowriumCoordinator:
                 len(decoded),
             )
         self.state.update(decoded)
+        self._reports += 1
         self._state_reported.set()
         # Seed the remembered ramp from the device the first time we see it, so
         # it survives an HA restart (the device persists its own ramp). Guard on
@@ -653,6 +660,7 @@ class GlowriumCoordinator:
         """
         if self._client is None:
             raise BleakError("write attempted while disconnected")
+        self._writes_sent += 1  # counted before, so a raising write still counts
         await self._client.write_gatt_char(
             WRITE_UUID, cbor.encode(payload), response=True
         )
@@ -672,6 +680,7 @@ class GlowriumCoordinator:
         ``HomeAssistantError`` so the user gets a readable message rather than
         a stack trace after a long hang.
         """
+        reports_before, writes_before = self._reports, self._writes_sent
         try:
             async with asyncio.timeout(_COMMAND_TIMEOUT), self._lock:
                 for attempt in range(1, _WRITE_ATTEMPTS + 1):
@@ -689,7 +698,9 @@ class GlowriumCoordinator:
                             err,
                         )
         except (BleakError, TimeoutError) as err:
-            if await self._async_device_confirms(payload):
+            if self._writes_sent > writes_before and await self._async_device_confirms(
+                payload, reports_before
+            ):
                 _LOGGER.debug(
                     "Command to %s reported %s, but the device reports the state "
                     "it asked for - treating it as delivered",
@@ -705,7 +716,9 @@ class GlowriumCoordinator:
                 ) from err
         self._async_notify_listeners()
 
-    async def _async_device_confirms(self, payload: dict[int, Any]) -> bool:
+    async def _async_device_confirms(
+        self, payload: dict[int, Any], reports_before: int
+    ) -> bool:
         """Return True if the device reports the state ``payload`` asked for.
 
         A write-with-response can reach the lamp, be acted on, and still fail:
@@ -720,11 +733,14 @@ class GlowriumCoordinator:
         device never reports back, and requiring those to match would mean no
         mode command could ever confirm.
 
-        This says the device's reported state now matches the request, which is
-        not quite the same as the write having landed: a command that asks for
-        the state the lamp is already in confirms immediately. That is a benign
-        confusion - the lamp ends up as the user asked either way - and it is
-        the reason this only runs once a write has already failed.
+        A match alone proves nothing, which is why ``reports_before`` exists.
+        The mirror is never invalidated - a disconnect clears the client, not
+        the state - so it can be hours old, and "turn it off" against a stale
+        mirror that already says off would confirm instantly while the lamp
+        stays on and the user loses the one signal that it is unreachable. So
+        the report has to be newer than the write, and the caller only asks at
+        all once a write actually reached the characteristic: a command that
+        never got that far has nothing to be vouched for.
         """
         tracked = {key: value for key, value in payload.items() if key in STATE_KEYS}
         if not tracked:
@@ -738,7 +754,9 @@ class GlowriumCoordinator:
                     # today; it is the order that stays correct if a report ever
                     # arrives from anywhere else.
                     self._state_reported.clear()
-                    if all(self.state.get(k) == v for k, v in tracked.items()):
+                    if self._reports > reports_before and all(
+                        self.state.get(k) == v for k, v in tracked.items()
+                    ):
                         return True
                     await self._state_reported.wait()
         except TimeoutError:

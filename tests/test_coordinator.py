@@ -1280,3 +1280,54 @@ async def test_the_remembered_ramp_survives_the_device_reporting(
     await coordinator.async_set_lighting_mode(5)
     sent = cbor.decode(client.write_gatt_char.await_args.args[1])
     assert sent[KEY_RAMP] == bytes.fromhex("1518")  # and it is what gets re-applied
+
+
+async def test_a_stale_mirror_does_not_vouch_for_a_failed_write(
+    hass: HomeAssistant, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Confirmation needs a fresh report, not a matching one.
+
+    The mirror is never invalidated - a disconnect clears the client, not the
+    state - so it can be hours old. Asking a lamp to turn off while the stale
+    mirror already says `off` would otherwise report success for a write that
+    failed, leaving the lamp on and removing the only signal the user had that
+    it is unreachable.
+    """
+    coordinator, client = _connected_coordinator(hass)
+    monkeypatch.setattr(coordinator_module, "_CONFIRM_TIMEOUT", 0.05)
+    coordinator.state[KEY_POWER] = False  # what the lamp said, some time ago
+    client.write_gatt_char = AsyncMock(side_effect=BleakError("Not connected"))
+
+    async def _relink(*, prime: bool = True) -> None:
+        assert prime is False
+        coordinator._client = client
+
+    coordinator._connect_locked = _relink
+
+    with pytest.raises(HomeAssistantError):
+        await coordinator.async_set_power(False)
+
+
+async def test_a_command_that_never_reached_the_wire_fails_at_once(
+    hass: HomeAssistant, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An out-of-range lamp fails immediately; there is nothing to wait for.
+
+    `_ble_device` returns None without any I/O, so no byte ever left. Waiting
+    the grace window for a notification that cannot arrive - there is no link -
+    added two seconds to every command an automation sends to a lamp that is
+    off or out of range.
+    """
+    coordinator, _ = _connected_coordinator(hass)
+    coordinator._client = None
+    coordinator.state[KEY_POWER] = True  # and the mirror happens to agree
+    monkeypatch.setattr(coordinator_module, "_CONFIRM_TIMEOUT", 30.0)
+
+    async def _out_of_range(*, prime: bool = True) -> None:
+        raise BleakError("AA:BB:CC:DD:EE:FF is not in range")
+
+    coordinator._connect_locked = _out_of_range
+
+    async with asyncio.timeout(1):  # nowhere near the grace window
+        with pytest.raises(HomeAssistantError):
+            await coordinator.async_set_power(True)
