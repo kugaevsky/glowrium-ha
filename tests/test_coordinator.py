@@ -1555,3 +1555,36 @@ async def test_a_connect_whose_read_fails_is_not_primed_either(
     await coordinator._connect_locked()
 
     assert coordinator._primed_client is not client
+
+
+async def test_a_connect_that_cannot_be_read_is_dropped_at_once(
+    hass: HomeAssistant, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A dead link is dropped where it is detected, not a poll tick later.
+
+    Observed live: the connect noticed the lamp answered nothing and kept the
+    client anyway, so for the next thirty seconds `_is_connected` was True over
+    a link that served nothing - and a command in that window wrote into it
+    before failing and reconnecting. The poll rebuilds it either way; there is
+    no reason to hold it in the meantime.
+    """
+    coordinator, client = _connected_coordinator(hass)
+    coordinator._client = None
+    client.is_connected = True
+    client.start_notify = AsyncMock()
+    client.disconnect = AsyncMock()
+    client.read_gatt_char = AsyncMock(side_effect=BleakError("Not connected"))
+    client.write_gatt_char = AsyncMock(side_effect=BleakError("Not connected"))
+    monkeypatch.setattr(
+        coordinator_module, "establish_connection", AsyncMock(return_value=client)
+    )
+
+    def _in_range() -> object:
+        return object()
+
+    coordinator._ble_device = _in_range
+
+    await coordinator._connect_locked()
+
+    assert coordinator._client is None
+    assert coordinator._is_connected is False
