@@ -228,3 +228,38 @@ async def test_turning_the_light_on_reaches_the_lamp(hass: HomeAssistant) -> Non
 
     coordinator.async_set_light_state.assert_awaited_once()
     assert coordinator.async_set_light_state.await_args.args[0] is True
+
+
+async def test_a_setup_that_fails_later_still_stops_the_coordinator(
+    hass: HomeAssistant,
+) -> None:
+    """A coordinator that was started must be stopped even if setup then fails.
+
+    Home Assistant does not call async_unload_entry for an entry that never
+    reached LOADED (config_entries.py: it returns as soon as the state is not
+    LOADED), so an entry that fails after async_start would otherwise keep its
+    bluetooth callbacks and its 30 s poll registered forever - and every retry
+    adds another one, all competing for the lamp's single connection.
+    """
+    entry = _entry()
+    entry.add_to_hass(hass)
+
+    with (
+        patch(
+            "custom_components.glowrium.coordinator.GlowriumCoordinator.async_start",
+            new_callable=AsyncMock,
+        ),
+        patch(
+            "custom_components.glowrium.coordinator.GlowriumCoordinator.async_stop",
+            new_callable=AsyncMock,
+        ) as stop,
+        patch.object(
+            hass.config_entries,
+            "async_forward_entry_setups",
+            side_effect=RuntimeError("platform blew up"),
+        ),
+    ):
+        assert not await hass.config_entries.async_setup(entry.entry_id)
+        await hass.async_block_till_done()
+
+    stop.assert_awaited_once()

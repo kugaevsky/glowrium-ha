@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Callable
+from collections.abc import Callable, Coroutine
+import contextlib
 from datetime import datetime, time, timedelta
 import logging
 from time import monotonic
@@ -150,6 +151,12 @@ class GlowriumCoordinator:
         self._cancel_bluetooth: Callable[[], None] | None = None
         self._cancel_unavailable: Callable[[], None] | None = None
         self._cancel_poll: Callable[[], None] | None = None
+        # Set by async_start. Background work is created on the entry rather
+        # than on hass so it is cancelled when the entry unloads: a task on
+        # hass is only awaited at shutdown, and one that outlives its
+        # coordinator finishes connecting and claims the lamp's single slot
+        # for an owner that no longer exists.
+        self._entry: ConfigEntry | None = None
         self._present = False
         self._reconnecting = False
         self._activation_checked = False
@@ -319,16 +326,22 @@ class GlowriumCoordinator:
         self._present = bluetooth.async_address_present(
             self.hass, self.address, connectable=True
         )
-        entry.async_create_background_task(
-            self.hass,
-            self._async_initial_connect(),
-            f"glowrium initial connect {self.address}",
-        )
+        self._entry = entry
+        self._spawn(self._async_initial_connect(), "initial connect")
         # Advertisement callbacks are throttled, so also poll: reconnect within
         # _RECONNECT_INTERVAL after any drop, regardless of advertisement timing.
         self._cancel_poll = async_track_time_interval(
             self.hass, self._async_poll_reconnect, _RECONNECT_INTERVAL
         )
+
+    @callback
+    def _spawn(self, coro: Coroutine[Any, Any, None], what: str) -> None:
+        """Run ``coro`` in the background, for no longer than the entry lives."""
+        name = f"glowrium {what} {self.address}"
+        if self._entry is None:  # standalone use, outside Home Assistant
+            self.hass.async_create_task(coro, name)
+            return
+        self._entry.async_create_background_task(self.hass, coro, name)
 
     async def _async_initial_connect(self) -> None:
         """Connect once at start-up, off the setup path."""
@@ -348,16 +361,25 @@ class GlowriumCoordinator:
         if self._cancel_poll is not None:
             self._cancel_poll()
             self._cancel_poll = None
-        # Bounded: a connect in flight holds _lock for up to _CONNECT_TIMEOUT,
-        # and unload waiting behind it is what made reloading the integration
-        # take the best part of ten seconds. The watchers above are already
-        # cancelled, so dropping the client without a clean disconnect is safe -
-        # the link dies with the reference.
         client, self._client = self._client, None
         if client is None:
             return
+        # Bounded, because a connect in flight holds _lock for longer than
+        # anyone should wait on unload - that is what made reloading take the
+        # best part of ten seconds. But the link still has to be closed: bleak
+        # does not hang up on garbage collection, and this lamp has one slot,
+        # so an abandoned connection keeps its successor out until the device's
+        # own churn drops it. If the lock cannot be had in time, hang up
+        # anyway; the watchers are cancelled and this coordinator is finished,
+        # so nothing here will touch the client again.
         try:
             async with asyncio.timeout(_STOP_TIMEOUT), self._lock:
+                await client.disconnect()
+                return
+        except (BleakError, TimeoutError) as err:
+            _LOGGER.debug("Clean disconnect of %s failed: %s", self.address, err)
+        try:
+            async with asyncio.timeout(_STOP_TIMEOUT):
                 await client.disconnect()
         except (BleakError, TimeoutError) as err:
             _LOGGER.debug("Disconnect of %s failed: %s", self.address, err)
@@ -374,7 +396,7 @@ class GlowriumCoordinator:
         # (advertisements arrive ~every second; don't spawn a connect storm).
         if not self._is_connected and not self._reconnecting:
             self._reconnecting = True
-            self.hass.async_create_task(self._async_reconnect())
+            self._spawn(self._async_reconnect(), "reconnect")
         if not was_present:
             self._async_notify_listeners()
 
@@ -391,12 +413,12 @@ class GlowriumCoordinator:
         if not self._is_connected:
             if not self._reconnecting:
                 self._reconnecting = True
-                self.hass.async_create_task(self._async_reconnect())
+                self._spawn(self._async_reconnect(), "reconnect")
             return
         # Connected, but by a command, which skips priming to stay fast. Fetch
         # the properties now, off the command's critical path.
         if self._client is not self._primed_client:
-            self.hass.async_create_task(self._async_prime())
+            self._spawn(self._async_prime(), "prime")
 
     async def _async_prime(self) -> None:
         """Fetch device properties for a link that was established by a command."""
@@ -467,8 +489,18 @@ class GlowriumCoordinator:
             disconnected_callback=self._async_on_disconnect,
             max_attempts=_CONNECT_ATTEMPTS,
         )
+        try:
+            await client.start_notify(NOTIFY_UUID, self._on_notify)
+        except BaseException:
+            # Including cancellation by a deadline. Nothing references this
+            # client yet, and bleak does not hang up on garbage collection, so
+            # walking away here would leave the lamp's only slot taken.
+            with contextlib.suppress(Exception):
+                await client.disconnect()
+            raise
+        # Committed only once notifications are live: a client without them
+        # reports as connected forever while no state ever arrives again.
         self._client = client
-        await client.start_notify(NOTIFY_UUID, self._on_notify)
         # Read the device-info string BEFORE the state request: on a model that
         # rejects that request the device drops the link, and the info read
         # would be lost along with it - leaving us unable to name the model in
@@ -642,7 +674,15 @@ class GlowriumCoordinator:
         return True
 
     @callback
-    def _async_on_disconnect(self, _client: BleakClientWithServiceCache) -> None:
+    def _async_on_disconnect(self, client: BleakClientWithServiceCache) -> None:
+        if client is not self._client:
+            # A client we already gave up on - a failed write drops one and the
+            # retry establishes another, and the OS notices the first is gone
+            # some time later. Clearing the live connection here would leave it
+            # holding the lamp's single slot with nothing referencing it, while
+            # every reconnect fails for want of that slot.
+            _LOGGER.debug("%s: a superseded connection dropped", self.address)
+            return
         _LOGGER.debug("%s disconnected", self.address)
         self._client = None
         self._async_notify_listeners()
