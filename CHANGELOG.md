@@ -8,6 +8,28 @@ All notable changes to this project are documented here. The format is based on
 
 ### Fixed
 
+- **State is now reported on models whose property map spans more than one frame.**
+  A device frame may declare more CBOR pairs in its map header than it carries — a
+  G8 sends 55 bytes headed `0xac`, promising 12 pairs and containing 11 — and the
+  decoder discarded the whole frame, so every state entity read `unknown` while the
+  lamp still responded to commands. The pairs that did arrive are now kept. Thanks
+  to [@pentafive](https://github.com/pentafive), who diagnosed this on a G8 and sent
+  the fix ([#5](https://github.com/kugaevsky/glowrium-ha/pull/5)).
+- **State is primed by reading `facebd02` instead of asking the lamp to report.**
+  One read returns the whole property map. The old request-write is unreliable on
+  some models — a G8 answers it with ATT `Insufficient authorization`, a
+  not-connected error or a timeout, and drops the link while doing so — and because
+  the connect path also runs from the command path, that tore down the connection on
+  every command. The request is now only a fallback, tried once and never re-sent
+  after a rejection.
+- **Changing one schedule field no longer overwrites the other four.** The `0x11`
+  slot packs the enabled flag, both times, brightness and fade into a single write,
+  so substituting a default to change one of them silently rewrote the rest and
+  forced the schedule on. Setting the ramp likewise no longer resets the lighting
+  mode to preset 1. Both now refuse with an explanation until the device has
+  reported the field.
+- **The light reports `unknown` rather than a confident `off`** before its state has
+  been read.
 - A command sent to an out-of-range device no longer appears to hang: `_async_write`
   is capped at 15 s (covering the wait for the connection lock, which a background
   reconnect may hold) and `establish_connection` is limited to 2 attempts instead of
@@ -16,6 +38,16 @@ All notable changes to this project are documented here. The format is based on
 - Command failures are now raised as a translated `HomeAssistantError` ("out of range
   or the Bluetooth adapter is busy; a Bluetooth proxy near the device usually fixes
   this") instead of surfacing a raw `BleakError` stack trace.
+- The refusal shown when a field has not been reported yet is translated too, in all
+  six supported languages — it was the last hard-coded English message.
+
+### Changed
+
+- A frame dropped for carrying trailing bytes is now logged as itself, with the
+  model, firmware, byte count and frame hex, once per session as a warning rather
+  than buried at debug level among ordinary undecodable frames. Rejecting such
+  frames is new, and on a model that never produced them this is where a regression
+  would surface.
 
 ## [0.1.1] - 2026-07-20
 

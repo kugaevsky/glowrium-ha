@@ -101,20 +101,32 @@ All control happens over one vendor service, `facebd00-7261-6262-6974-696f74626c
 | Characteristic | Const | Direction | Purpose |
 | --- | --- | --- | --- |
 | `facebd01-…` | `WRITE_UUID` | Write | **Commands.** Body is a CBOR map `{int key: value}`. One map may set several keys at once (e.g. power + brightness, or the whole bring-up clock). |
-| `facebd02-…` | `NOTIFY_UUID` | Notify + Write | **State.** The lamp pushes CBOR maps of changed properties. On connect the integration *writes* the raw list of property ids it wants reported (see below). |
+| `facebd02-…` | `NOTIFY_UUID` | Read + Notify + Write | **State.** The lamp pushes CBOR maps of changed properties as they change, and one *read* of the same characteristic returns its whole property map — which is how state is primed on connect (see below). |
 | `facebd80-…` | `INFO_UUID` | Read | **Device info** string, read once per connection and parsed into `DeviceInfo`. |
 
-### Requesting state on connect
+### Priming state on connect
 
-Right after subscribing to notifications, the coordinator writes the raw bytes of
-`STATE_KEYS` (a tuple of property ids) to `NOTIFY_UUID`. This asks the lamp to
-report those properties.
+`NOTIFY_UUID` is readable, and one read returns the lamp's entire property map in
+a single response. So right after subscribing to notifications the coordinator
+**reads** it (`_request_state` in `coordinator.py`) and merges whatever comes
+back. Only if that read yields nothing does it fall back to *writing* the raw
+bytes of `STATE_KEYS` (a tuple of property ids) to the same characteristic, which
+asks the lamp to report those properties instead.
+
+Reading first is both cheaper and sturdier. The request-write is unreliable on
+some models — a G8 (`Glowrium-C064`) answers it with ATT `Insufficient
+authorization`, a not-connected error, or a timeout depending on route and
+timing, and drops the GATT link while doing so. Because `_connect_locked` also
+runs from the command path, a request that tears down the link would do so on
+*every command*, not just on connect.
 
 > ⚠️ **Only request ids the vendor app itself requests.** Asking the G7 for an id
 > it does not expose makes it drop the GATT link. `STATE_KEYS` is exactly the set
-> observed in the app's captures. A different model with a different property set
-> may reject the request — the coordinator treats that as **non-fatal** (logs a
-> warning and carries on with limited state) so the lamp is still controllable.
+> observed in the app's captures. A model that rejects the request outright is
+> handled as **non-fatal**: the coordinator logs one warning naming the model,
+> sets `_state_request_rejected` so it is never asked again this session, and
+> carries on with whatever state it has. Commands still work; reported state just
+> stays optimistic.
 
 ### Device-info string (`facebd80`)
 
@@ -148,6 +160,30 @@ validated byte-for-byte against captures in `tests/test_cbor.py`.
 A command is just a CBOR map. For example, "turn on at 80 %" is
 `{0x06: true, 0x08: 80}`, which encodes to a 5-byte payload written to
 `facebd01`.
+
+### Frames that end part-way through a map
+
+A device frame may declare more pairs in its map header than the frame actually
+carries: a G8 sends 55 bytes headed `0xac` — a promise of 12 pairs — containing
+11. The G7 has never been observed to do this, which is why the case went unseen
+until a G8 owner reported every state entity reading `unknown`.
+
+So device frames and our own payloads are decoded differently:
+
+- `decode_frame(data)` returns `(value, short)` and is used for anything the
+  device sends. A map that ends early yields the pairs that *did* arrive, with
+  `short=True`, instead of throwing them all away.
+- `decode(data)` stays strict — a short map in a payload we encoded ourselves is
+  a bug, not a wire condition.
+
+Trailing bytes are an error on both paths, raised as `cbor.TrailingBytesError`
+(a `ValueError` subclass carrying the byte count). Accepting the remainder would
+let a corrupt frame decode to a short but plausible map — `{0x14: false}` among
+them, the one value that triggers the bring-up sequence. Because rejecting them
+is new as of the split-frame fix, `_ingest` reports the first such frame per
+session as a warning carrying the model and the frame hex, so a regression on a
+model that never produced them shows up as itself rather than as generic
+undecodable garbage.
 
 ### Property-key table
 
@@ -220,6 +256,14 @@ The ramp is preserved from a remembered value (or state, or the `0x0e10` = 60 mi
 default). Because enabling Circadian resets the device's ramp to a default, the
 coordinator re-applies the user's chosen ramp after a mode switch so it persists.
 
+The **mode** is not defaulted the same way. Setting a mode rewrites the ramp on
+the device regardless, so falling back for the ramp changes nothing the user did
+not already ask for; substituting a mode index would silently *change* a setting
+the caller never touched. So on a lamp that has not reported `0x2b`, switching to
+Circadian and setting the ramp both refuse with a message saying why, rather than
+quietly writing index 1. On a model that never reports `0x2b` at all this is the
+permanent behaviour — deliberate, not a regression.
+
 ---
 
 ## Activation / bring-up
@@ -288,8 +332,9 @@ Two independent triggers, both funnelling into a single guarded reconnect task
 
 Establishing a connection (`_async_ensure_connected`, serialized by an
 `asyncio.Lock`) uses `bleak_retry_connector.establish_connection`, subscribes to
-notifications, requests `STATE_KEYS`, reads device-info once, and runs activation
-if needed. It caps `establish_connection` at `_CONNECT_ATTEMPTS` (2) rather than
+notifications, reads device-info once, primes state by reading `facebd02`
+(falling back to the `STATE_KEYS` request only if that yields nothing), and runs
+activation if needed. It caps `establish_connection` at `_CONNECT_ATTEMPTS` (2) rather than
 the library default of 4: against an unreachable device each attempt can burn a
 20 s bleak timeout plus a backoff, all while the lock is held — and the poll above
 comes round again in 30 s anyway.
