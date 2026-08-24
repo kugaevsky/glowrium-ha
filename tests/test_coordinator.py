@@ -5,6 +5,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 from bleak.exc import BleakError
 from homeassistant.core import HomeAssistant
+from homeassistant.exceptions import HomeAssistantError
 import pytest
 
 from custom_components.glowrium import cbor
@@ -17,7 +18,12 @@ from custom_components.glowrium.const import (
     KEY_POWER,
     KEY_SCHEDULE,
     KEY_TIMER,
+    NOTIFY_UUID,
+    STATE_KEYS,
+    TIMER_BRIGHTNESS,
     TIMER_DEFAULT,
+    TIMER_START_H,
+    TIMER_START_M,
     WRITE_UUID,
 )
 from custom_components.glowrium.coordinator import (
@@ -189,6 +195,7 @@ async def test_sync_location(hass: HomeAssistant) -> None:
 async def test_set_timer_start(hass: HomeAssistant) -> None:
     """Setting the schedule start edits only the start bytes of the 0x11 slot."""
     coordinator, client = _connected_coordinator(hass)
+    coordinator.state[KEY_TIMER] = bytes(TIMER_DEFAULT)  # slot must be read first
     await coordinator.async_set_timer_start(7, 15)
     expected = bytearray(TIMER_DEFAULT)
     expected[4], expected[5] = 7, 15
@@ -200,6 +207,7 @@ async def test_set_timer_start(hass: HomeAssistant) -> None:
 async def test_set_timer_gradual(hass: HomeAssistant) -> None:
     """Gradual is stored as 2-byte big-endian seconds (5 min -> 300 = 0x012c)."""
     coordinator, client = _connected_coordinator(hass)
+    coordinator.state[KEY_TIMER] = bytes(TIMER_DEFAULT)  # slot must be read first
     await coordinator.async_set_timer_gradual(5)
     expected = bytearray(TIMER_DEFAULT)
     expected[9:11] = (300).to_bytes(2, "big")
@@ -337,3 +345,150 @@ async def test_write_raises_after_two_failures(hass: HomeAssistant) -> None:
     with pytest.raises(BleakError):
         await coordinator.async_set_power(True)
     assert client.write_gatt_char.await_count == 2  # tried twice, then gave up
+
+
+async def test_state_request_sent_once_then_never_again(hass: HomeAssistant) -> None:
+    """A device that rejects the state request is not asked on later connects.
+
+    Re-sending it is what destroyed the link on every command for models that
+    answer ATT "Insufficient authorization" (0x08) and disconnect.
+    """
+    coordinator = GlowriumCoordinator(hass, "AA:BB:CC:DD:EE:FF", "Glowrium-G8")
+    client = MagicMock()
+    client.is_connected = True
+    client.read_gatt_char = AsyncMock(side_effect=BleakError("unreadable"))
+    client.write_gatt_char = AsyncMock(
+        side_effect=BleakError("Insufficient authorization (8)")
+    )
+
+    await coordinator._request_state(client)
+    assert client.write_gatt_char.await_count == 1
+    assert coordinator._state_request_rejected is True
+
+    # Later connects must not re-send it.
+    await coordinator._request_state(client)
+    await coordinator._request_state(client)
+    assert client.write_gatt_char.await_count == 1
+
+
+async def test_state_request_repeats_while_accepted(hass: HomeAssistant) -> None:
+    """An unreadable device that accepts the request keeps being asked."""
+    coordinator = GlowriumCoordinator(hass, "AA:BB:CC:DD:EE:FF", "Glowrium-G7")
+    client = MagicMock()
+    client.is_connected = True
+    client.read_gatt_char = AsyncMock(side_effect=BleakError("unreadable"))
+    client.write_gatt_char = AsyncMock()
+
+    await coordinator._request_state(client)
+    await coordinator._request_state(client)
+    assert client.write_gatt_char.await_count == 2
+    assert coordinator._state_request_rejected is False
+    client.write_gatt_char.assert_awaited_with(
+        NOTIFY_UUID, bytes(STATE_KEYS), response=True
+    )
+
+
+async def test_activation_skipped_when_state_unreadable(hass: HomeAssistant) -> None:
+    """A device whose state cannot be read is never activated, and never waits.
+
+    0x14 can never arrive on such a device, so the 3 s wait would run on every
+    connect - including the connect the command path performs.
+    """
+    coordinator = GlowriumCoordinator(hass, "AA:BB:CC:DD:EE:FF", "Glowrium-G8")
+    client = MagicMock()
+    client.is_connected = True
+    coordinator._client = client
+    coordinator._state_request_rejected = True
+    activated = []
+    coordinator.async_activate = AsyncMock(side_effect=lambda: activated.append(1))
+
+    await coordinator._async_activate_if_needed()
+
+    assert not activated  # must not replay the vendor bring-up blind
+    assert coordinator._activation_checked is True  # and must not re-wait
+
+
+async def test_state_primed_by_read_without_a_request(hass: HomeAssistant) -> None:
+    """A readable device is read, and the unreliable request is not sent."""
+    coordinator = GlowriumCoordinator(hass, "AA:BB:CC:DD:EE:FF", "Glowrium-G8")
+    client = MagicMock()
+    client.is_connected = True
+    client.write_gatt_char = AsyncMock()
+    client.read_gatt_char = AsyncMock(return_value=bytearray.fromhex("a206f5081846"))
+
+    await coordinator._request_state(client)
+
+    client.read_gatt_char.assert_awaited_once_with(NOTIFY_UUID)
+    client.write_gatt_char.assert_not_awaited()  # no request needed
+    assert coordinator.state[KEY_POWER] is True
+    assert coordinator.state[KEY_BRIGHTNESS] == 70
+
+
+async def test_falls_back_to_request_when_read_fails(hass: HomeAssistant) -> None:
+    """If the read is unavailable the batched request is still tried, once."""
+    coordinator = GlowriumCoordinator(hass, "AA:BB:CC:DD:EE:FF", "Glowrium-G7")
+    client = MagicMock()
+    client.is_connected = True
+    client.read_gatt_char = AsyncMock(side_effect=BleakError("not readable"))
+    client.write_gatt_char = AsyncMock(side_effect=BleakError("rejected"))
+
+    await coordinator._request_state(client)
+    assert client.write_gatt_char.await_count == 1
+    assert coordinator._state_request_rejected is True
+
+    await coordinator._request_state(client)  # never asked again
+    assert client.write_gatt_char.await_count == 1
+
+
+async def test_split_notification_updates_state(hass: HomeAssistant) -> None:
+    """A notification carrying a split map still updates the entities."""
+    coordinator = GlowriumCoordinator(hass, "AA:BB:CC:DD:EE:FF", "Glowrium-G8")
+    coordinator._on_notify(None, bytearray.fromhex("a306f5081846"))  # promises 3, has 2
+    assert coordinator.state[KEY_POWER] is True
+    assert coordinator.state[KEY_BRIGHTNESS] == 70
+
+
+async def test_empty_ramp_does_not_latch(hass: HomeAssistant) -> None:
+    """A zero-length ramp must not block seeding the remembered ramp later."""
+    coordinator = GlowriumCoordinator(hass, "AA:BB:CC:DD:EE:FF", "Glowrium-G7")
+    coordinator._ingest(bytes.fromhex("a1182f40"))  # {0x2f: b""}
+    assert coordinator._desired_ramp is None
+    coordinator._ingest(bytes.fromhex("a1182f420e10"))  # {0x2f: b"\x0e\x10"}
+    assert coordinator._desired_ramp == bytes.fromhex("0e10")
+
+
+async def test_schedule_setters_refuse_when_slot_unread(hass: HomeAssistant) -> None:
+    """Changing one schedule field must not invent the other four.
+
+    The 0x11 slot packs enabled, both times, brightness and fade into one write,
+    so falling back to a default silently overwrote settings the user chose.
+    """
+    coordinator, client = _connected_coordinator(hass)
+    for call in (
+        coordinator.async_set_timer_start(7, 30),
+        coordinator.async_set_timer_end(19, 0),
+        coordinator.async_set_timer_brightness(80),
+        coordinator.async_set_timer_gradual(15),
+    ):
+        with pytest.raises(HomeAssistantError):
+            await call
+    client.write_gatt_char.assert_not_awaited()
+
+
+async def test_schedule_setters_work_once_slot_is_known(hass: HomeAssistant) -> None:
+    """With the slot read, a setter changes only its own field."""
+    coordinator, client = _connected_coordinator(hass)
+    coordinator.state[KEY_TIMER] = bytes.fromhex("010200ff0a121212640000")
+    await coordinator.async_set_timer_start(7, 30)
+    written = cbor.decode(client.write_gatt_char.await_args_list[-1].args[1])[KEY_TIMER]
+    assert written[TIMER_START_H], written[TIMER_START_M] == (7, 30)
+    assert written[0] == 0x01  # enabled flag preserved, not forced
+    assert written[TIMER_BRIGHTNESS] == 0x64  # brightness untouched
+
+
+async def test_ramp_refuses_when_lighting_mode_unread(hass: HomeAssistant) -> None:
+    """Setting the ramp must not silently reset the lighting mode to index 1."""
+    coordinator, client = _connected_coordinator(hass)
+    with pytest.raises(HomeAssistantError):
+        await coordinator.async_set_ramp(30)
+    client.write_gatt_char.assert_not_awaited()

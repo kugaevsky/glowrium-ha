@@ -29,9 +29,14 @@ def test_timer_slot_guards() -> None:
 
 
 def test_editable_timer_slot_is_an_independent_copy() -> None:
-    """editable_timer_slot yields a mutable copy, defaulting when unset."""
-    assert protocol.editable_timer_slot({}) == bytearray(TIMER_DEFAULT)
-    slot = protocol.editable_timer_slot({})
+    """editable_timer_slot yields a mutable copy, or None when never read.
+
+    It deliberately does not fall back to TIMER_DEFAULT: the slot is written as
+    one unit, so defaulting to change a single field overwrites the rest.
+    """
+    assert protocol.editable_timer_slot({}) is None
+    slot = protocol.editable_timer_slot({KEY_TIMER: bytes(TIMER_DEFAULT)})
+    assert slot == bytearray(TIMER_DEFAULT)
     slot[4] = 7  # mutating the copy must not touch the module default
     assert TIMER_DEFAULT[4] != 7
 

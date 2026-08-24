@@ -36,9 +36,17 @@ class GlowriumLight(GlowriumEntity, LightEntity):
         self._attr_icon = coordinator.model.icon
 
     @property
-    def is_on(self) -> bool:
-        """Return whether the lamp is on."""
-        return bool(self._coordinator.state.get(KEY_POWER))
+    def is_on(self) -> bool | None:
+        """Return whether the lamp is on, or None if it has not been read.
+
+        ``bool(None)`` is ``False``, which HA renders as a definite "off" - so an
+        unread lamp used to claim it was off while it was physically on, and
+        automations, scenes and ``light.toggle`` all reasoned from that. Return
+        None so the state reads "unknown" instead, matching how the indicator
+        switch already handles it.
+        """
+        value = self._coordinator.state.get(KEY_POWER)
+        return None if value is None else bool(value)
 
     @property
     def brightness(self) -> int | None:
