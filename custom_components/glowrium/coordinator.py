@@ -732,8 +732,11 @@ class GlowriumCoordinator:
         try:
             async with asyncio.timeout(_CONFIRM_TIMEOUT):
                 while True:
-                    # Cleared before the check, never after: a report arriving
-                    # between the two would otherwise be waited past.
+                    # Clear before checking. Nothing can interleave between the
+                    # two here - both are synchronous and the reports come from
+                    # this same event loop - so the order is not load-bearing
+                    # today; it is the order that stays correct if a report ever
+                    # arrives from anywhere else.
                     self._state_reported.clear()
                     if all(self.state.get(k) == v for k, v in tracked.items()):
                         return True

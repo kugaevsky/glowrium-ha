@@ -870,3 +870,61 @@ async def test_a_command_reaches_the_entities(hass: HomeAssistant) -> None:
 
     await coordinator.async_set_power(True)
     assert fired == [1]
+
+
+async def test_confirmation_waits_for_a_report_that_arrives_late(
+    hass: HomeAssistant,
+) -> None:
+    """The grace window is a wait, not a glance at state as it already is.
+
+    Measured on real hardware the confirming notification beat the error by
+    22-32 ms, but that is a property of one link on one evening. If the report
+    lands after the write has failed, the command must still be reported as
+    delivered - which means actually waiting on the device, not sampling state
+    once and giving up.
+    """
+    coordinator, client = _connected_coordinator(hass)
+    client.write_gatt_char = AsyncMock(side_effect=BleakError("Unlikely Error"))
+    assert KEY_POWER not in coordinator.state  # nothing to match at failure time
+
+    async def _relink(*, prime: bool = True) -> None:
+        assert prime is False  # a command asks for a bare link
+        client.is_connected = True
+        coordinator._client = client
+
+    coordinator._connect_locked = _relink
+
+    async def _report_after_the_failure() -> None:
+        await asyncio.sleep(0.05)
+        coordinator._ingest(cbor.encode({KEY_POWER: True}))
+
+    reporter = asyncio.create_task(_report_after_the_failure())
+    try:
+        await coordinator.async_set_power(True)  # must not raise
+    finally:
+        await reporter
+    assert coordinator.state[KEY_POWER] is True
+
+
+async def test_a_write_with_nothing_reportable_is_never_confirmed(
+    hass: HomeAssistant, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A payload the device never reports back cannot vouch for itself.
+
+    Confirmation compares against what the lamp reports, so a write carrying
+    only keys outside STATE_KEYS has no evidence available either way, and
+    silence must not be read as success.
+    """
+    coordinator, client = _connected_coordinator(hass)
+    monkeypatch.setattr(coordinator_module, "_CONFIRM_TIMEOUT", 0.05)
+    client.write_gatt_char = AsyncMock(side_effect=BleakError("down"))
+
+    async def _relink(*, prime: bool = True) -> None:
+        assert prime is False
+        client.is_connected = True
+        coordinator._client = client
+
+    coordinator._connect_locked = _relink
+
+    with pytest.raises(HomeAssistantError):
+        await coordinator._async_write({0x2C: b"\x02\xd0"})
