@@ -1331,3 +1331,111 @@ async def test_a_command_that_never_reached_the_wire_fails_at_once(
     async with asyncio.timeout(1):  # nowhere near the grace window
         with pytest.raises(HomeAssistantError):
             await coordinator.async_set_power(True)
+
+
+async def test_an_old_client_disconnecting_does_not_drop_the_live_one(
+    hass: HomeAssistant,
+) -> None:
+    """The disconnect callback must check WHICH client it is being told about.
+
+    A failed write drops its client and the retry establishes another. When
+    the OS later notices the first one is gone, bleak fires that client's
+    callback - and clearing `_client` unconditionally there discards the live
+    connection instead. `_is_connected` then reads False, so the poll opens
+    yet another link to a lamp with a single slot, and every attempt fails
+    with "out of connection slots" while the working connection sits there
+    unreferenced until the lamp's own churn drops it.
+    """
+    coordinator, live = _connected_coordinator(hass)
+    superseded = MagicMock()  # the client an earlier attempt gave up on
+
+    coordinator._async_on_disconnect(superseded)
+
+    assert coordinator._client is live
+    assert coordinator._is_connected is True
+
+    # The live one going down is still heard.
+    coordinator._async_on_disconnect(live)
+    assert coordinator._client is None
+
+
+async def test_a_connect_that_fails_half_way_leaves_no_link_behind(
+    hass: HomeAssistant, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A connect that cannot finish must hang up, not abandon the link.
+
+    The client is established before notifications are subscribed. If that
+    subscription fails - or the connect is cancelled by its deadline at that
+    moment - walking away leaves a connected client holding the lamp's single
+    slot with nothing referencing it: every later attempt then fails for want
+    of a slot until the lamp's own churn drops it.
+    """
+    coordinator, client = _connected_coordinator(hass)
+    coordinator._client = None
+    client.start_notify = AsyncMock(side_effect=BleakError("subscribe failed"))
+    client.disconnect = AsyncMock()
+    monkeypatch.setattr(
+        coordinator_module, "establish_connection", AsyncMock(return_value=client)
+    )
+
+    def _in_range() -> object:
+        return object()
+
+    coordinator._ble_device = _in_range
+
+    with pytest.raises(BleakError):
+        await coordinator._connect_locked()
+
+    client.disconnect.assert_awaited_once()
+    assert coordinator._client is None  # and nothing is left claiming to be live
+
+
+async def test_stopping_hangs_up_even_when_the_lock_is_busy(
+    hass: HomeAssistant, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A busy lock must not mean the connection is simply abandoned.
+
+    Dropping the reference does not close a BLE link - bleak has no disconnect
+    on garbage collection - so the lamp's one slot stays taken and the next
+    coordinator cannot have it.
+    """
+    coordinator, client = _connected_coordinator(hass)
+    monkeypatch.setattr(coordinator_module, "_STOP_TIMEOUT", 0.05)
+    client.disconnect = AsyncMock()
+
+    await coordinator._lock.acquire()  # something else is mid-connect
+    try:
+        await coordinator.async_stop()
+    finally:
+        coordinator._lock.release()
+
+    client.disconnect.assert_awaited()  # hung up anyway
+    assert coordinator._client is None
+
+
+async def test_background_work_is_tied_to_the_entry(hass: HomeAssistant) -> None:
+    """Reconnects and priming must die with the entry, like the first connect.
+
+    Tasks created on hass are only awaited at shutdown, so on a reload one
+    outlives its coordinator, finishes connecting, and claims the lamp's only
+    slot for a coordinator nobody owns - while the replacement cannot connect.
+    """
+    coordinator, _ = _connected_coordinator(hass)
+    coordinator._client = None
+    spawned: list[str] = []
+
+    def _background(_hass: object, coro: object, name: str) -> object:
+        coro.close()
+        spawned.append(name)
+        return MagicMock()
+
+    entry = MagicMock()
+    entry.async_create_background_task = _background
+    coordinator._entry = entry
+
+    coordinator._async_poll_reconnect(None)
+    assert len(spawned) == 1  # the reconnect went to the entry, not to hass
+
+    coordinator._client = MagicMock(is_connected=True)
+    coordinator._async_poll_reconnect(None)
+    assert len(spawned) == 2  # and so does the priming

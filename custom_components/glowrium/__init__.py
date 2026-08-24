@@ -31,6 +31,12 @@ async def async_setup_entry(hass: HomeAssistant, entry: GlowriumConfigEntry) -> 
     # cannot reach - one more of them competing for the single BLE connection on
     # every cancelled attempt.
     entry.runtime_data = coordinator
+    # Registered before starting, and relied on for BOTH teardown paths: Home
+    # Assistant does not call async_unload_entry for an entry that never
+    # reached LOADED, so a setup that fails after this point would otherwise
+    # leave the coordinator's bluetooth callbacks and reconnect poll running
+    # with no owner - one more of them on every retry.
+    entry.async_on_unload(coordinator.async_stop)
     await coordinator.async_start(entry)
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
     return True
@@ -38,6 +44,6 @@ async def async_setup_entry(hass: HomeAssistant, entry: GlowriumConfigEntry) -> 
 
 async def async_unload_entry(hass: HomeAssistant, entry: GlowriumConfigEntry) -> bool:
     """Unload a config entry."""
-    if unload_ok := await hass.config_entries.async_unload_platforms(entry, PLATFORMS):
-        await entry.runtime_data.async_stop()
-    return unload_ok
+    # The coordinator is stopped by the async_on_unload callback registered in
+    # async_setup_entry, which covers a failed setup as well as this path.
+    return await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
