@@ -1030,3 +1030,160 @@ async def test_the_bring_up_is_attempted_once_per_session(
     coordinator.state[KEY_ACTIVATED] = False
     await coordinator._async_activate_if_needed()
     client.write_gatt_char.assert_not_awaited()
+
+
+async def test_a_failed_reconnect_does_not_wedge_reconnection(
+    hass: HomeAssistant,
+) -> None:
+    """One failed attempt must not stop the lamp being retried.
+
+    The poll is the only thing that gets a dropped link back, and it refuses
+    to start a second attempt while one is in flight. If a failure left that
+    flag set, the lamp would never be reconnected again for the rest of the
+    session - on this hardware failures are the normal case, not the rare one.
+    """
+    coordinator, _ = _connected_coordinator(hass)
+    coordinator._client = None
+    attempts: list[int] = []
+
+    async def _fails() -> None:
+        attempts.append(1)
+        raise BleakError("not in range")
+
+    coordinator._async_ensure_connected = _fails
+
+    coordinator._async_poll_reconnect(None)
+    await hass.async_block_till_done()
+    assert attempts == [1]
+
+    coordinator._async_poll_reconnect(None)
+    await hass.async_block_till_done()
+    assert attempts == [1, 1]  # and again, and again
+
+
+async def test_advertisements_do_not_start_a_connect_storm(
+    hass: HomeAssistant,
+) -> None:
+    """Only one connect at a time, however fast the lamp advertises.
+
+    Advertisements arrive about once a second; starting a connect for each
+    would pile them onto a device that allows exactly one connection.
+    """
+    coordinator, _ = _connected_coordinator(hass)
+    coordinator._client = None
+    attempts: list[int] = []
+    release = asyncio.Event()
+
+    async def _hangs() -> None:
+        attempts.append(1)
+        await release.wait()
+
+    coordinator._async_ensure_connected = _hangs
+
+    for _ in range(5):
+        coordinator._async_on_advertisement(None, None)
+    coordinator._async_poll_reconnect(None)  # the poll must not add one either
+    await asyncio.sleep(0)
+    assert attempts == [1]
+
+    release.set()
+    await hass.async_block_till_done()
+
+
+async def test_stopping_tears_everything_down(hass: HomeAssistant) -> None:
+    """Stopping cancels all three watchers and drops the link.
+
+    Leaving any of them behind means a reload leaves the old coordinator
+    reacting to advertisements and polling for reconnects alongside the new
+    one, both competing for the lamp's single connection.
+    """
+    coordinator, client = _connected_coordinator(hass)
+    client.disconnect = AsyncMock()
+    cancels = {name: MagicMock() for name in ("bluetooth", "unavailable", "poll")}
+    coordinator._cancel_bluetooth = cancels["bluetooth"]
+    coordinator._cancel_unavailable = cancels["unavailable"]
+    coordinator._cancel_poll = cancels["poll"]
+
+    await coordinator.async_stop()
+
+    for name, cancel in cancels.items():
+        assert cancel.call_count == 1, f"{name} watcher was left running"
+    client.disconnect.assert_awaited_once()
+    assert coordinator._client is None
+
+
+async def test_a_dropped_link_is_forgotten(hass: HomeAssistant) -> None:
+    """The disconnect callback must clear the client, not just log.
+
+    Everything downstream asks `_is_connected`, which trusts this: a stale
+    client left in place looks connected, so the poll never reconnects and
+    every command writes into a dead handle.
+    """
+    coordinator, client = _connected_coordinator(hass)
+    assert coordinator._is_connected is True
+
+    coordinator._async_on_disconnect(client)
+
+    assert coordinator._client is None
+    assert coordinator._is_connected is False
+
+
+async def test_a_write_without_a_link_is_refused_not_dropped(
+    hass: HomeAssistant, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Writing with no client must raise, so the retry and the user hear about it.
+
+    Returning quietly would make every command look like it succeeded while
+    nothing reached the lamp.
+    """
+    coordinator, _ = _connected_coordinator(hass)
+    monkeypatch.setattr(coordinator_module, "_CONFIRM_TIMEOUT", 0.01)
+    coordinator._client = None
+
+    with pytest.raises(BleakError):
+        await coordinator._write_raw({KEY_POWER: True})
+
+
+async def test_starting_watches_for_the_device(
+    hass: HomeAssistant, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Start registers both bluetooth watchers and seeds presence.
+
+    Without the advertisement callback the lamp is never noticed coming back;
+    without the unavailable tracker its entities never go unavailable when it
+    is unplugged.
+    """
+    coordinator, _ = _connected_coordinator(hass)
+    calls: list[str] = []
+    fake = MagicMock()
+    fake.async_register_callback.side_effect = lambda *a, **k: (
+        calls.append("advertisement") or (lambda: None)
+    )
+    fake.async_track_unavailable.side_effect = lambda *a, **k: (
+        calls.append("unavailable") or (lambda: None)
+    )
+    fake.async_address_present.side_effect = lambda *a, **k: calls.append("presence")
+    fake.BluetoothCallbackMatcher = MagicMock()
+    fake.BluetoothScanningMode = MagicMock()
+    monkeypatch.setattr(coordinator_module, "bluetooth", fake)
+    coordinator._async_ensure_connected = AsyncMock()
+    coordinator._client = None  # this is about the watchers, not the link
+
+    handed_over: list[str] = []
+
+    def _background(_hass: object, coro: object, name: str) -> object:
+        coro.close()  # the test does not run it, but must not leak it
+        handed_over.append(name)
+        return MagicMock()
+
+    entry = MagicMock()
+    entry.async_create_background_task = _background
+
+    await coordinator.async_start(entry)
+    try:
+        assert sorted(calls) == ["advertisement", "presence", "unavailable"]
+        # The first connect is handed to the entry, which is what cancels it
+        # on unload rather than letting it outlive the coordinator.
+        assert len(handed_over) == 1
+    finally:
+        await coordinator.async_stop()
