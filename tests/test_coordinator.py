@@ -13,6 +13,7 @@ import pytest
 
 from custom_components.glowrium import cbor, coordinator as coordinator_module
 from custom_components.glowrium.const import (
+    DST_OFF,
     KEY_ACTIVATED,
     KEY_BRIGHTNESS,
     KEY_CIRCADIAN,
@@ -20,11 +21,14 @@ from custom_components.glowrium.const import (
     KEY_INDICATOR,
     KEY_LIGHTING_MODE,
     KEY_POWER,
+    KEY_RAMP,
     KEY_SCHEDULE,
     KEY_TIMER,
     NOTIFY_UUID,
     STATE_KEYS,
+    TIMER_BRIGHTNESS,
     TIMER_DEFAULT,
+    TIMER_END_H,
     TIMER_START_H,
     TIMER_START_M,
     WRITE_UUID,
@@ -1187,3 +1191,92 @@ async def test_starting_watches_for_the_device(
         assert len(handed_over) == 1
     finally:
         await coordinator.async_stop()
+
+
+async def test_switches_send_the_state_they_were_given(hass: HomeAssistant) -> None:
+    """Both polarities, for every switch. A hardcoded True is still "working".
+
+    Each of these was only ever exercised in one direction, so a command that
+    ignored its argument and always turned the thing on looked correct.
+    """
+    coordinator, client = _connected_coordinator(hass)
+
+    await coordinator.async_set_indicator(False)
+    assert (
+        cbor.decode(client.write_gatt_char.await_args.args[1])[KEY_INDICATOR] is False
+    )
+
+    await coordinator.async_set_dst(False)
+    assert cbor.decode(client.write_gatt_char.await_args.args[1])[KEY_DST] == DST_OFF
+
+    await coordinator.async_set_power(False)
+    assert cbor.decode(client.write_gatt_char.await_args.args[1])[KEY_POWER] is False
+
+
+async def test_brightness_is_clamped_at_both_ends(hass: HomeAssistant) -> None:
+    """Only the upper clamp was pinned; a missing lower one sends a negative."""
+    coordinator, client = _connected_coordinator(hass)
+    await coordinator.async_set_brightness(-20)
+    assert cbor.decode(client.write_gatt_char.await_args.args[1])[KEY_BRIGHTNESS] == 0
+
+
+async def test_every_operating_mode_sets_both_flags(hass: HomeAssistant) -> None:
+    """The two flags are mutually exclusive, so each mode must write both.
+
+    Only Circadian was covered. A Manual that wrote nothing, or a Schedule
+    that set circadian, would have left the lamp in the wrong mode silently.
+    """
+    for mode, circadian, schedule in (
+        ("manual", False, False),
+        ("schedule", False, True),
+        ("circadian", True, False),
+    ):
+        coordinator, client = _connected_coordinator(hass)
+        await coordinator.async_set_operating_mode(mode)
+        written: dict[int, object] = {}
+        for call in client.write_gatt_char.await_args_list:
+            written.update(cbor.decode(call.args[1]))
+        assert written[KEY_CIRCADIAN] is circadian, mode
+        assert written[KEY_SCHEDULE] is schedule, mode
+
+
+async def test_each_schedule_setter_changes_its_own_field(
+    hass: HomeAssistant,
+) -> None:
+    """A setter that wrote nothing at all would pass a test of its neighbour."""
+    slot = bytes.fromhex("000300fe091111115a0102")
+    for setter, args, index, expected in (
+        ("async_set_timer_end", (19, 45), TIMER_END_H, 19),
+        ("async_set_timer_brightness", (37,), TIMER_BRIGHTNESS, 37),
+    ):
+        coordinator, client = _connected_coordinator(hass)
+        coordinator.state[KEY_TIMER] = slot
+        await getattr(coordinator, setter)(*args)
+        written = cbor.decode(client.write_gatt_char.await_args.args[1])[KEY_TIMER]
+        assert written[index] == expected, setter
+        assert written != slot, setter
+
+
+async def test_the_remembered_ramp_survives_the_device_reporting(
+    hass: HomeAssistant,
+) -> None:
+    """The user's ramp is remembered, and later reports must not overwrite it.
+
+    The device resets its ramp when circadian is re-enabled, which is why it is
+    remembered at all - so re-seeding it from every report would hand back
+    exactly the value the memory exists to override.
+    """
+    coordinator, client = _connected_coordinator(hass)
+    coordinator.state[KEY_LIGHTING_MODE] = 1
+    await coordinator.async_set_ramp(90)  # 5400 s = 0x1518
+    assert coordinator._desired_ramp == bytes.fromhex("1518")
+
+    coordinator._ingest(
+        cbor.encode({KEY_RAMP: bytes.fromhex("0e10")})
+    )  # device default
+    assert coordinator._desired_ramp == bytes.fromhex("1518")  # still the user's
+
+    client.write_gatt_char.reset_mock()
+    await coordinator.async_set_lighting_mode(5)
+    sent = cbor.decode(client.write_gatt_char.await_args.args[1])
+    assert sent[KEY_RAMP] == bytes.fromhex("1518")  # and it is what gets re-applied
