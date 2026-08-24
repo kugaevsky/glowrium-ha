@@ -313,10 +313,10 @@ keyed by the device-info `pkey`.
 ```python
 @dataclass(frozen=True)
 class GlowriumModel:
-    pkey: str                       # device-info identifier, e.g. "Glowrium-C051"
-    name: str                       # marketing name shown on the device page
+    pkey: str  # device-info identifier, e.g. "Glowrium-C051"
+    name: str  # marketing name shown on the device page
     lighting_modes: dict[str, int]  # preset label -> command index (0x2b)
-    icon: str | None = None         # light-entity icon
+    icon: str | None = None  # light-entity icon
 ```
 
 `resolve_model(pkey)` returns the matching profile, or a **generic fallback**
