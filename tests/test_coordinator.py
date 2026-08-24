@@ -13,6 +13,7 @@ import pytest
 
 from custom_components.glowrium import cbor, coordinator as coordinator_module
 from custom_components.glowrium.const import (
+    KEY_ACTIVATED,
     KEY_BRIGHTNESS,
     KEY_CIRCADIAN,
     KEY_DST,
@@ -774,22 +775,63 @@ async def test_command_writes_before_reading_anything(hass: HomeAssistant) -> No
 
 
 async def test_a_command_connect_is_primed_by_the_poll(hass: HomeAssistant) -> None:
-    """The properties a command's connect skipped are fetched afterwards."""
+    """The properties a command's connect skipped are actually fetched later.
+
+    A command connects without priming to stay inside its budget, so something
+    has to go back for the rest. Asserting that the poll calls a method by name
+    would pass with that method emptied out; what matters is that the device is
+    read.
+    """
     coordinator, client = _connected_coordinator(hass)
-    primed: list[str] = []
-    coordinator._async_prime = AsyncMock(side_effect=lambda: primed.append("primed"))
+    # A real lamp reports its activation flag too; without it every connect
+    # sits out the 3 s wait for 0x14.
+    client.read_gatt_char = AsyncMock(
+        return_value=bytearray(cbor.encode({KEY_POWER: True, KEY_ACTIVATED: True}))
+    )
 
-    # A link exists but nothing has primed it - exactly what a command leaves.
-    assert coordinator._primed_client is None
+    # A link exists that nothing has primed - exactly what a command leaves.
     coordinator._async_poll_reconnect(None)
     await hass.async_block_till_done()
-    assert primed == ["primed"]
 
-    # Once primed, the poll leaves it alone.
-    coordinator._primed_client = client
+    client.read_gatt_char.assert_awaited_with(NOTIFY_UUID)
+    assert coordinator.state[KEY_POWER] is True  # the properties actually landed
+
+    # And it is not re-read on every tick from then on.
+    reads = client.read_gatt_char.await_count
     coordinator._async_poll_reconnect(None)
     await hass.async_block_till_done()
-    assert primed == ["primed"]
+    assert client.read_gatt_char.await_count == reads
+
+
+async def test_a_device_reporting_unactivated_is_brought_up(
+    hass: HomeAssistant,
+) -> None:
+    """A lamp whose 0x14 reads False is activated, not merely noticed.
+
+    This is the whole point of the bring-up: a factory-reset lamp advertises
+    and accepts config writes, but gates its light output on 0x14, so without
+    this it stays dark however many commands it is sent.
+    """
+    coordinator, client = _connected_coordinator(hass)
+    coordinator.state[KEY_ACTIVATED] = False
+
+    await coordinator._async_activate_if_needed()
+
+    written = [
+        cbor.decode(call.args[1]) for call in client.write_gatt_char.await_args_list
+    ]
+    assert KEY_ACTIVATED in written[-1]
+    assert written[-1][KEY_ACTIVATED] is True  # the flag that ungates the light
+
+
+async def test_an_activated_device_is_left_alone(hass: HomeAssistant) -> None:
+    """A lamp already reporting 0x14 True is not put through the bring-up."""
+    coordinator, client = _connected_coordinator(hass)
+    coordinator.state[KEY_ACTIVATED] = True
+
+    await coordinator._async_activate_if_needed()
+
+    client.write_gatt_char.assert_not_awaited()
 
 
 async def test_muted_state_request_recovers_after_the_cooldown(
@@ -928,3 +970,63 @@ async def test_a_write_with_nothing_reportable_is_never_confirmed(
 
     with pytest.raises(HomeAssistantError):
         await coordinator._async_write({0x2C: b"\x02\xd0"})
+
+
+async def test_a_background_connect_primes_once(
+    hass: HomeAssistant, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A connect that primes says so, so the poll does not do it again.
+
+    This drives the real _connect_locked: subscribe, read the device-info
+    string, prime the state, and mark the link primed. Without the mark the
+    poll re-interrogates the lamp every 30 s forever.
+    """
+    coordinator, client = _connected_coordinator(hass)
+    coordinator._client = None
+    client.is_connected = True
+    client.start_notify = AsyncMock()
+    client.read_gatt_char = AsyncMock(
+        side_effect=[
+            bytearray(b"brand:Glowrium;pkey:Glowrium-C051;version:4;;"),
+            bytearray(cbor.encode({KEY_POWER: True, KEY_ACTIVATED: True})),
+        ]
+    )
+    monkeypatch.setattr(
+        coordinator_module, "establish_connection", AsyncMock(return_value=client)
+    )
+
+    def _in_range() -> object:
+        return object()
+
+    coordinator._ble_device = _in_range
+
+    await coordinator._connect_locked()
+
+    client.start_notify.assert_awaited_once()  # or no state ever arrives
+    assert coordinator.model_id == "Glowrium-C051"
+    assert coordinator.state[KEY_POWER] is True
+    assert coordinator._primed_client is client
+
+    reads = client.read_gatt_char.await_count
+    coordinator._async_poll_reconnect(None)
+    await hass.async_block_till_done()
+    assert client.read_gatt_char.await_count == reads  # not primed twice
+
+
+async def test_the_bring_up_is_attempted_once_per_session(
+    hass: HomeAssistant,
+) -> None:
+    """Having settled the activation question, the lamp is not re-interrogated.
+
+    The check costs up to 3 s waiting for 0x14, and it runs on every connect,
+    so repeating it would put that on the command path for the whole session.
+    """
+    coordinator, client = _connected_coordinator(hass)
+    coordinator.state[KEY_ACTIVATED] = True
+    await coordinator._async_activate_if_needed()
+    client.write_gatt_char.assert_not_awaited()
+
+    # Settled. Even a later False must not restart the bring-up.
+    coordinator.state[KEY_ACTIVATED] = False
+    await coordinator._async_activate_if_needed()
+    client.write_gatt_char.assert_not_awaited()
