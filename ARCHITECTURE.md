@@ -103,6 +103,8 @@ All control happens over one vendor service, `facebd00-7261-6262-6974-696f74626c
 | `facebd01-…` | `WRITE_UUID` | Write | **Commands.** Body is a CBOR map `{int key: value}`. One map may set several keys at once (e.g. power + brightness, or the whole bring-up clock). |
 | `facebd02-…` | `NOTIFY_UUID` | Read + Notify + Write | **State.** The lamp pushes CBOR maps of changed properties as they change, and one *read* of the same characteristic returns its whole property map — which is how state is primed on connect (see below). |
 | `facebd80-…` | `INFO_UUID` | Read | **Device info** string, read once per connection and parsed into `DeviceInfo`. |
+| `facebd03-…` | `UNUSED_CHANNEL_UUID` | Write + Notify | **Unused.** Shaped like a request/response or OTA channel; refuses a read with app-error `0x1e`. Nobody has written to it — doing so blind could change a setting with no way to read it back. The vendor app does not touch it. |
+| `facebd81-…` | `UNUSED_VERSION_UUID` | Read | **Unused.** Returns a single byte `0x02` on both a G7 and a G8. Possibly a protocol version — but the G8 reports `version:2` in its device-info string and the G7 reports `version:4`, and both answer `0x02`, so it is not simply that. |
 
 ### Priming state on connect
 
@@ -220,6 +222,31 @@ live device.
 | `0x2b` | `KEY_LIGHTING_MODE` | Lighting mode | `int` | Circadian preset index — **model-specific** (`models.py`). |
 | `0x2f` | `KEY_RAMP` | Ramp time | `bytes(2)` | Big-endian seconds. `0` = Sun Sync auto ramp. |
 | `0x35` | `KEY_DST` | DST | `bytes(5)` | `[enabled, offset_BE(4)]`; offset `0x00000e10` = 3600 s = 1 h. |
+
+#### Keys the lamp reports that nothing reads
+
+A read of `facebd02` returns more than the integration names. These were
+reported for a G8 (`Glowrium-C064`) in issue #3 and are recorded so the next
+person does not have to rediscover them; none is decoded and none is exposed.
+Values are from one lamp, so treat lengths as more reliable than meanings.
+
+| Key | Observed value | Note |
+| --- | --- | --- |
+| `0x00` | `0201` | |
+| `0x01` | `1a0115` | |
+| `0x02` | `0000000000000000` | |
+| `0x07` | `70` | Mirrors `KEY_BRIGHTNESS` exactly, and tracked it on a second lamp at 63. Target versus current, or a duplicate. |
+| `0x0c` | `640000000000` | Leads with `0x64` = 100. |
+| `0x0e` | `False` | |
+| `0x0f` | 28 bytes, `010300070707…07ea011b121e35` | Tail looks like a `KEY_TIME`-style stamp. |
+| `0x10` | 28 bytes, same shape as `0x0f` but leading `000000` | Plausibly the pair to `0x0f`. |
+| `0x12` | 11 bytes, `000000ff0a121212640000` | Same length and shape as the `0x11` schedule slot, with the enabled byte clear — plausibly a second slot. |
+| `0x13` | 70 bytes, `07e901010c000407ea011b0a1232` then zeroes | Two `KEY_TIME`-style stamps at the front. |
+| `0x15` | `1` | |
+
+> The read appears to stop at `0x15`: `0x17`, `0x2b`, `0x2f` and `0x35` are
+> absent from it and arrive only through the batched request. That boundary is
+> an observation on two devices, not a documented guarantee.
 
 Helper keys used only during bring-up (see [Activation](#activation--bring-up)):
 
