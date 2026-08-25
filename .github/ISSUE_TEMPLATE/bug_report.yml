@@ -53,6 +53,19 @@ body:
         Settings → System → Logs (or `docker logs`). Enable debug logging for
         `custom_components.glowrium` first if you can.
       render: shell
+  - type: textarea
+    id: frames
+    attributes:
+      label: Notify frames (hex), if the state looks wrong
+      description: >
+        Only needed when entities read `unknown`, show stale values, or the log
+        mentions an undecodable frame or trailing bytes. With debug logging on
+        for `custom_components.glowrium`, the coordinator prints the raw bytes
+        of any frame it could not use — paste those lines. A frame the decoder
+        mishandles is the one thing that cannot be guessed at from a
+        description, and one real frame has already turned into a fix and a
+        regression test.
+      render: shell
   - type: checkboxes
     id: checks
     attributes:

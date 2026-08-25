@@ -37,6 +37,37 @@ See **[ARCHITECTURE.md — How to add a new model](ARCHITECTURE.md#how-to-add-a-
 for the detailed capture → decode → `models.py` walkthrough, plus the full GATT/CBOR
 protocol reference behind it.
 
+## Sending protocol data for a device
+
+Raw protocol data from a lamp nobody here owns is worth more than a bug report,
+and it does not oblige anyone to write code — post it in an issue and it gets
+written down, whether or not anything comes of it immediately.
+
+What is worth sending, roughly in order of usefulness:
+
+1. **A notify frame the decoder mishandled**, as hex. Turn on debug logging for
+   `custom_components.glowrium`; frames that cannot be used are printed with
+   their bytes. One such frame from a G8 turned into a fix and a regression
+   test — the decoder had been throwing away eleven valid properties because
+   the frame promised twelve pairs and carried eleven.
+2. **A read of `facebd02`**, as hex or decoded. This is the lamp's whole
+   property map. It is how we learned that the read stops short of the
+   indicator, lighting mode, ramp and DST keys, which changed how state is
+   primed.
+3. **The device-info string from `facebd80`** — `brand`, `pkey`, `devid`,
+   `version`, and anything else your lamp puts there. Redact `devid` and `mac`
+   if you like; the `pkey` is what selects the model profile.
+4. **The GATT table** as your stack reports it (`bluetoothctl`, nRF Connect,
+   BlueZ). Two characteristics were missing from `const.py` until a G8 owner
+   listed them.
+5. **A btsnoop capture of the vendor app** switching circadian presets. This is
+   the one thing that cannot be substituted: it pins the preset indices, and
+   without it a model's entry in `models.py` would be a guess. See below.
+
+Please say which model and firmware the data came from, and whether it is one
+lamp or several — a value seen on one device is a datapoint, not a protocol
+guarantee, and the docs mark it accordingly.
+
 ## Testing on hardware
 
 A macOS/Linux machine with a Bluetooth adapter can drive the coordinator against a real lamp
