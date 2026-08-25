@@ -1649,3 +1649,37 @@ async def test_a_model_that_keeps_refusing_is_left_alone_for_the_session(
     await asyncio.sleep(0.06)
     await coordinator._request_state(client)
     assert client.write_gatt_char.await_count == sent  # never again this session
+
+
+async def test_a_link_that_dies_after_the_read_is_not_a_refusal(
+    hass: HomeAssistant,
+) -> None:
+    """A read can succeed and the link still die before the request goes out.
+
+    Seen on a real G7 in 0.2.0: the read answered - the low property block
+    arrived and six entities came alive - and the request then failed with
+    "Not connected" three times running, because the link dropped in between.
+    Treating a successful read as proof the device is present muted the request
+    on a perfectly good lamp, so the indicator, lighting mode, ramp and DST
+    never arrived while commands kept working. Whether the device refused is
+    told by the link being alive *after* the failure, not before it.
+    """
+    coordinator = GlowriumCoordinator(hass, "AA:BB:CC:DD:EE:FF", "Glowrium-G7")
+    client = MagicMock()
+    client.is_connected = True
+    client.read_gatt_char = AsyncMock(
+        return_value=bytearray(cbor.encode({KEY_POWER: True}))
+    )
+
+    async def _write_then_the_link_dies(*_a: object, **_kw: object) -> None:
+        client.is_connected = False  # the drop is why the write failed
+        raise BleakError("[org.bluez.Error.Failed] Not connected")
+
+    client.write_gatt_char = AsyncMock(side_effect=_write_then_the_link_dies)
+
+    for _ in range(coordinator_module._STATE_REQUEST_ATTEMPTS * 2):
+        client.is_connected = True
+        await coordinator._request_state(client)
+
+    assert coordinator._state_request_muted is False
+    assert coordinator._state_request_failures == 0
