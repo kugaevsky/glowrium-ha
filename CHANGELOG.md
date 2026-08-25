@@ -4,6 +4,20 @@ All notable changes to this project are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+- **The device page is usable again while the lamp is out of reach.** Since the
+  light stopped claiming a confident `off` for a state it had never read, every
+  control sat at `unknown` until the lamp answered — and if it could not answer,
+  the page stayed that way. The lamp's *settings* now show their last known value
+  again after a restart: lighting mode, ramp, DST, the indicator and the schedule
+  change when someone changes them, not while Home Assistant is down. The light
+  itself is deliberately **not** restored — reporting a lamp as `on` while it is
+  physically off is the lie that was removed on purpose, and automations reason
+  from it. A report from the lamp always wins over a remembered value.
+
 ## [0.2.0] - 2026-08-25
 
 A reliability release. The lamp behaves the same when everything is working;

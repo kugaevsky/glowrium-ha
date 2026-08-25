@@ -15,7 +15,7 @@ from .const import (
     MODE_CIRCADIAN,
     OPERATING_MODES,
 )
-from .entity import GlowriumEntity
+from .entity import GlowriumSettingEntity
 
 
 async def async_setup_entry(
@@ -33,7 +33,7 @@ async def async_setup_entry(
     )
 
 
-class GlowriumOperatingModeSelect(GlowriumEntity, SelectEntity):
+class GlowriumOperatingModeSelect(GlowriumSettingEntity, SelectEntity):
     """Manual / Circadian / Schedule - the mutually exclusive auto modes."""
 
     _attr_translation_key = "operating_mode"
@@ -45,16 +45,19 @@ class GlowriumOperatingModeSelect(GlowriumEntity, SelectEntity):
         self._attr_unique_id = f"{coordinator.address}_operating_mode"
 
     @property
-    def current_option(self) -> str:
+    def current_option(self) -> str | None:
         """Return the active operating mode."""
-        return self._coordinator.operating_mode
+        mode = self._coordinator.operating_mode
+        if mode is None and self._restored in self.options:
+            return self._restored
+        return mode
 
     async def async_select_option(self, option: str) -> None:
         """Switch operating mode."""
         await self._coordinator.async_set_operating_mode(option)
 
 
-class GlowriumLightingModeSelect(GlowriumEntity, SelectEntity):
+class GlowriumLightingModeSelect(GlowriumSettingEntity, SelectEntity):
     """Circadian lighting mode (Sun SYNC, Sunrise Sync, ...)."""
 
     _attr_translation_key = "lighting_mode"
@@ -76,7 +79,10 @@ class GlowriumLightingModeSelect(GlowriumEntity, SelectEntity):
     @property
     def current_option(self) -> str | None:
         """Return the selected lighting mode, if known."""
-        return self._by_index.get(self._coordinator.state.get(KEY_LIGHTING_MODE))
+        mode = self._by_index.get(self._coordinator.state.get(KEY_LIGHTING_MODE))
+        if mode is None and self._restored in self.options:
+            return self._restored
+        return mode
 
     async def async_select_option(self, option: str) -> None:
         """Apply the chosen lighting mode."""

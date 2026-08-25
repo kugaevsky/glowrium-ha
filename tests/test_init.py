@@ -5,11 +5,19 @@ from unittest.mock import AsyncMock, patch
 
 from homeassistant.config_entries import ConfigEntryState
 from homeassistant.const import CONF_ADDRESS
-from homeassistant.core import HomeAssistant
-from pytest_homeassistant_custom_component.common import MockConfigEntry
+from homeassistant.core import HomeAssistant, State
+from pytest_homeassistant_custom_component.common import (
+    MockConfigEntry,
+    mock_restore_cache,
+)
 
 from custom_components.glowrium import cbor
-from custom_components.glowrium.const import DOMAIN, KEY_BRIGHTNESS, KEY_POWER
+from custom_components.glowrium.const import (
+    DOMAIN,
+    KEY_BRIGHTNESS,
+    KEY_INDICATOR,
+    KEY_POWER,
+)
 
 
 def _entry() -> MockConfigEntry:
@@ -263,3 +271,47 @@ async def test_a_setup_that_fails_later_still_stops_the_coordinator(
         await hass.async_block_till_done()
 
     stop.assert_awaited_once()
+
+
+async def test_settings_survive_a_restart_but_the_light_does_not(
+    hass: HomeAssistant,
+) -> None:
+    """Settings show their last value again; the light still admits it is unknown.
+
+    A device page where every control reads `unknown` is unusable, and the
+    lamp's settings do not change while Home Assistant is down - so showing the
+    last value read is a better answer than none. The light is deliberately not
+    restored: a lamp reported `on` while it is physically off is the confident
+    lie this integration used to tell, and automations reasoned from it.
+    """
+    mock_restore_cache(
+        hass,
+        (
+            State("switch.glowrium_g7_1234_indicator_light", "on"),
+            State("number.glowrium_g7_1234_ramp_time", "45"),
+            State("select.glowrium_g7_1234_lighting_mode", "Sunrise Sync"),
+            State("light.glowrium_g7_1234", "on"),
+        ),
+    )
+    await _setup_without_bluetooth(hass)
+
+    assert hass.states.get("switch.glowrium_g7_1234_indicator_light").state == "on"
+    assert hass.states.get("number.glowrium_g7_1234_ramp_time").state == "45.0"
+    assert (
+        hass.states.get("select.glowrium_g7_1234_lighting_mode").state == "Sunrise Sync"
+    )
+    assert hass.states.get("light.glowrium_g7_1234").state == "unknown"
+
+
+async def test_a_report_from_the_lamp_overrides_what_was_restored(
+    hass: HomeAssistant,
+) -> None:
+    """The remembered value is a stand-in, not a preference."""
+    mock_restore_cache(hass, (State("switch.glowrium_g7_1234_indicator_light", "on"),))
+    entry = await _setup_without_bluetooth(hass)
+    assert hass.states.get("switch.glowrium_g7_1234_indicator_light").state == "on"
+
+    entry.runtime_data._ingest(cbor.encode({KEY_INDICATOR: False}))
+    await hass.async_block_till_done()
+
+    assert hass.states.get("switch.glowrium_g7_1234_indicator_light").state == "off"
