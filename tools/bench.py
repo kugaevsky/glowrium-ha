@@ -76,7 +76,7 @@ async def _find(seconds: float) -> object | None:
     return best
 
 
-def _report(coordinator: GlowriumCoordinator) -> None:
+def _report(coordinator: GlowriumCoordinator, from_read: set[int] | None) -> None:
     """Print what the lamp has told us, and what it has not."""
     state = coordinator.state
     print(f"\ndevice-info: {coordinator.device_info or '(none)'}")
@@ -85,12 +85,21 @@ def _report(coordinator: GlowriumCoordinator) -> None:
         raw = state[key]
         shown = raw.hex() if isinstance(raw, (bytes, bytearray)) else raw
         print(f"  0x{key:02x} {_KEY_NAMES.get(key, '?'):<14} {shown}")
+    if from_read is not None:
+        gap = [k for k in STATE_KEYS if k not in from_read]
+        print(f"\nthe connect-time read alone carried {len(from_read)} keys")
+        if gap:
+            names = ", ".join(f"0x{k:02x} {_KEY_NAMES.get(k, '?')}" for k in gap)
+            print(f"  it did NOT carry: {names}")
+            print("  those come from the batched STATE_KEYS request")
+        else:
+            print("  which is every key in STATE_KEYS - no request needed")
     missing = [k for k in STATE_KEYS if k not in state]
     if missing:
         names = ", ".join(f"0x{k:02x} {_KEY_NAMES.get(k, '?')}" for k in missing)
-        print(f"\nSTATE_KEYS still missing: {names}")
+        print(f"\nSTATE_KEYS still missing after priming: {names}")
     else:
-        print("\nevery key in STATE_KEYS arrived")
+        print("\nafter priming, every key in STATE_KEYS is present")
 
 
 async def main() -> int:
@@ -118,6 +127,23 @@ async def main() -> int:
     # 0x14 reads back the way we expect.
     coordinator._activation_checked = True  # noqa: SLF001
 
+    # Record what the READ alone returns, before the batched request fills in
+    # the rest. Reporting only the total is how this bench misled its author:
+    # 24 keys after priming looks like "the read carries everything", when the
+    # read had returned 20 and the request supplied the other four.
+    from_read: set[int] = set()
+    original_ingest = coordinator._ingest  # noqa: SLF001
+    first = True
+
+    def _watch_first(data: bytes) -> None:
+        nonlocal first
+        original_ingest(data)
+        if first:
+            first = False
+            from_read.update(coordinator.state)
+
+    coordinator._ingest = _watch_first  # noqa: SLF001
+
     print(f"\nconnecting to {device.name} ({device.address})…")
     try:
         async with coordinator._lock:  # noqa: SLF001
@@ -126,7 +152,7 @@ async def main() -> int:
         print(f"connect failed: {err!r}")
         return 1
 
-    _report(coordinator)
+    _report(coordinator, from_read)
 
     if args.watch:
         print(f"\nfollowing notifications for {args.watch:.0f}s…")

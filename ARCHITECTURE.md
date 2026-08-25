@@ -114,10 +114,15 @@ whatever comes back. It then *writes* the raw bytes of `STATE_KEYS` (a tuple of
 property ids) to the same characteristic — asking the lamp to report them —
 unless the read happened to carry every key already.
 
-> ⚠️ **The read does not return the whole property map.** Observed on a G7 and
-> reported for a G8 (issue #3): it carries only the low property block, up to
-> `0x15`. Treat that boundary as an observation on two devices, not as a
-> documented firmware guarantee. The indicator
+> ⚠️ **The read does not return the whole property map.** Measured directly on a
+> G7 at RSSI −40 and reported for a G8 in issue #3: the read returns 236 bytes
+> headed `0xb4` — a complete, twenty-pair map — carrying keys `0x00`–`0x15` and
+> nothing above. The indicator (`0x17`), lighting mode (`0x2b`), ramp (`0x2f`)
+> and DST (`0x35`) are absent from it on both models and arrive only through the
+> `STATE_KEYS` request. The frame is not truncated; it simply stops there.
+> Skipping the request after a successful read leaves those four entities
+> `unknown` for the whole session — which is what happened, and is what
+> `tools/bench.py` reports on any lamp you can get close to. The indicator
 > (`0x17`), lighting mode (`0x2b`), ramp (`0x2f`) and DST (`0x35`) are **not** in
 > it and arrive solely through the `STATE_KEYS` request. Skipping the request
 > after a successful read leaves those four entities `unknown` for the whole

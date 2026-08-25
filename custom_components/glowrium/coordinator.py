@@ -608,12 +608,14 @@ class GlowriumCoordinator:
         ``Insufficient authorization``, a not-connected error, or a timeout
         depending on route and timing, and drops the link while doing so.
 
-        **But the read does not return everything.** Measured on real hardware,
-        it carries only the low property block - up to 0x15 - so the indicator
-        (0x17), lighting mode (0x2b), ramp (0x2f) and DST (0x35) never appear in
-        it. Treating a successful read as the whole story left those four unread
-        for the entire session. So the read primes what it can, and the request
-        still goes out unless the read happened to cover every key we want.
+        **But the read does not return everything.** Measured on a G7 at RSSI
+        -40 and reported for a G8 in issue #3: a complete twenty-pair map that
+        stops at 0x15, so the indicator (0x17), lighting mode (0x2b), ramp
+        (0x2f) and DST (0x35) never appear in it. The frame is not truncated -
+        it simply ends there. Treating a successful read as the whole story
+        left those four unread for the entire session. So the read primes what
+        it can, and the request still goes out unless the read happened to
+        cover every key we want.
 
         A model that genuinely refuses the request is stopped from being asked
         again, but only after ``_STATE_REQUEST_ATTEMPTS`` consecutive failures:
