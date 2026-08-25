@@ -8,6 +8,13 @@ All notable changes to this project are documented here. The format is based on
 
 ### Fixed
 
+- **Turning the DST switch no longer overwrites the offset the lamp reported.**
+  The `0x35` slot carries a flag and the offset to apply, written together, and
+  only the flag was ever ours to change — sending a fixed hour turned a half-hour
+  daylight-saving region into a full one the moment the switch was touched
+  ([#4](https://github.com/kugaevsky/glowrium-ha/issues/4)). A lamp that has not
+  reported yet still gets the near-universal hour, so the switch stays usable
+  before its state arrives.
 - **The device clock is kept right instead of being set once and forgotten.** It
   was only ever written during first-time bring-up, so a lamp set up months ago
   ran its schedule and its circadian curve off whatever date it had then — one

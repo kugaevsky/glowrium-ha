@@ -1068,8 +1068,24 @@ class GlowriumCoordinator:
         await self._async_write({KEY_INDICATOR: is_on})
 
     async def async_set_dst(self, is_on: bool) -> None:
-        """Enable or disable daylight-saving-time handling."""
-        await self._async_write({KEY_DST: DST_ON if is_on else DST_OFF})
+        """Enable or disable daylight-saving-time handling.
+
+        The 0x35 slot is a flag plus the offset to apply, written together, so
+        only the flag is ours to change. Sending a fixed hour would turn a
+        half-hour region into a full one the moment the switch is touched,
+        discarding a value the lamp had been reporting correctly all along.
+        Unlike the schedule slot this is a single field with a near-universal
+        default, so a lamp that has not reported yet gets the hour rather than
+        a refusal - that keeps the switch usable before priming.
+        """
+        reported = self.state.get(KEY_DST)
+        default = DST_ON if is_on else DST_OFF
+        if not isinstance(reported, (bytes, bytearray)) or len(reported) != len(
+            default
+        ):
+            await self._async_write({KEY_DST: default})
+            return
+        await self._async_write({KEY_DST: bytes([int(is_on)]) + bytes(reported[1:])})
 
     async def async_sync_location(self) -> None:
         """Push HA's home coordinates; the device recomputes its circadian curve."""

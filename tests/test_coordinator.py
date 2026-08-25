@@ -15,6 +15,7 @@ import pytest
 from custom_components.glowrium import cbor, coordinator as coordinator_module
 from custom_components.glowrium.const import (
     DST_OFF,
+    DST_ON,
     KEY_ACTIVATED,
     KEY_BRIGHTNESS,
     KEY_CIRCADIAN,
@@ -1860,3 +1861,40 @@ async def test_both_priming_paths_check_the_clock(
             await coordinator._async_prime()
 
         assert checked == 1, path
+
+
+async def test_the_dst_offset_the_lamp_reports_is_preserved(
+    hass: HomeAssistant,
+) -> None:
+    """Toggling DST must not overwrite the offset with a hardcoded hour.
+
+    The 0x35 slot is a flag plus an offset, written together. Sending a fixed
+    3600 seconds turns half-hour daylight-saving regions - Lord Howe Island,
+    and historically others - into a full hour the moment the switch is
+    touched, and the lamp had been reporting the right value all along
+    (issue #4).
+    """
+    coordinator, client = _connected_coordinator(hass)
+    half_hour = bytes.fromhex("0000000708")  # flag off, offset 1800 s
+    coordinator.state[KEY_DST] = half_hour
+
+    await coordinator.async_set_dst(True)
+
+    written = cbor.decode(client.write_gatt_char.await_args.args[1])[KEY_DST]
+    assert written[0] == 1  # the flag we asked for
+    assert written[1:] == half_hour[1:], "the lamp's own offset was overwritten"
+
+
+async def test_dst_falls_back_to_an_hour_when_unread(hass: HomeAssistant) -> None:
+    """With nothing reported yet, the near-universal hour is the sane default.
+
+    Unlike the schedule slot, this carries one field rather than five, and
+    refusing would leave the switch unusable until the lamp reports - so a
+    default is the better trade here.
+    """
+    coordinator, client = _connected_coordinator(hass)
+    assert KEY_DST not in coordinator.state
+
+    await coordinator.async_set_dst(True)
+
+    assert cbor.decode(client.write_gatt_char.await_args.args[1])[KEY_DST] == DST_ON
