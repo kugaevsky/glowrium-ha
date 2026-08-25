@@ -49,10 +49,11 @@ All notable changes to this project are documented here. The format is based on
   `0x15`, so the
   indicator, lighting mode, ramp and DST still come from the request, which is sent
   unless the read already covered every key. A model that refuses the request is
-  left alone after three consecutive refusals, and only for ten minutes: on a weak
-  signal a dropped link is indistinguishable from a refusal, so giving up on the
-  first one — or giving up for the whole session — costs a perfectly good lamp four
-  of its properties until Home Assistant is restarted.
+  left alone after three consecutive refusals — and only a lamp that answered the
+  read is counted as refusing, since one that fails both is simply out of range.
+  Telling those apart matters: counting a weak signal as a refusal cost a healthy
+  lamp four of its properties forty seconds after start-up, while a model that
+  really does refuse drops its connection every time it is asked.
 - **Changing one schedule field no longer overwrites the other four.** The `0x11`
   slot packs the enabled flag, both times, brightness and fade into a single write,
   so substituting a default to change one of them silently rewrote the rest and
