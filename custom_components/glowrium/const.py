@@ -13,7 +13,24 @@ NAME_PREFIX: Final = "Glowrium"
 WRITE_UUID: Final = "facebd01-7261-6262-6974-696f74626c65"  # commands (write)
 NOTIFY_UUID: Final = "facebd02-7261-6262-6974-696f74626c65"  # state (notify/read/write)
 # Readable device-info string: "brand:...;pkey:...;devid:...;mac:...;version:...".
+# A G8 also carries a "subid" field there (reported in issue #3); nothing is
+# known about what it selects, so nothing reads it.
 INFO_UUID: Final = "facebd80-7261-6262-6974-696f74626c65"
+
+# The rest of the service, declared here so the GATT table is complete rather
+# than rediscovered. Neither is used: the vendor app touches neither, and this
+# integration needs neither.
+#
+# facebd03 (write + notify) has the shape of a request/response or OTA channel.
+# It refuses a read with app-error 0x1e, and nobody has written to it: doing so
+# blind on a lamp in daily use could change a setting with no way to read it
+# back.
+UNUSED_CHANNEL_UUID: Final = "facebd03-7261-6262-6974-696f74626c65"
+# facebd81 (read) returns a single byte, 0x02, on both a G7 and a G8 - possibly
+# a protocol or API version, though on the G8 it matches the device-info
+# "version:2" while the G7 reports "version:4" and still answers 0x02, so it is
+# not simply that.
+UNUSED_VERSION_UUID: Final = "facebd81-7261-6262-6974-696f74626c65"
 
 # CBOR property keys (verified against btsnoop captures + the live device).
 KEY_TIME: Final = 0x05  # bytes: year_be, month, day, hour, min, sec

@@ -73,6 +73,15 @@ All notable changes to this project are documented here. The format is based on
 - The refusal shown when a field has not been reported yet is translated too, in all
   six supported languages — it was the last hard-coded English message.
 
+### Added
+
+- The rest of the vendor GATT service and the state keys the lamp reports but the
+  integration does not decode are now written down — two characteristics
+  (`facebd03`, `facebd81`) and eleven property keys, contributed by
+  [@pentafive](https://github.com/pentafive) from a G8
+  ([#3](https://github.com/kugaevsky/glowrium-ha/issues/3)). Nothing reads them;
+  they are recorded so the next person does not have to rediscover them.
+
 ### Changed
 
 - A frame dropped for carrying trailing bytes is now logged as itself, with the
