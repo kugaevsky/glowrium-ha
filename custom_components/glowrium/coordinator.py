@@ -13,12 +13,14 @@ from bleak.exc import BleakError
 from bleak_retry_connector import BleakClientWithServiceCache, establish_connection
 from homeassistant.components import bluetooth
 from homeassistant.core import HomeAssistant, callback
+from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers.event import async_track_time_interval
 from homeassistant.util import dt as dt_util
 
 from . import cbor, protocol
 from .const import (
     ACTIVATE_MISC_VALUE,
+    DOMAIN,
     DST_OFF,
     DST_ON,
     INFO_UUID,
@@ -58,6 +60,14 @@ from .models import GlowriumModel, resolve_model
 _LOGGER = logging.getLogger(__name__)
 _RECONNECT_INTERVAL = timedelta(seconds=30)
 _WRITE_ATTEMPTS = 2  # the initial write plus one reconnect-and-retry
+# bleak-retry-connector defaults to 4 connect attempts, each of which can sit
+# through a 20 s bleak timeout plus a backoff. Against an unreachable device
+# that adds up to minutes while _lock is held, so a queued command cannot even
+# start. Two attempts is enough: the reconnect poll comes round again in 30 s.
+_CONNECT_ATTEMPTS = 2
+# Hard ceiling on one user-facing command, so a button reports a clear failure
+# in seconds instead of appearing to hang while the retries stack up.
+_COMMAND_TIMEOUT = 15.0
 
 
 def _encode_device_time(now: datetime | None = None) -> bytes:
@@ -112,6 +122,9 @@ class GlowriumCoordinator:
         self._present = False
         self._reconnecting = False
         self._activation_checked = False
+        # Set once the device rejects the batched state request, so it is not
+        # re-sent on every reconnect (and every command) - see _request_state.
+        self._state_request_rejected = False
 
     @property
     def activated(self) -> bool | None:
@@ -339,30 +352,112 @@ class GlowriumCoordinator:
             device,
             self.name,
             disconnected_callback=self._async_on_disconnect,
+            max_attempts=_CONNECT_ATTEMPTS,
         )
         self._client = client
         await client.start_notify(NOTIFY_UUID, self._on_notify)
-        # Ask the device to report the properties we track. The G7 drops the
-        # link if asked for an id it does not expose, so treat a rejection as
-        # non-fatal: another Glowrium model with a different property set can
-        # still be controlled, just with limited state.
-        try:
-            await client.write_gatt_char(NOTIFY_UUID, bytes(STATE_KEYS), response=True)
-        except (BleakError, TimeoutError) as err:
-            _LOGGER.warning(
-                "%s rejected the state request (%s) - a different Glowrium "
-                "model? Control may be limited",
-                self.address,
-                err,
-            )
+        # Read the device-info string BEFORE the state request: on a model that
+        # rejects that request the device drops the link, and the info read
+        # would be lost along with it - leaving us unable to name the model in
+        # the very warning that asks which model it is.
         if not self.device_info:
             try:
                 raw = await client.read_gatt_char(INFO_UUID)
                 self.device_info = _parse_device_info(bytes(raw))
             except (BleakError, TimeoutError) as err:
                 _LOGGER.debug("Device-info read from %s failed: %s", self.address, err)
+        await self._request_state(client)
         await self._async_activate_if_needed()
         self._async_notify_listeners()
+
+    def _require_read(self, value: Any, field: str) -> Any:
+        """Return ``value``, or raise if the device has not reported ``field``.
+
+        The schedule slot and the lighting-mode frame are read-modify-write: one
+        write carries several fields at once. Substituting a default to change a
+        single field silently overwrites the rest with values the user never
+        chose, so refuse instead and say why.
+        """
+        if value is None or value == b"":
+            raise HomeAssistantError(
+                f"{self.name}: cannot change this yet because the device has not "
+                f"reported its current {field}. It should populate once the lamp "
+                "is connected."
+            )
+        return value
+
+    async def _request_state(self, client: BleakClientWithServiceCache) -> None:
+        """Prime the state mirror, preferring a read over a request.
+
+        ``NOTIFY_UUID`` is readable, and one read returns the device's whole
+        property map in a single response. That is both cheaper and sturdier
+        than asking the device to report: the request-and-notify path is subject
+        to the map being split across notifications (see ``_ingest``), and the
+        request write itself is unreliable on some models - a G8
+        (``Glowrium-C064``) answers it with ATT ``Insufficient authorization``,
+        a not-connected error, or a timeout depending on route and timing, and
+        drops the link while doing so.
+
+        Since ``_connect_locked`` also runs from the command path, a request
+        that tears down the link would do so on every command. So: read first,
+        and only fall back to the request if the read gave us nothing - once. A
+        device that rejects the request is never asked again this session.
+        """
+        try:
+            raw = bytes(await client.read_gatt_char(NOTIFY_UUID))
+        except (BleakError, TimeoutError) as err:
+            _LOGGER.debug("%s state read failed: %s", self.address, err)
+        else:
+            if self._ingest(raw):
+                return
+        if self._state_request_rejected:
+            return
+        try:
+            await client.write_gatt_char(NOTIFY_UUID, bytes(STATE_KEYS), response=True)
+        except (BleakError, TimeoutError) as err:
+            self._state_request_rejected = True
+            _LOGGER.warning(
+                "%s (model %s, firmware %s) could not be read and rejected the "
+                "state request: %s. Not asking again this session - commands "
+                "will still work, but reported state stays optimistic. Please "
+                "report this model",
+                self.address,
+                self.model_id or "unknown",
+                self.sw_version or "unknown",
+                err,
+            )
+
+    def _ingest(self, data: bytes) -> bool:
+        """Merge a CBOR property map from the device into the state mirror.
+
+        Returns True if any property was taken from ``data``. Shared by the
+        notify callback and the connect-time read so both handle a split map,
+        the remembered ramp and listener notification identically.
+        """
+        try:
+            decoded, short = cbor.decode_frame(data)
+        except (ValueError, IndexError) as err:
+            _LOGGER.debug("Undecodable frame %s: %s", data.hex(), err)
+            return False
+        if not isinstance(decoded, dict) or not decoded:
+            return False
+        if short:
+            _LOGGER.debug(
+                "%s: property map split across frames; kept %d of them",
+                self.address,
+                len(decoded),
+            )
+        self.state.update(decoded)
+        # Seed the remembered ramp from the device the first time we see it, so
+        # it survives an HA restart (the device persists its own ramp). Guard on
+        # truthiness, not "is not None": an empty ramp would otherwise latch and
+        # block re-seeding forever, as protocol.ramp_minutes already assumes.
+        if self._desired_ramp is None:
+            ramp = self.state.get(KEY_RAMP)
+            if ramp and isinstance(ramp, (bytes, bytearray)):
+                self._desired_ramp = bytes(ramp)
+        self._async_notify_listeners()
+        return True
 
     @callback
     def _async_on_disconnect(self, _client: BleakClientWithServiceCache) -> None:
@@ -372,20 +467,7 @@ class GlowriumCoordinator:
 
     @callback
     def _on_notify(self, _characteristic: Any, data: bytearray) -> None:
-        try:
-            decoded = cbor.decode(bytes(data))
-        except (ValueError, IndexError) as err:
-            _LOGGER.debug("Undecodable notification %s: %s", bytes(data).hex(), err)
-            return
-        if isinstance(decoded, dict):
-            self.state.update(decoded)
-            # Seed the remembered ramp from the device the first time we see it,
-            # so it survives an HA restart (the device persists its own ramp).
-            if self._desired_ramp is None:
-                ramp = self.state.get(KEY_RAMP)
-                if isinstance(ramp, (bytes, bytearray)):
-                    self._desired_ramp = bytes(ramp)
-            self._async_notify_listeners()
+        self._ingest(bytes(data))
 
     async def _write_raw(self, payload: dict[int, Any]) -> None:
         """Write one command frame to the connected device.
@@ -407,24 +489,37 @@ class GlowriumCoordinator:
 
         The write runs inside ``_lock`` so it cannot race the ~30-60 min GATT
         churn the device performs; if it still fails (the link dropped
-        mid-command) the connection is rebuilt once and the write retried
-        before the error is surfaced to the caller.
+        mid-command) the connection is rebuilt once and the write retried.
+
+        The whole attempt - including the wait for ``_lock``, which a
+        background reconnect may be holding - is capped by
+        ``_COMMAND_TIMEOUT``, and every failure is reported as a
+        ``HomeAssistantError`` so the user gets a readable message rather than
+        a stack trace after a long hang.
         """
-        async with self._lock:
-            for attempt in range(1, _WRITE_ATTEMPTS + 1):
-                try:
-                    await self._connect_locked()
-                    await self._write_raw(payload)
-                    break
-                except (BleakError, TimeoutError) as err:
-                    self._client = None
-                    if attempt == _WRITE_ATTEMPTS:
-                        raise
-                    _LOGGER.debug(
-                        "Write to %s failed (%s); reconnecting and retrying",
-                        self.address,
-                        err,
-                    )
+        try:
+            async with asyncio.timeout(_COMMAND_TIMEOUT), self._lock:
+                for attempt in range(1, _WRITE_ATTEMPTS + 1):
+                    try:
+                        await self._connect_locked()
+                        await self._write_raw(payload)
+                        break
+                    except (BleakError, TimeoutError) as err:
+                        self._client = None
+                        if attempt == _WRITE_ATTEMPTS:
+                            raise
+                        _LOGGER.debug(
+                            "Write to %s failed (%s); reconnecting and retrying",
+                            self.address,
+                            err,
+                        )
+        except (BleakError, TimeoutError) as err:
+            _LOGGER.debug("Command to %s failed: %s", self.address, err)
+            raise HomeAssistantError(
+                translation_domain=DOMAIN,
+                translation_key="cannot_connect",
+                translation_placeholders={"name": self.name},
+            ) from err
         self._async_notify_listeners()
 
     async def _async_activate_if_needed(self) -> None:
@@ -434,9 +529,16 @@ class GlowriumCoordinator:
         """
         if self._activation_checked:
             return
+        if self._state_request_rejected:
+            # This device never reports its properties, so 0x14 can never
+            # arrive. Waiting for it on every connect - and _connect_locked
+            # runs from the command path - is pure latency, and a device whose
+            # activation flag cannot be read must never be activated blind.
+            self._activation_checked = True
+            return
         # Wait (briefly) for the initial state - including 0x14 - to arrive.
         for _ in range(12):
-            if KEY_ACTIVATED in self.state:
+            if KEY_ACTIVATED in self.state or not self._is_connected:
                 break
             await asyncio.sleep(0.25)
         if self.state.get(KEY_ACTIVATED) is False:
@@ -487,14 +589,24 @@ class GlowriumCoordinator:
         The device expects the keys in the order mode, 0x2c, ramp, 0x32; the
         ramp (0x2f) is otherwise clobbered whenever the mode is set.
         """
-        return {
-            KEY_LIGHTING_MODE: self.state.get(KEY_LIGHTING_MODE, 1)
-            if mode is None
-            else mode,
-            0x2C: MODE_PARAM_2C,
-            KEY_RAMP: ramp
+        mode_value = (
+            mode
+            if mode is not None
+            else self._require_read(self.state.get(KEY_LIGHTING_MODE), "lighting mode")
+        )
+        # Ramp keeps its default. Setting a mode rewrites ramp on the device
+        # regardless, so there is no "leave it alone" option here and falling
+        # back is deliberate. The mode above is different: defaulting it there
+        # silently *changes* a setting the caller never asked to touch.
+        ramp_value = (
+            ramp
             if ramp is not None
-            else self._desired_ramp or self.state.get(KEY_RAMP) or RAMP_DEFAULT,
+            else self._desired_ramp or self.state.get(KEY_RAMP) or RAMP_DEFAULT
+        )
+        return {
+            KEY_LIGHTING_MODE: mode_value,
+            0x2C: MODE_PARAM_2C,
+            KEY_RAMP: ramp_value,
             0x32: MODE_PARAM_32,
         }
 
@@ -543,24 +655,24 @@ class GlowriumCoordinator:
 
     async def async_set_timer_start(self, hour: int, minute: int) -> None:
         """Set the schedule start time."""
-        slot = protocol.editable_timer_slot(self.state)
+        slot = self._require_read(protocol.editable_timer_slot(self.state), "schedule")
         slot[TIMER_START_H], slot[TIMER_START_M] = hour, minute
         await self._async_write({KEY_TIMER: bytes(slot)})
 
     async def async_set_timer_end(self, hour: int, minute: int) -> None:
         """Set the schedule end time."""
-        slot = protocol.editable_timer_slot(self.state)
+        slot = self._require_read(protocol.editable_timer_slot(self.state), "schedule")
         slot[TIMER_END_H], slot[TIMER_END_M] = hour, minute
         await self._async_write({KEY_TIMER: bytes(slot)})
 
     async def async_set_timer_brightness(self, value: int) -> None:
         """Set the schedule brightness (0..100)."""
-        slot = protocol.editable_timer_slot(self.state)
+        slot = self._require_read(protocol.editable_timer_slot(self.state), "schedule")
         slot[TIMER_BRIGHTNESS] = max(0, min(100, value))
         await self._async_write({KEY_TIMER: bytes(slot)})
 
     async def async_set_timer_gradual(self, minutes: int) -> None:
         """Set the schedule gradual on/off fade duration in minutes."""
-        slot = protocol.editable_timer_slot(self.state)
+        slot = self._require_read(protocol.editable_timer_slot(self.state), "schedule")
         slot[TIMER_GRADUAL : TIMER_GRADUAL + 2] = protocol.be2_minutes_to_bytes(minutes)
         await self._async_write({KEY_TIMER: bytes(slot)})

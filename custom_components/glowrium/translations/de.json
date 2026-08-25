@@ -77,5 +77,10 @@
         "name": "Zeitplan-Ende"
       }
     }
+  },
+  "exceptions": {
+    "cannot_connect": {
+      "message": "Der Befehl konnte nicht über Bluetooth an {name} gesendet werden. Das Gerät ist möglicherweise außer Reichweite oder der Bluetooth-Adapter ist ausgelastet; ein Bluetooth-Proxy in der Nähe des Geräts hilft meistens."
+    }
   }
 }

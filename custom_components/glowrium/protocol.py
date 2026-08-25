@@ -63,10 +63,16 @@ def timer_slot(state: dict[int, Any]) -> bytes | None:
     return None
 
 
-def editable_timer_slot(state: dict[int, Any]) -> bytearray:
-    """Return a mutable copy of the 0x11 slot, falling back to the default."""
+def editable_timer_slot(state: dict[int, Any]) -> bytearray | None:
+    """Return a mutable copy of the 0x11 slot, or None if it was never read.
+
+    Deliberately no default fallback. The slot packs the enabled flag, both
+    times, brightness and the fade into a single write, so substituting a
+    default to change one field silently overwrites the other four with values
+    the user never chose (and forces enabled=1). Callers must refuse instead.
+    """
     slot = timer_slot(state)
-    return bytearray(slot if slot is not None else TIMER_DEFAULT)
+    return bytearray(slot) if slot is not None else None
 
 
 def _slot_time(

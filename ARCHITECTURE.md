@@ -289,12 +289,25 @@ Two independent triggers, both funnelling into a single guarded reconnect task
 Establishing a connection (`_async_ensure_connected`, serialized by an
 `asyncio.Lock`) uses `bleak_retry_connector.establish_connection`, subscribes to
 notifications, requests `STATE_KEYS`, reads device-info once, and runs activation
-if needed.
+if needed. It caps `establish_connection` at `_CONNECT_ATTEMPTS` (2) rather than
+the library default of 4: against an unreachable device each attempt can burn a
+20 s bleak timeout plus a backoff, all while the lock is held — and the poll above
+comes round again in 30 s anyway.
 
 **Commands are serialized on the same lock** and retried once: `_async_write`
 holds the lock across connect-and-write, so a command cannot race the periodic
 GATT churn; if the write still fails mid-command, the coordinator reconnects once
 and retries before surfacing the error.
+
+**A command is capped at `_COMMAND_TIMEOUT` (15 s)**, covering the wait for the
+lock as well as the connect-and-write itself. Without that ceiling an unreachable
+device lets bleak's own retries stack up for minutes, and the button in the UI
+looks like it has hung. Any failure — timeout or `BleakError` — is re-raised as a
+`HomeAssistantError` carrying the translated `cannot_connect` message, so the user
+sees "out of range or adapter busy; try a Bluetooth proxy" instead of a stack
+trace. Note that `BleakOutOfConnectionSlotsError` is the usual symptom of a weak
+link, *not* of exhausted slots — `habluetooth` reports it whenever no connection
+path scores well enough, which a device at RSSI −85 or worse never does.
 
 Mode-dependent entities (Lighting mode, Ramp, Schedule controls) gate their own
 availability further via `coordinator.mode_allows(...)`, which returns `True` when
@@ -313,10 +326,10 @@ keyed by the device-info `pkey`.
 ```python
 @dataclass(frozen=True)
 class GlowriumModel:
-    pkey: str                       # device-info identifier, e.g. "Glowrium-C051"
-    name: str                       # marketing name shown on the device page
+    pkey: str  # device-info identifier, e.g. "Glowrium-C051"
+    name: str  # marketing name shown on the device page
     lighting_modes: dict[str, int]  # preset label -> command index (0x2b)
-    icon: str | None = None         # light-entity icon
+    icon: str | None = None  # light-entity icon
 ```
 
 `resolve_model(pkey)` returns the matching profile, or a **generic fallback**

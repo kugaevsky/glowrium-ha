@@ -77,5 +77,10 @@
         "name": "Fin del horario"
       }
     }
+  },
+  "exceptions": {
+    "cannot_connect": {
+      "message": "No se pudo enviar el comando a {name} por Bluetooth. El dispositivo puede estar fuera de alcance o el adaptador Bluetooth ocupado; un proxy Bluetooth cerca del dispositivo suele solucionarlo."
+    }
   }
 }
