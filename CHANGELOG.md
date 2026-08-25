@@ -75,8 +75,8 @@ pieces, a signal at the edge of range, a command whose acknowledgement is lost.
   state arrives.
 - **State is primed by reading `facebd02` before asking the lamp to report.** One
   read fills most of the property map in a single cheap round trip. It does not
-  carry everything, though — observed on a G7 and reported for a G8, it stops at
-  `0x15`, so the
+  carry everything, though — measured on a G7 and reported for a G8, it returns a
+  complete twenty-pair map that stops at `0x15`, so the
   indicator, lighting mode, ramp and DST still come from the request, which is sent
   unless the read already covered every key. A model that refuses the request is
   left alone after three consecutive refusals — and only a lamp that answered the
