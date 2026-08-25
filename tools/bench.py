@@ -449,8 +449,189 @@ async def _probe_clock(coordinator: GlowriumCoordinator) -> bool:
     return quiet_ok and corrected and restored
 
 
-async def main() -> int:
-    """Connect once, prime, report, and optionally follow notifications."""
+# 0x34 is seven four-byte times, seconds from midnight: the circadian curve the
+# lamp computes for itself. A date three months out moves sunrise by the best
+# part of two hours here, which is far past any ambiguity.
+_CURVE_KEY = 0x34
+_CURVE_DATE_SHIFT = timedelta(days=91)
+
+
+def _curve(raw: object) -> str:
+    """Render 0x34 as wall-clock times."""
+    if not isinstance(raw, (bytes, bytearray)) or not raw or len(raw) % 4:
+        return f"(unreadable: {raw!r})"
+    times = []
+    for i in range(0, len(raw), 4):
+        seconds = int.from_bytes(raw[i : i + 4], "big")
+        times.append(f"{seconds // 3600:02d}:{seconds % 3600 // 60:02d}")
+    return " ".join(times)
+
+
+class _Tap:
+    """Record every notification the lamp pushes, and when.
+
+    Installed before the connect, because ``start_notify`` is handed a bound
+    method: replacing the attribute afterwards would leave bleak calling the
+    original and the tap silent.
+    """
+
+    def __init__(self, coordinator: GlowriumCoordinator) -> None:
+        """Wrap the coordinator's notify callback without replacing it."""
+        self._original = coordinator._on_notify  # noqa: SLF001
+        self.events: list[tuple[float, dict]] = []
+        self._started = 0.0
+
+        def _tapped(char: object, data: bytearray) -> None:
+            try:
+                value, _short = cbor.decode_frame(bytes(data))
+            except Exception:
+                value = {}
+            if isinstance(value, dict) and value:
+                now = asyncio.get_running_loop().time()
+                self.events.append((now - self._started, value))
+            self._original(char, data)
+
+        coordinator._on_notify = _tapped  # type: ignore[method-assign]  # noqa: SLF001
+
+    def start(self) -> None:
+        """Zero the clock the events are timed against."""
+        self._started = asyncio.get_running_loop().time()
+        self.events.clear()
+
+    def since(self, mark: int) -> list[tuple[float, dict]]:
+        """Events recorded after ``mark``."""
+        return self.events[mark:]
+
+    def report(self, label: str, mark: int) -> bool:
+        """Print what arrived since ``mark``; return whether 0x34 was in it."""
+        events = self.since(mark)
+        if not events:
+            print(f"  {label:<26} nothing")
+            return False
+        carried = False
+        for at, value in events:
+            keys = " ".join(f"0x{k:02x}" for k in sorted(value))
+            print(f"  {label:<26} +{at:5.1f}s  {len(value):2d} keys: {keys}")
+            label = ""
+            if _CURVE_KEY in value:
+                carried = True
+                print(f"  {'':<26}         0x34 = {_curve(value[_CURVE_KEY])}")
+        return carried
+
+
+def _settle_curve(answers: dict[str, bool], restored: object, moved: object) -> None:
+    """Print what the phases add up to."""
+    print("\n  what this settles:")
+    for question, answer in answers.items():
+        print(f"    0x34 {question}: {answer}")
+    if isinstance(moved, (bytes, bytearray)):
+        print(f"    curve on the moved date: {_curve(moved)}")
+    if isinstance(restored, (bytes, bytearray)):
+        print(f"    curve once restored:     {_curve(restored)}")
+    if not (
+        isinstance(moved, (bytes, bytearray))
+        and isinstance(restored, (bytes, bytearray))
+    ):
+        return
+    if moved != restored:
+        print(
+            "    the curve moved with the date and came back - the clock feeds "
+            "the circadian engine"
+        )
+    else:
+        print(
+            "    the curve did NOT move with the date - whatever computes it, "
+            "the date is not the input"
+        )
+
+
+async def _probe_curve(coordinator: GlowriumCoordinator, tap: _Tap) -> bool:
+    """Find out whether writing the clock is what makes the lamp report 0x34.
+
+    An earlier session saw 0x34 arrive in a run that also corrected the clock
+    and concluded the clock feeds the circadian engine. That does not follow:
+    both runs wrote a clock, neither recorded when 0x34 arrived, and a lamp
+    that dumps state on subscribe or after any write at all would look
+    identical. This isolates it - a quiet window, a write with nothing to do
+    with time, then the clock - and then settles the question outright by
+    moving the date, since the curve is computed from the date and the
+    coordinates and cannot follow a clock moved within the same day.
+    """
+    print("\n0x34 - is the clock what makes the lamp recompute its curve?")
+
+    mark = len(tap.events)
+    print("\n  A. quiet window, 20s, nothing written")
+    await asyncio.sleep(20.0)
+    unprompted = tap.report("on subscribe / unprompted", mark)
+
+    client = coordinator._client  # noqa: SLF001
+    if client is None:
+        print("  lost the link before anything could be written")
+        return False
+    raw = bytes(await client.read_gatt_char(NOTIFY_UUID))
+    value, _short = cbor.decode_frame(raw)
+    in_read = _CURVE_KEY in value if isinstance(value, dict) else False
+    brightness = value.get(KEY_BRIGHTNESS) if isinstance(value, dict) else None
+    print(f"  0x34 present in the facebd02 read: {in_read}")
+
+    async def _write(what: str, payload: dict[int, object]) -> bool:
+        mark = len(tap.events)
+        try:
+            async with coordinator._lock:  # noqa: SLF001
+                await coordinator._write_raw(payload)  # noqa: SLF001
+        except Exception as err:
+            print(f"  {what} failed: {err!r}")
+            return False
+        await asyncio.sleep(6.0)
+        return tap.report(what, mark)
+
+    print("\n  B. control write: brightness set to what it already is")
+    after_control = False
+    if isinstance(brightness, int):
+        after_control = await _write(
+            "after 0x08 (no change)", {KEY_BRIGHTNESS: brightness}
+        )
+    else:
+        print("  brightness unreadable - control write skipped")
+
+    print("\n  C. clock write, same date and time it already believes")
+    after_same = await _write(
+        "after 0x05 (unchanged)",
+        {KEY_TIME: _encode_device_time(), KEY_TIME_SYNCED: 1},
+    )
+
+    print(f"\n  D. clock write, date moved {_CURVE_DATE_SHIFT.days} days on")
+    shifted = dt_util.now() + _CURVE_DATE_SHIFT
+    print(f"     the lamp will believe it is {shifted:%Y-%m-%d %H:%M}")
+    after_date = await _write(
+        "after 0x05 (date moved)",
+        {KEY_TIME: _encode_device_time(shifted), KEY_TIME_SYNCED: 1},
+    )
+    moved_curve = coordinator.state.get(_CURVE_KEY)
+
+    print("\n  E. clock restored")
+    after_restore = await _write(
+        "after 0x05 (restored)",
+        {KEY_TIME: _encode_device_time(), KEY_TIME_SYNCED: 1},
+    )
+
+    _settle_curve(
+        {
+            "arrives unprompted, no write at all": unprompted,
+            "follows a write that is not the clock": after_control,
+            "follows a clock write that changes nothing": after_same,
+            "follows a clock write that moves the date": after_date,
+            "follows the restore": after_restore,
+        },
+        coordinator.state.get(_CURVE_KEY),
+        moved_curve,
+    )
+
+    return await _ensure_clock_right(coordinator)
+
+
+def _parse_args() -> argparse.Namespace:
+    """Parse the command line."""
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--scan", type=float, default=10.0, help="scan seconds")
     parser.add_argument("--watch", type=float, default=0.0, help="follow N seconds")
@@ -459,6 +640,12 @@ async def main() -> int:
         "--dst",
         action="store_true",
         help="settle the DST convention: does the lamp shift its own clock?",
+    )
+    parser.add_argument(
+        "--curve",
+        action="store_true",
+        help="isolate what makes the lamp report 0x34: a quiet window, a write "
+        "unrelated to time, then the clock, then the date",
     )
     parser.add_argument(
         "--clock",
@@ -471,7 +658,12 @@ async def main() -> int:
         action="store_true",
         help="exercise the write path (power, brightness) and restore afterwards",
     )
-    args = parser.parse_args()
+    return parser.parse_args()
+
+
+async def main() -> int:
+    """Connect once, prime, report, and optionally follow notifications."""
+    args = _parse_args()
 
     logging.basicConfig(
         level=logging.DEBUG if args.debug else logging.INFO,
@@ -498,20 +690,30 @@ async def main() -> int:
     # 0x14 reads back the way we expect.
     coordinator._activation_checked = True  # noqa: SLF001
 
+    # Before the connect: start_notify is handed a bound method, so a tap
+    # installed afterwards would never be called.
+    tap = _Tap(coordinator) if args.curve else None
+
     print(f"\nconnecting to {device.name} ({device.address})…")
     try:
         async with coordinator._lock:  # noqa: SLF001
-            # The clock probe primes itself, after it has read the clock as
-            # found: priming is what corrects a drift, so priming here would
-            # destroy the measurement before it was taken.
-            await coordinator._connect_locked(prime=not args.clock)  # noqa: SLF001
+            # Neither probe primes: priming corrects a drift and asks for a
+            # batch of properties, either of which would spend the measurement
+            # before it was taken.
+            prime = not (args.clock or args.curve)
+            await coordinator._connect_locked(prime=prime)  # noqa: SLF001
     except Exception as err:
         print(f"connect failed: {err!r}")
         return 1
+    if tap is not None:
+        tap.start()
 
     clock_ok = True
     if args.clock:
         clock_ok = await _probe_clock(coordinator)
+
+    if tap is not None:
+        clock_ok = await _probe_curve(coordinator, tap) and clock_ok
 
     # Ask the characteristic directly rather than inferring from the mirror.
     # Two earlier attempts to infer it were both wrong: the total after priming
