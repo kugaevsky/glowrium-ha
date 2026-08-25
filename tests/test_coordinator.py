@@ -370,12 +370,9 @@ async def test_state_request_abandoned_only_after_repeated_refusal(
     a run of failures, not one: see the transient-failure test below.
     """
     coordinator = GlowriumCoordinator(hass, "AA:BB:CC:DD:EE:FF", "Glowrium-G8")
-    client = MagicMock()
-    client.is_connected = True
-    client.read_gatt_char = AsyncMock(side_effect=BleakError("unreadable"))
-    client.write_gatt_char = AsyncMock(
-        side_effect=BleakError("Insufficient authorization (8)")
-    )
+    # The read has to work: a request that fails on a link which just served a
+    # read is a refusal, and one that fails alongside the read is a bad link.
+    client = _refusing_client()
 
     for _ in range(coordinator_module._STATE_REQUEST_ATTEMPTS):
         await coordinator._request_state(client)
@@ -849,10 +846,7 @@ async def test_muted_state_request_recovers_after_the_cooldown(
     """
     monkeypatch.setattr(coordinator_module, "_STATE_REQUEST_COOLDOWN", 0.05)
     coordinator = GlowriumCoordinator(hass, "AA:BB:CC:DD:EE:FF", "Glowrium-G7")
-    client = MagicMock()
-    client.is_connected = True
-    client.read_gatt_char = AsyncMock(side_effect=BleakError("unreadable"))
-    client.write_gatt_char = AsyncMock(side_effect=BleakError("Not connected"))
+    client = _refusing_client()
 
     for _ in range(coordinator_module._STATE_REQUEST_ATTEMPTS):
         await coordinator._request_state(client)
@@ -1588,3 +1582,70 @@ async def test_a_connect_that_cannot_be_read_is_dropped_at_once(
 
     assert coordinator._client is None
     assert coordinator._is_connected is False
+
+
+def _refusing_client() -> MagicMock:
+    """Return a client whose read works but which rejects the request.
+
+    That is the shape of a model that refuses: issue #3 shows a G8 serving a
+    twenty-key read while answering the request with an ATT error and dropping
+    the link.
+    """
+    client = MagicMock()
+    client.is_connected = True
+    client.read_gatt_char = AsyncMock(
+        return_value=bytearray(cbor.encode({KEY_POWER: True}))
+    )
+    client.write_gatt_char = AsyncMock(
+        side_effect=BleakError("Insufficient authorization (8)")
+    )
+    return client
+
+
+async def test_a_dead_link_never_counts_as_a_refusal(hass: HomeAssistant) -> None:
+    """Only a device that answered can be said to have refused.
+
+    A weak link fails the read and the request alike, and counting that muted
+    the request on a perfectly good lamp that merely sat far from the adapter -
+    seen on a real G7 forty seconds after start-up. A refusal is when the read
+    worked and the request did not: the link was demonstrably alive in between.
+    """
+    coordinator = GlowriumCoordinator(hass, "AA:BB:CC:DD:EE:FF", "Glowrium-G7")
+    client = MagicMock()
+    client.is_connected = True
+    client.read_gatt_char = AsyncMock(side_effect=BleakError("Not connected"))
+    client.write_gatt_char = AsyncMock(side_effect=BleakError("Not connected"))
+
+    for _ in range(coordinator_module._STATE_REQUEST_ATTEMPTS * 3):
+        await coordinator._request_state(client)
+
+    assert coordinator._state_request_muted is False
+    assert coordinator._state_request_failures == 0
+
+
+async def test_a_model_that_keeps_refusing_is_left_alone_for_the_session(
+    hass: HomeAssistant, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A second run of refusals after the cooldown ends the asking for good.
+
+    The cooldown exists to give a first run the benefit of the doubt. A model
+    that refuses again once it expires is refusing, not unlucky - and each
+    round costs it a dropped link, which is what #5 set out to stop.
+    """
+    monkeypatch.setattr(coordinator_module, "_STATE_REQUEST_COOLDOWN", 0.05)
+    coordinator = GlowriumCoordinator(hass, "AA:BB:CC:DD:EE:FF", "Glowrium-G8")
+    client = _refusing_client()
+
+    for _ in range(coordinator_module._STATE_REQUEST_ATTEMPTS):
+        await coordinator._request_state(client)
+    assert coordinator._state_request_muted is True
+
+    await asyncio.sleep(0.06)  # the cooldown expires
+    assert coordinator._state_request_muted is False
+    for _ in range(coordinator_module._STATE_REQUEST_ATTEMPTS):
+        await coordinator._request_state(client)
+
+    sent = client.write_gatt_char.await_count
+    await asyncio.sleep(0.06)
+    await coordinator._request_state(client)
+    assert client.write_gatt_char.await_count == sent  # never again this session

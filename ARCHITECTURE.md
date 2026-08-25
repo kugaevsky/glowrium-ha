@@ -131,14 +131,17 @@ route and timing, and drops the GATT link while doing so.
 > ⚠️ **Only request ids the vendor app itself requests.** Asking the G7 for an id
 > it does not expose makes it drop the GATT link. `STATE_KEYS` is exactly the set
 > observed in the app's captures. A model that refuses the request is handled as
-> **non-fatal**: after `_STATE_REQUEST_ATTEMPTS` (3) consecutive failures the
-> coordinator logs one warning naming the model and mutes the request for
-> `_STATE_REQUEST_COOLDOWN` (10 minutes). Both numbers matter. A dropped link
-> raises the same `BleakError` as a refusal, so giving up on the first failure
-> costs a weak-signal lamp every property the read does not carry — and muting
-> for the *session* is just as wrong: on a real G7 three consecutive failures
-> accumulated 70 s after start-up purely from a bad link. Expiring the mute lets
-> that heal itself while still sparing a genuinely refusing model.
+> **non-fatal** — but only a device that *answered* can be said to have refused.
+> A request that fails while the read just succeeded is a refusal: the link was
+> demonstrably alive in between. A request that fails alongside the read is a
+> bad link, and is not counted at all; counting it muted the request on a
+> perfectly good G7 forty seconds after start-up, costing it every property the
+> read does not carry. After `_STATE_REQUEST_ATTEMPTS` (3) refusals the
+> coordinator warns once and pauses for `_STATE_REQUEST_COOLDOWN` (10 minutes);
+> a model that refuses again once that expires is not asked again this session.
+> The cooldown is the benefit of the doubt, and the second run withdraws it —
+> each round costs a refusing model a dropped link, which is what asking
+> sparingly is for.
 
 ### Device-info string (`facebd80`)
 

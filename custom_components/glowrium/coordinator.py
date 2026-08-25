@@ -172,6 +172,9 @@ class GlowriumCoordinator:
         # failures, rather than for the session - see _request_state.
         self._state_request_muted_until = 0.0
         self._state_request_failures = 0
+        # Set once a cooldown has already been served and the model refused
+        # again: that is a refusal rather than a run of bad luck.
+        self._state_request_given_up = False
         # The client whose state has been primed. A command connects without
         # priming (see _connect_locked), so this is how the poll notices there
         # is a connection whose properties were never fetched.
@@ -191,8 +194,11 @@ class GlowriumCoordinator:
 
     @property
     def _state_request_muted(self) -> bool:
-        """True while the batched state request is in its post-failure cooldown."""
-        return monotonic() < self._state_request_muted_until
+        """True while the batched state request is paused, or given up on."""
+        return (
+            self._state_request_given_up
+            or monotonic() < self._state_request_muted_until
+        )
 
     @property
     def activated(self) -> bool | None:
@@ -613,6 +619,19 @@ class GlowriumCoordinator:
         try:
             await client.write_gatt_char(NOTIFY_UUID, bytes(STATE_KEYS), response=True)
         except (BleakError, TimeoutError) as err:
+            if not read_ok:
+                # The read failed too, so this is the link and not the device:
+                # a lamp merely sitting far from the adapter fails both alike,
+                # and counting that muted the request on a perfectly good G7
+                # forty seconds after start-up. A refusal is a request that
+                # fails while the read just succeeded - the link was
+                # demonstrably alive in between.
+                _LOGGER.debug(
+                    "%s state request failed on a link that answers nothing: %s",
+                    self.address,
+                    err,
+                )
+                return read_ok
             self._state_request_failures += 1
             if self._state_request_failures < _STATE_REQUEST_ATTEMPTS:
                 _LOGGER.debug(
@@ -623,20 +642,23 @@ class GlowriumCoordinator:
                     err,
                 )
                 return read_ok
-            self._state_request_muted_until = monotonic() + _STATE_REQUEST_COOLDOWN
             self._state_request_failures = 0
+            served_a_cooldown = self._state_request_muted_until > 0.0
+            self._state_request_given_up = served_a_cooldown
+            self._state_request_muted_until = monotonic() + _STATE_REQUEST_COOLDOWN
             _LOGGER.warning(
-                "%s (model %s, firmware %s) rejected the state request %d times "
-                "in a row, most recently: %s. Pausing it for %d minutes - "
-                "commands still work, but properties the connect-time read does "
-                "not carry stay unknown until then. If this repeats on a lamp "
-                "with a good signal, please report this model",
+                "%s (model %s, firmware %s) served a readable state but rejected "
+                "the batched request %d times in a row, most recently: %s. %s "
+                "Commands still work; properties the connect-time read does not "
+                "carry stay unknown. Please report this model",
                 self.address,
                 self.model_id or "unknown",
                 self.sw_version or "unknown",
                 _STATE_REQUEST_ATTEMPTS,
                 err,
-                int(_STATE_REQUEST_COOLDOWN // 60),
+                "Not asking again this session."
+                if served_a_cooldown
+                else f"Pausing it for {int(_STATE_REQUEST_COOLDOWN // 60)} minutes.",
             )
         else:
             self._state_request_failures = 0
