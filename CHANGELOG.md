@@ -23,6 +23,8 @@ All notable changes to this project are documented here. The format is based on
   checked whenever state is primed and corrected only when it has actually
   drifted, which on a lamp that reconnects itself every half hour is the
   difference between a write when needed and a write an hour for nothing.
+  Verified on a G7: it was 39 minutes slow five weeks after this integration
+  set its clock, and priming put it right with a single write.
 
 - **A setting changed from the vendor app while Home Assistant was disconnected
   is picked up again.** The connect-time read never carries the indicator,
