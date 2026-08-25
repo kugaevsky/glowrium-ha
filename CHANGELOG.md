@@ -14,9 +14,11 @@ All notable changes to this project are documented here. The format is based on
   anyway — the read answers, the link drops, and the request fails with "not
   connected" — so the request was silenced on a perfectly good lamp and the
   indicator, lighting mode, ramp and DST never arrived, while commands kept
-  working and hid the problem. A refusal now means the device answered an error
-  *and is still connected afterwards*; anything else is the link, and is not held
-  against it.
+  working and hid the problem. The request is now silenced only on an error that
+  positively reads as the device declining — an authorization or permission
+  error. Anything else, including anything unrecognised, is treated as the link:
+  asking an unusual device once too often costs a reconnect, while silencing a
+  working lamp costs it four entities with nothing in the log above debug.
 
 - **The device page is usable again while the lamp is out of reach.** Since the
   light stopped claiming a confident `off` for a state it had never read, every

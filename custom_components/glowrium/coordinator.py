@@ -108,6 +108,27 @@ _STATE_REQUEST_ATTEMPTS = 3
 # purely from a bad link, which permanently cost it four properties until Home
 # Assistant was restarted. Muting expires so that heals itself.
 _STATE_REQUEST_COOLDOWN = 600.0
+# Only an error that looks like the device answering "no" counts as a refusal.
+# Two cheaper tests were tried on real hardware and both were wrong: a
+# successful read does not prove the device is still there (the link drops
+# between the read and the write), and bleak's is_connected lags reality - on a
+# G7 it still read True at the moment a write failed with "not connected", with
+# the disconnect callback arriving two seconds later. So the test is inverted:
+# recognise a refusal, treat everything else as the link. Muting a working lamp
+# silently costs it every property the connect-time read does not carry; asking
+# an exotic device once too often costs a reconnect.
+_REFUSAL_MARKERS = ("authorization", "authentication", "not permitted")
+
+
+def _looks_like_a_refusal(err: Exception) -> bool:
+    """Return True if ``err`` reads as the device declining, not as a lost link.
+
+    Deliberately narrow: an unrecognised error is treated as the link, because
+    the cost of guessing wrong that way is one more request on the next connect,
+    while guessing wrong the other way silences a working lamp for the session.
+    """
+    text = str(err).lower()
+    return any(marker in text for marker in _REFUSAL_MARKERS)
 
 
 def _encode_device_time(now: datetime | None = None) -> bytes:
@@ -619,23 +640,10 @@ class GlowriumCoordinator:
         try:
             await client.write_gatt_char(NOTIFY_UUID, bytes(STATE_KEYS), response=True)
         except (BleakError, TimeoutError) as err:
-            if not read_ok or not client.is_connected:
-                # Not a refusal. Both halves are needed. A read that failed
-                # means the device is not answering at all, so it cannot have
-                # refused - that is the wedged link where bleak reports itself
-                # connected and every operation says otherwise. And a link that
-                # is gone after the write means it died in between: measured on
-                # a G7, the read answered and the request then failed three
-                # times running for exactly that reason, which muted the
-                # request on a perfectly good lamp and left four properties
-                # unread while commands kept working. A refusal is a device
-                # that answered an error and is still there afterwards.
+            if not _looks_like_a_refusal(err):
                 _LOGGER.debug(
-                    "%s state request failed without refusing (read_ok=%s, "
-                    "still connected=%s): %s",
+                    "%s state request failed, but not by refusing: %s",
                     self.address,
-                    read_ok,
-                    client.is_connected,
                     err,
                 )
                 return read_ok
@@ -654,9 +662,8 @@ class GlowriumCoordinator:
             self._state_request_given_up = served_a_cooldown
             self._state_request_muted_until = monotonic() + _STATE_REQUEST_COOLDOWN
             _LOGGER.warning(
-                "%s (model %s, firmware %s) answered an error to the batched "
-                "state request %d times in a row and stayed connected, most "
-                "recently: %s. %s "
+                "%s (model %s, firmware %s) refused the batched state request "
+                "%d times in a row, most recently: %s. %s "
                 "Commands still work; properties the connect-time read does not "
                 "carry stay unknown. Please report this model",
                 self.address,

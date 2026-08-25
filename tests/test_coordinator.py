@@ -1683,3 +1683,41 @@ async def test_a_link_that_dies_after_the_read_is_not_a_refusal(
 
     assert coordinator._state_request_muted is False
     assert coordinator._state_request_failures == 0
+
+
+async def test_only_an_application_level_refusal_silences_the_request(
+    hass: HomeAssistant,
+) -> None:
+    """Silence the request on a refusal, never on anything merely unrecognised.
+
+    Two attempts to tell the cases apart failed on real hardware. A successful
+    read does not prove the device is there - the link drops between the read
+    and the write. Nor does `is_connected`: measured on a G7, it still reported
+    True at the moment the write failed with "not connected", and the
+    disconnect callback arrived two seconds later.
+
+    So the test is inverted. Only an error that positively looks like the
+    device answering "no" - an authorization or ATT protocol error - counts.
+    Everything else is treated as the link, because muting a working lamp costs
+    it four properties silently, while asking an exotic device once too often
+    costs a reconnect.
+    """
+    cases = [
+        ("Insufficient authorization (8)", True),
+        ("[org.bluez.Error.Failed] Not connected", False),
+        ("GATT Protocol Error: Unlikely Error", False),
+        ("something nobody has seen before", False),
+    ]
+    for message, should_mute in cases:
+        coordinator = GlowriumCoordinator(hass, "AA:BB:CC:DD:EE:FF", "Glowrium-G7")
+        client = MagicMock()
+        client.is_connected = True
+        client.read_gatt_char = AsyncMock(
+            return_value=bytearray(cbor.encode({KEY_POWER: True}))
+        )
+        client.write_gatt_char = AsyncMock(side_effect=BleakError(message))
+
+        for _ in range(coordinator_module._STATE_REQUEST_ATTEMPTS):
+            await coordinator._request_state(client)
+
+        assert coordinator._state_request_muted is should_mute, message
