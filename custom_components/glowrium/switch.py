@@ -10,7 +10,7 @@ from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 
 from . import GlowriumConfigEntry
 from .const import KEY_DST, KEY_INDICATOR
-from .entity import GlowriumEntity
+from .entity import GlowriumSettingEntity
 
 
 async def async_setup_entry(
@@ -25,7 +25,7 @@ async def async_setup_entry(
     )
 
 
-class GlowriumIndicatorSwitch(GlowriumEntity, SwitchEntity):
+class GlowriumIndicatorSwitch(GlowriumSettingEntity, SwitchEntity):
     """The device's status indicator LED (key 0x17)."""
 
     _attr_translation_key = "indicator"
@@ -39,7 +39,9 @@ class GlowriumIndicatorSwitch(GlowriumEntity, SwitchEntity):
     def is_on(self) -> bool | None:
         """Return whether the indicator LED is on."""
         value = self._coordinator.state.get(KEY_INDICATOR)
-        return bool(value) if value is not None else None
+        if value is None:
+            return self._restored_bool()
+        return bool(value)
 
     async def async_turn_on(self, **kwargs: Any) -> None:
         """Turn the indicator LED on."""
@@ -50,7 +52,7 @@ class GlowriumIndicatorSwitch(GlowriumEntity, SwitchEntity):
         await self._coordinator.async_set_indicator(False)
 
 
-class GlowriumDstSwitch(GlowriumEntity, SwitchEntity):
+class GlowriumDstSwitch(GlowriumSettingEntity, SwitchEntity):
     """Daylight-saving-time handling (key 0x35, byte 0)."""
 
     _attr_translation_key = "dst"
@@ -66,7 +68,7 @@ class GlowriumDstSwitch(GlowriumEntity, SwitchEntity):
         value = self._coordinator.state.get(KEY_DST)
         if isinstance(value, (bytes, bytearray)) and len(value) >= 1:
             return value[0] == 1
-        return None
+        return self._restored_bool()
 
     async def async_turn_on(self, **kwargs: Any) -> None:
         """Enable DST."""

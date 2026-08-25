@@ -10,7 +10,7 @@ from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 from . import GlowriumConfigEntry
 from .const import MODE_CIRCADIAN, MODE_SCHEDULE
 from .coordinator import GlowriumCoordinator
-from .entity import GlowriumEntity
+from .entity import GlowriumSettingEntity
 
 
 async def async_setup_entry(
@@ -29,7 +29,7 @@ async def async_setup_entry(
     )
 
 
-class GlowriumRampNumber(GlowriumEntity, NumberEntity):
+class GlowriumRampNumber(GlowriumSettingEntity, NumberEntity):
     """Circadian sunrise/sunset ramp duration (key 0x2f; 0 = Sun Sync auto)."""
 
     _attr_translation_key = "ramp"
@@ -51,16 +51,17 @@ class GlowriumRampNumber(GlowriumEntity, NumberEntity):
         return super().available and self._coordinator.mode_allows(MODE_CIRCADIAN)
 
     @property
-    def native_value(self) -> int | None:
+    def native_value(self) -> float | None:
         """Return the ramp time in minutes."""
-        return self._coordinator.ramp_minutes
+        value = self._coordinator.ramp_minutes
+        return value if value is not None else self._restored_number()
 
     async def async_set_native_value(self, value: float) -> None:
         """Set the ramp time in minutes."""
         await self._coordinator.async_set_ramp(int(value))
 
 
-class _GlowriumTimerNumber(GlowriumEntity, NumberEntity):
+class _GlowriumTimerNumber(GlowriumSettingEntity, NumberEntity):
     """Base for schedule numbers - only used in Schedule mode."""
 
     _attr_entity_category = EntityCategory.CONFIG
@@ -87,9 +88,10 @@ class GlowriumTimerGradual(_GlowriumTimerNumber):
         self._attr_unique_id = f"{coordinator.address}_schedule_gradual"
 
     @property
-    def native_value(self) -> int | None:
+    def native_value(self) -> float | None:
         """Return the gradual fade in minutes."""
-        return self._coordinator.schedule_gradual_minutes
+        value = self._coordinator.schedule_gradual_minutes
+        return value if value is not None else self._restored_number()
 
     async def async_set_native_value(self, value: float) -> None:
         """Set the gradual fade in minutes."""
@@ -112,9 +114,10 @@ class GlowriumTimerBrightness(_GlowriumTimerNumber):
         self._attr_unique_id = f"{coordinator.address}_schedule_brightness"
 
     @property
-    def native_value(self) -> int | None:
+    def native_value(self) -> float | None:
         """Return the schedule brightness percentage."""
-        return self._coordinator.schedule_brightness
+        value = self._coordinator.schedule_brightness
+        return value if value is not None else self._restored_number()
 
     async def async_set_native_value(self, value: float) -> None:
         """Set the schedule brightness percentage."""

@@ -12,7 +12,7 @@ from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 from . import GlowriumConfigEntry
 from .const import MODE_SCHEDULE
 from .coordinator import GlowriumCoordinator
-from .entity import GlowriumEntity
+from .entity import GlowriumSettingEntity
 
 
 async def async_setup_entry(
@@ -25,7 +25,7 @@ async def async_setup_entry(
     async_add_entities([GlowriumTimerStart(coordinator), GlowriumTimerEnd(coordinator)])
 
 
-class _GlowriumTimerTime(GlowriumEntity, TimeEntity):
+class _GlowriumTimerTime(GlowriumSettingEntity, TimeEntity):
     """Base for the schedule start/end times - only used in Schedule mode."""
 
     _attr_entity_category = EntityCategory.CONFIG
@@ -49,7 +49,8 @@ class GlowriumTimerStart(_GlowriumTimerTime):
     @property
     def native_value(self) -> datetime.time | None:
         """Return the schedule start time."""
-        return self._coordinator.schedule_start
+        value = self._coordinator.schedule_start
+        return value if value is not None else self._restored_time()
 
     async def async_set_value(self, value: datetime.time) -> None:
         """Set the schedule start time."""
@@ -69,7 +70,8 @@ class GlowriumTimerEnd(_GlowriumTimerTime):
     @property
     def native_value(self) -> datetime.time | None:
         """Return the schedule end time."""
-        return self._coordinator.schedule_end
+        value = self._coordinator.schedule_end
+        return value if value is not None else self._restored_time()
 
     async def async_set_value(self, value: datetime.time) -> None:
         """Set the schedule end time."""
