@@ -318,6 +318,25 @@ permanent behaviour — deliberate, not a regression.
 
 ---
 
+### Keeping the clock right
+
+`0x05` used to be written only during bring-up, so a lamp provisioned months
+ago kept that date — and both Schedule and Circadian run off it. Because the
+clock can be **read**, correcting it is cheap: the priming path compares what
+the lamp reports against local time and writes only when it is more than
+`_CLOCK_TOLERANCE` (60 s) out. Writing on every connect would cost a write an
+hour on a lamp that reconnects itself that often, for a clock that is usually
+already right.
+
+Measured while settling how the DST flag interacts with this: toggling `0x35`
+does **not** move `0x05`. The lamp stores the clock verbatim and the flag is
+applied — if at all — somewhere we cannot read, so writing local wall-clock
+time is not corrupted by it. What the flag does to the lamp's own schedule
+computation is still unknown; `0x34` is not in the read and asking for ids the
+vendor app does not ask for drops the link.
+
+---
+
 ## Activation / bring-up
 
 The lamp **gates its light output** on the `0x14` (`KEY_ACTIVATED`) flag. A

@@ -222,13 +222,17 @@ async def _probe_dst(coordinator: GlowriumCoordinator) -> None:
     )
 
     async def _snapshot(label: str) -> None:
+        # The clock comes from the characteristic, which carries it. 0x35 does
+        # not - the read stops at 0x15 - so that one is taken from the mirror,
+        # where the lamp's own notification puts it.
         raw = bytes(await client.read_gatt_char(NOTIFY_UUID))
         value, _ = cbor.decode_frame(raw)
         clock = value.get(0x05) if isinstance(value, dict) else None
-        dst = value.get(KEY_DST) if isinstance(value, dict) else None
+        dst = coordinator.state.get(KEY_DST)
         dst_hex = dst.hex() if isinstance(dst, (bytes, bytearray)) else dst
         print(f"  {label:<22} clock={_clock(clock)}  0x35={dst_hex}")
 
+    before_all = dict(coordinator.state)
     await _snapshot("before")
     for enabled in (True, False):
         await coordinator.async_set_dst(enabled)
@@ -241,6 +245,20 @@ async def _probe_dst(coordinator: GlowriumCoordinator) -> None:
     print(
         "  the lamp applies the offset itself if the clock jumps an hour with the flag"
     )
+    moved = {
+        k: v
+        for k, v in coordinator.state.items()
+        if k not in (KEY_DST, 0x05) and before_all.get(k) != v
+    }
+    if moved:
+        print("  other keys the lamp recomputed while the flag moved:")
+        for key, value in sorted(moved.items()):
+            shown = value.hex() if isinstance(value, (bytes, bytearray)) else value
+            print(f"    0x{key:02x} {_KEY_NAMES.get(key, '?'):<14} {shown}")
+    else:
+        print(
+            "  nothing else the lamp reports changed - the flag is stored, not applied"
+        )
 
 
 async def main() -> int:

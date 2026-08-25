@@ -100,6 +100,19 @@ _STOP_TIMEOUT = 3.0
 # failure means nothing on a weak link - a dropped connection surfaces as the
 # same BleakError as an outright refusal - and giving up after one leaves every
 # property outside the connect-time read unread.
+# How far the device clock may drift before it is worth a write. The lamp only
+# ever had its clock set during first-time bring-up, so one set up months ago
+# runs its schedule and its circadian curve off that date - a reporter's was six
+# months out, with nothing to show it because the clock is not an entity. Being
+# able to READ the clock is what makes correcting it cheap: rather than writing
+# on every connect, which on a lamp that reconnects itself every half hour is a
+# write an hour for nothing, it is written only when it is actually wrong. A
+# minute is far below anything the schedule resolves and far above normal drift
+# between connects.
+_CLOCK_TOLERANCE = 60.0
+# 0x05 is year_BE(2), month, day, hour, minute, second.
+_CLOCK_LENGTH = 7
+
 _STATE_REQUEST_ATTEMPTS = 3
 # ...and muted only for this long, not for the session. A model that genuinely
 # refuses the request must not have its link torn down on every connect, but a
@@ -479,6 +492,7 @@ class GlowriumCoordinator:
                     self._client = None
                     return
                 await self._async_activate_if_needed()
+                await self._async_sync_clock_if_needed()
                 self._primed_client = client
         except (BleakError, TimeoutError) as err:
             _LOGGER.debug("Priming state of %s failed: %s", self.address, err)
@@ -574,6 +588,7 @@ class GlowriumCoordinator:
             self._async_notify_listeners()
             return
         await self._async_activate_if_needed()
+        await self._async_sync_clock_if_needed()
         self._primed_client = client
         self._async_notify_listeners()
 
@@ -919,6 +934,37 @@ class GlowriumCoordinator:
             await self.async_activate()
         if self.state.get(KEY_ACTIVATED):
             self._activation_checked = True
+
+    async def _async_sync_clock_if_needed(self) -> None:
+        """Correct the device clock if what it reports has drifted.
+
+        Runs on the priming path, where the clock has just been read. Silent
+        when the lamp has not reported one: there is no drift to judge, and a
+        blind write would be guessing at what it currently believes.
+        """
+        raw = self.state.get(KEY_TIME)
+        if not isinstance(raw, (bytes, bytearray)) or len(raw) < _CLOCK_LENGTH:
+            return
+        try:
+            reported = datetime(
+                (raw[0] << 8) | raw[1], raw[2], raw[3], raw[4], raw[5], raw[6]
+            )
+        except ValueError:  # a nonsense date is itself a reason to correct it
+            reported = None
+        now = dt_util.now().replace(tzinfo=None)
+        if reported is not None:
+            drift = abs((reported - now).total_seconds())
+            if drift < _CLOCK_TOLERANCE:
+                return
+            _LOGGER.debug(
+                "%s clock reads %s, %.0f s out; correcting",
+                self.address,
+                reported.isoformat(sep=" "),
+                drift,
+            )
+        else:
+            _LOGGER.debug("%s reported an impossible clock; correcting", self.address)
+        await self._write_raw({KEY_TIME: _encode_device_time(), KEY_TIME_SYNCED: 1})
 
     async def async_activate(self) -> None:
         """Bring up a factory-reset device: clock + flags + enable light output.

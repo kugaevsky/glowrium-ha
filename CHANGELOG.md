@@ -8,6 +8,15 @@ All notable changes to this project are documented here. The format is based on
 
 ### Fixed
 
+- **The device clock is kept right instead of being set once and forgotten.** It
+  was only ever written during first-time bring-up, so a lamp set up months ago
+  ran its schedule and its circadian curve off whatever date it had then — one
+  owner's was six months out, with nothing to show it because the clock is not an
+  entity ([#4](https://github.com/kugaevsky/glowrium-ha/issues/4)). It is now
+  checked whenever state is primed and corrected only when it has actually
+  drifted, which on a lamp that reconnects itself every half hour is the
+  difference between a write when needed and a write an hour for nothing.
+
 - **A setting changed from the vendor app while Home Assistant was disconnected
   is picked up again.** The connect-time read never carries the indicator,
   lighting mode, ramp or DST, so once the batched request had supplied them, the

@@ -9,6 +9,7 @@ from unittest.mock import AsyncMock, MagicMock
 from bleak.exc import BleakError
 from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import HomeAssistantError
+from homeassistant.util import dt as dt_util
 import pytest
 
 from custom_components.glowrium import cbor, coordinator as coordinator_module
@@ -23,6 +24,8 @@ from custom_components.glowrium.const import (
     KEY_POWER,
     KEY_RAMP,
     KEY_SCHEDULE,
+    KEY_TIME,
+    KEY_TIME_SYNCED,
     KEY_TIMER,
     NOTIFY_UUID,
     STATE_KEYS,
@@ -1763,3 +1766,97 @@ async def test_a_read_that_covers_everything_still_skips_the_request(
     await coordinator._request_state(client)
 
     client.write_gatt_char.assert_not_awaited()
+
+
+async def test_a_stale_device_clock_is_corrected(hass: HomeAssistant) -> None:
+    """A lamp whose clock has drifted is put right on connect.
+
+    The clock was only ever written during first-time bring-up, so a lamp set
+    up months ago runs its schedule and its circadian curve off whatever date
+    it had then - one reporter's was six months out (issue #4). Nothing
+    surfaces it either, because the clock is not an entity.
+    """
+    coordinator, client = _connected_coordinator(hass)
+    stale = bytes.fromhex("07ea02010f0e2c")  # 2026-02-01 15:14:44
+    coordinator.state[KEY_TIME] = stale
+
+    await coordinator._async_sync_clock_if_needed()
+
+    written = cbor.decode(client.write_gatt_char.await_args.args[1])
+    assert written[KEY_TIME] != stale
+    assert written[KEY_TIME_SYNCED] == 1
+    year = (written[KEY_TIME][0] << 8) | written[KEY_TIME][1]
+    assert year == dt_util.now().year
+
+
+async def test_a_clock_that_is_near_enough_is_left_alone(
+    hass: HomeAssistant,
+) -> None:
+    """Writing on every connect would cost a write an hour for nothing.
+
+    The lamp reconnects itself every half hour or so; correcting a clock that
+    is seconds out would mean a write each time, on a link that is the scarce
+    resource here.
+    """
+    coordinator, client = _connected_coordinator(hass)
+    coordinator.state[KEY_TIME] = _encode_device_time()
+
+    await coordinator._async_sync_clock_if_needed()
+
+    client.write_gatt_char.assert_not_awaited()
+
+
+async def test_an_unreadable_clock_is_not_corrected_blind(
+    hass: HomeAssistant,
+) -> None:
+    """With nothing read back, there is no drift to judge and nothing to fix."""
+    coordinator, client = _connected_coordinator(hass)
+    assert KEY_TIME not in coordinator.state
+
+    await coordinator._async_sync_clock_if_needed()
+
+    client.write_gatt_char.assert_not_awaited()
+
+
+def _in_range() -> object:
+    """Stand in for a device the adapter can see."""
+    return object()
+
+
+async def test_both_priming_paths_check_the_clock(
+    hass: HomeAssistant, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A background connect corrects the clock too, not only the poll's priming.
+
+    Most connects on a healthy lamp are background reconnects; if only the poll
+    checked, a lamp whose link is good enough never to need re-priming would
+    keep a stale clock for ever.
+    """
+    for path in ("_connect_locked", "_async_prime"):
+        coordinator, client = _connected_coordinator(hass)
+        checked = 0
+
+        async def _note() -> None:
+            nonlocal checked
+            checked += 1
+
+        coordinator._async_sync_clock_if_needed = _note
+        coordinator._request_state = AsyncMock(return_value=True)
+        coordinator._async_activate_if_needed = AsyncMock()
+
+        if path == "_connect_locked":
+            coordinator._client = None  # a real connect, not the early return
+            client.is_connected = True
+            client.start_notify = AsyncMock()
+            client.read_gatt_char = AsyncMock(return_value=bytearray(b"brand:x;;"))
+            monkeypatch.setattr(
+                coordinator_module,
+                "establish_connection",
+                AsyncMock(return_value=client),
+            )
+            coordinator._ble_device = _in_range
+            await coordinator._connect_locked()
+        else:
+            await coordinator._async_prime()
+
+        assert checked == 1, path
