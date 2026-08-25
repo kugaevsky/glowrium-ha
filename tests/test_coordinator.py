@@ -1721,3 +1721,45 @@ async def test_only_an_application_level_refusal_silences_the_request(
             await coordinator._request_state(client)
 
         assert coordinator._state_request_muted is should_mute, message
+
+
+async def test_the_request_is_repeated_on_every_connect(hass: HomeAssistant) -> None:
+    """Coverage is judged by this connect's read, not by what we already knew.
+
+    Measured on real hardware: the connect-time read never carries the
+    indicator, lighting mode, ramp or DST, so once a request has filled those
+    in, a check against the accumulated mirror is satisfied for ever and the
+    request is never sent again. Anything the user then changes from the vendor
+    app while Home Assistant is disconnected stays invisible until a restart -
+    which is the opposite of what a reconnect is for.
+    """
+    coordinator, client = _connected_coordinator(hass)
+    low_keys_only = cbor.encode({KEY_POWER: True, KEY_BRIGHTNESS: 50})
+    client.read_gatt_char = AsyncMock(return_value=bytearray(low_keys_only))
+    client.write_gatt_char = AsyncMock()
+
+    await coordinator._request_state(client)
+    assert client.write_gatt_char.await_count == 1
+
+    # Pretend the request was answered: every key is now known.
+    coordinator.state.update(dict.fromkeys(STATE_KEYS, 0))
+
+    await coordinator._request_state(client)
+    assert client.write_gatt_char.await_count == 2, (
+        "a later connect must ask again - the read still lacks four keys"
+    )
+
+
+async def test_a_read_that_covers_everything_still_skips_the_request(
+    hass: HomeAssistant,
+) -> None:
+    """A model whose read does carry every key is not asked needlessly."""
+    coordinator, client = _connected_coordinator(hass)
+    everything = cbor.encode(dict.fromkeys(STATE_KEYS, 0))
+    client.read_gatt_char = AsyncMock(return_value=bytearray(everything))
+    client.write_gatt_char = AsyncMock()
+
+    await coordinator._request_state(client)
+    await coordinator._request_state(client)
+
+    client.write_gatt_char.assert_not_awaited()

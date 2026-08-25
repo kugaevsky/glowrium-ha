@@ -628,15 +628,22 @@ class GlowriumCoordinator:
         and a link that cannot even be read is not a working link.
         """
         read_ok = False
+        carried: frozenset[int] = frozenset()
         try:
             raw = bytes(await client.read_gatt_char(NOTIFY_UUID))
         except (BleakError, TimeoutError) as err:
             _LOGGER.debug("%s state read failed: %s", self.address, err)
         else:
             read_ok = True
-            self._ingest(raw)
-        if all(key in self.state for key in STATE_KEYS):
-            return read_ok  # the read covered everything; no need to ask too
+            carried = self._ingest(raw)
+        if carried.issuperset(STATE_KEYS):
+            # This read covered everything, so there is nothing to ask for.
+            # Judged on what this read carried rather than on the mirror: the
+            # mirror accumulates, so a key seen once would look covered for the
+            # rest of the session and the request would never go out again -
+            # leaving anything changed from the vendor app while we were away
+            # invisible until a restart.
+            return read_ok
         if self._state_request_muted:
             return read_ok
         try:
@@ -710,8 +717,13 @@ class GlowriumCoordinator:
             data.hex(),
         )
 
-    def _ingest(self, data: bytes) -> None:
+    def _ingest(self, data: bytes) -> frozenset[int]:
         """Merge a CBOR property map from the device into the state mirror.
+
+        Returns the keys this frame carried. The connect path needs that to
+        judge whether the read covered everything, which it cannot do from the
+        state mirror: the mirror accumulates across a session, so once a key has
+        been seen it looks covered for ever.
 
         Shared by the notify callback and the connect-time read so both handle
         a split map, the remembered ramp and listener notification identically.
@@ -725,12 +737,12 @@ class GlowriumCoordinator:
             # that change risks. Buried in "Undecodable frame" at debug level it
             # would never be noticed.
             self._log_trailing_bytes(data, err.count)
-            return
+            return frozenset()
         except (ValueError, IndexError) as err:
             _LOGGER.debug("Undecodable frame %s: %s", data.hex(), err)
-            return
+            return frozenset()
         if not isinstance(decoded, dict) or not decoded:
-            return
+            return frozenset()
         if short:
             _LOGGER.debug(
                 "%s: property map split across frames; kept %d of them",
@@ -749,6 +761,7 @@ class GlowriumCoordinator:
             if ramp and isinstance(ramp, (bytes, bytearray)):
                 self._desired_ramp = bytes(ramp)
         self._async_notify_listeners()
+        return frozenset(decoded)
 
     @callback
     def _async_on_disconnect(self, client: BleakClientWithServiceCache) -> None:

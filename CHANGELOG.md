@@ -4,6 +4,18 @@ All notable changes to this project are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+- **A setting changed from the vendor app while Home Assistant was disconnected
+  is picked up again.** The connect-time read never carries the indicator,
+  lighting mode, ramp or DST, so once the batched request had supplied them, the
+  check for "do we already have everything" was satisfied by the accumulated
+  mirror for the rest of the session and the request was never sent again.
+  Reconnecting therefore could not notice that anything had changed. Coverage is
+  now judged by what the current read carried.
+
 ## [0.2.1] - 2026-08-25
 
 Follow-up to 0.2.0, which shipped a defect that showed up on real hardware

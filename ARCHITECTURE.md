@@ -112,7 +112,12 @@ All control happens over one vendor service, `facebd00-7261-6262-6974-696f74626c
 coordinator **reads** it (`_request_state` in `coordinator.py`) and merges
 whatever comes back. It then *writes* the raw bytes of `STATE_KEYS` (a tuple of
 property ids) to the same characteristic — asking the lamp to report them —
-unless the read happened to carry every key already.
+unless **that read** carried every key already.
+
+That last distinction matters. Judging coverage by the accumulated state mirror
+instead means a key seen once looks covered for the rest of the session, so the
+request stops going out and a reconnect can no longer notice that a setting was
+changed from the vendor app while Home Assistant was away.
 
 > ⚠️ **The read does not return the whole property map.** Measured directly on a
 > G7 at RSSI −40 and reported for a G8 in issue #3: the read returns 236 bytes

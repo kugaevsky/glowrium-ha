@@ -32,6 +32,7 @@ from bleak import BleakScanner
 from custom_components.glowrium import cbor
 from custom_components.glowrium.const import (
     KEY_BRIGHTNESS,
+    KEY_DST,
     KEY_POWER,
     NAME_PREFIX,
     NOTIFY_UUID,
@@ -41,6 +42,9 @@ from custom_components.glowrium.coordinator import GlowriumCoordinator
 
 # Probe brightness: pick whichever end the lamp is not already near, so the
 # change is visible and the restore is meaningful.
+# 0x05 is year_BE(2), month, day, hour, minute, second.
+_CLOCK_BYTES = 7
+
 _BRIGHT_MIDPOINT = 50
 _BRIGHT_LOW = 30
 _BRIGHT_HIGH = 80
@@ -189,12 +193,67 @@ async def _exercise_commands(coordinator: GlowriumCoordinator) -> None:
         )
 
 
+def _clock(raw: object) -> str:
+    """Render the device clock (0x05) as it reads on the wire."""
+    if not isinstance(raw, (bytes, bytearray)) or len(raw) < _CLOCK_BYTES:
+        return f"(unreadable: {raw!r})"
+    year = (raw[0] << 8) | raw[1]
+    return (
+        f"{year:04d}-{raw[2]:02d}-{raw[3]:02d} {raw[4]:02d}:{raw[5]:02d}:{raw[6]:02d}"
+    )
+
+
+async def _probe_dst(coordinator: GlowriumCoordinator) -> None:
+    """Find out whether enabling DST moves the lamp's own clock.
+
+    The integration writes local wall-clock time, which already carries any
+    summer-time shift. If the lamp then applies the offset from 0x35 on top,
+    every schedule runs an hour out - and nothing in the protocol says which
+    convention the firmware expects. Toggling the flag and watching 0x05 is the
+    cheapest way to find out, and it is reversible.
+    """
+    client = coordinator._client  # noqa: SLF001
+    if client is None:
+        print("\nno link for the DST probe")
+        return
+    was = coordinator.state.get(KEY_DST)
+    print(
+        f"\nDST probe - restoring 0x35={was.hex() if isinstance(was, bytes) else was}"
+    )
+
+    async def _snapshot(label: str) -> None:
+        raw = bytes(await client.read_gatt_char(NOTIFY_UUID))
+        value, _ = cbor.decode_frame(raw)
+        clock = value.get(0x05) if isinstance(value, dict) else None
+        dst = value.get(KEY_DST) if isinstance(value, dict) else None
+        dst_hex = dst.hex() if isinstance(dst, (bytes, bytearray)) else dst
+        print(f"  {label:<22} clock={_clock(clock)}  0x35={dst_hex}")
+
+    await _snapshot("before")
+    for enabled in (True, False):
+        await coordinator.async_set_dst(enabled)
+        await asyncio.sleep(2.5)
+        await _snapshot(f"DST={enabled}")
+    if isinstance(was, (bytes, bytearray)):
+        await coordinator.async_set_dst(bool(was[0]))
+        await asyncio.sleep(1.5)
+        await _snapshot("restored")
+    print(
+        "  the lamp applies the offset itself if the clock jumps an hour with the flag"
+    )
+
+
 async def main() -> int:
     """Connect once, prime, report, and optionally follow notifications."""
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--scan", type=float, default=10.0, help="scan seconds")
     parser.add_argument("--watch", type=float, default=0.0, help="follow N seconds")
     parser.add_argument("--debug", action="store_true", help="integration debug log")
+    parser.add_argument(
+        "--dst",
+        action="store_true",
+        help="settle the DST convention: does the lamp shift its own clock?",
+    )
     parser.add_argument(
         "--commands",
         action="store_true",
@@ -246,6 +305,9 @@ async def main() -> int:
 
     if args.commands:
         await _exercise_commands(coordinator)
+
+    if args.dst:
+        await _probe_dst(coordinator)
 
     client = coordinator._client  # noqa: SLF001
     if client is not None:
