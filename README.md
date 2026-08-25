@@ -40,8 +40,9 @@ reimplementing it in Home Assistant.
 ## Supported devices
 
 The Glowrium grow-light family (INLEDCO's `com.inledco.glowrium` app) shares the
-same BLE control protocol, so other models are likely compatible — but only the
-**G7** has been verified on hardware. New models are added in
+same BLE control protocol, so other models are likely compatible. The **G7** is
+verified end to end; the **G8** runs on real hardware with its presets still
+unconfirmed (see below). New models are added in
 [`models.py`](custom_components/glowrium/models.py) once tested.
 
 | Model | Form factor | Status |
@@ -52,18 +53,33 @@ same BLE control protocol, so other models are likely compatible — but only th
 | G4 | Desktop grow light (8–12 W) | ⬜ Not yet tested |
 | G5 | Dual-head floor grow light (48 W) | ⬜ Not yet tested |
 | G6 | Grow-light strip (48 W) | ⬜ Not yet tested |
-| G8 | Desktop grow light (10 W) | ⬜ Not yet tested |
+| G8 | Desktop grow light (10 W) | 🟡 Runs on hardware; presets unconfirmed |
 | G9 | Seed-starter kit (30 W) | ⬜ Not yet tested |
 | G10 | Telescopic floor grow light | ⬜ Not yet tested |
 
 > Glowrium also makes home/therapy lamps (H-series) and aquarium lights
 > (A-series); those are out of scope for this integration.
 
+**About the G8.** Two of them have been run on real hardware by
+[@pentafive](https://github.com/pentafive), who also found and fixed the reason
+every state entity read `unknown` on them ([#5](https://github.com/kugaevsky/glowrium-ha/pull/5)).
+On/off, brightness and state reporting work. What is **not** confirmed is the
+circadian **presets**: `models.py` has no G8 entry, so the lighting-mode names
+fall back to the G7's indices and may not match what the lamp actually does.
+Rather than write a wrong preset silently, the integration refuses to change the
+lighting mode or the ramp on a lamp that has not reported its current mode — so
+on a G8 those two controls report an error instead of guessing. Confirming the
+preset indices needs one btsnoop capture from the vendor app; see
+[CONTRIBUTING](CONTRIBUTING.md).
+
 ### Tested an unverified model? Please report back 🙏
 
 The whole Glowrium grow-light family shares the same BLE protocol, so a model
-marked **⬜ Not yet tested** above will very likely work as-is — but I can only
-mark it **verified** once someone has actually run it on real hardware.
+marked **⬜ Not yet tested** above will probably work as-is — but "probably" has
+already been wrong once: the G8 splits its state across notifications in a way
+the G7 never does, and every state entity read `unknown` until a G8 owner
+diagnosed it. So a model is only marked **verified** once someone has actually
+run it on real hardware.
 
 **If you own one of these models and have used it with Home Assistant for a
 while, please open a pull request with a short test report.** This is the single

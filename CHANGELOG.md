@@ -75,6 +75,10 @@ All notable changes to this project are documented here. The format is based on
 
 ### Added
 
+- The **G8** is no longer listed as untested: two of them run on real hardware,
+  with on/off, brightness and state reporting working. Its circadian presets are
+  still unconfirmed — `models.py` has no G8 entry, so lighting mode and ramp report
+  an error there rather than writing a preset index that may be wrong.
 - The rest of the vendor GATT service and the state keys the lamp reports but the
   integration does not decode are now written down — two characteristics
   (`facebd03`, `facebd81`) and eleven property keys, contributed by
