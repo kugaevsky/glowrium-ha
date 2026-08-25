@@ -619,16 +619,23 @@ class GlowriumCoordinator:
         try:
             await client.write_gatt_char(NOTIFY_UUID, bytes(STATE_KEYS), response=True)
         except (BleakError, TimeoutError) as err:
-            if not read_ok:
-                # The read failed too, so this is the link and not the device:
-                # a lamp merely sitting far from the adapter fails both alike,
-                # and counting that muted the request on a perfectly good G7
-                # forty seconds after start-up. A refusal is a request that
-                # fails while the read just succeeded - the link was
-                # demonstrably alive in between.
+            if not read_ok or not client.is_connected:
+                # Not a refusal. Both halves are needed. A read that failed
+                # means the device is not answering at all, so it cannot have
+                # refused - that is the wedged link where bleak reports itself
+                # connected and every operation says otherwise. And a link that
+                # is gone after the write means it died in between: measured on
+                # a G7, the read answered and the request then failed three
+                # times running for exactly that reason, which muted the
+                # request on a perfectly good lamp and left four properties
+                # unread while commands kept working. A refusal is a device
+                # that answered an error and is still there afterwards.
                 _LOGGER.debug(
-                    "%s state request failed on a link that answers nothing: %s",
+                    "%s state request failed without refusing (read_ok=%s, "
+                    "still connected=%s): %s",
                     self.address,
+                    read_ok,
+                    client.is_connected,
                     err,
                 )
                 return read_ok
@@ -647,8 +654,9 @@ class GlowriumCoordinator:
             self._state_request_given_up = served_a_cooldown
             self._state_request_muted_until = monotonic() + _STATE_REQUEST_COOLDOWN
             _LOGGER.warning(
-                "%s (model %s, firmware %s) served a readable state but rejected "
-                "the batched request %d times in a row, most recently: %s. %s "
+                "%s (model %s, firmware %s) answered an error to the batched "
+                "state request %d times in a row and stayed connected, most "
+                "recently: %s. %s "
                 "Commands still work; properties the connect-time read does not "
                 "carry stay unknown. Please report this model",
                 self.address,

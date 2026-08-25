@@ -8,6 +8,16 @@ All notable changes to this project are documented here. The format is based on
 
 ### Fixed
 
+- **A lamp at the edge of range is no longer mistaken for one that refuses to
+  report.** 0.2.0 decided a device had refused the batched state request if the
+  read just before it had worked. On a weak signal that is exactly what happens
+  anyway — the read answers, the link drops, and the request fails with "not
+  connected" — so the request was silenced on a perfectly good lamp and the
+  indicator, lighting mode, ramp and DST never arrived, while commands kept
+  working and hid the problem. A refusal now means the device answered an error
+  *and is still connected afterwards*; anything else is the link, and is not held
+  against it.
+
 - **The device page is usable again while the lamp is out of reach.** Since the
   light stopped claiming a confident `off` for a state it had never read, every
   control sat at `unknown` until the lamp answered — and if it could not answer,
