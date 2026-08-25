@@ -20,8 +20,10 @@ All notable changes to this project are documented here. The format is based on
   that goes missing — so the lamp switched, told Home Assistant its new state, and
   the user got an error toast anyway while watching the light change. A failed write
   now waits up to 2 s for the device to report the state it was asked for, and stays
-  quiet if it does. A command that genuinely failed still reports the error, 2 s
-  later than before.
+  quiet if it does — the report has to arrive *after* the write, so a stale reading
+  that happens to match cannot vouch for a command that never landed. A command that
+  never reached the lamp at all, because it is out of range, still fails at once;
+  only one that got as far as the wire waits to see whether it worked.
 - **Commands are no longer slowed down by fetching state.** A command now connects
   and writes; the property fetch that used to run first — a device-info read, a
   state read, the batched request and a wait for the activation flag, all inside the
