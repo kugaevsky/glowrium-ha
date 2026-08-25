@@ -29,11 +29,21 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from bleak import BleakScanner
 
+from custom_components.glowrium import cbor
 from custom_components.glowrium.const import (
+    KEY_BRIGHTNESS,
+    KEY_POWER,
     NAME_PREFIX,
+    NOTIFY_UUID,
     STATE_KEYS,
 )
 from custom_components.glowrium.coordinator import GlowriumCoordinator
+
+# Probe brightness: pick whichever end the lamp is not already near, so the
+# change is visible and the restore is meaningful.
+_BRIGHT_MIDPOINT = 50
+_BRIGHT_LOW = 30
+_BRIGHT_HIGH = 80
 
 _KEY_NAMES = {
     0x05: "time",
@@ -102,12 +112,94 @@ def _report(coordinator: GlowriumCoordinator, from_read: set[int] | None) -> Non
         print("\nafter priming, every key in STATE_KEYS is present")
 
 
+async def _read_directly(coordinator: GlowriumCoordinator) -> set[int] | None:
+    """Read facebd02 once and return the keys it actually carried."""
+    client = coordinator._client  # noqa: SLF001
+    if client is None:
+        return None
+    try:
+        raw = bytes(await client.read_gatt_char(NOTIFY_UUID))
+    except Exception as err:
+        print(f"\ndirect read failed: {err}")
+        return None
+    value, short = cbor.decode_frame(raw)
+    keys = set(value) if isinstance(value, dict) else set()
+    print(
+        f"\ndirect read of facebd02: {len(raw)} bytes, header 0x{raw[0]:02x}, "
+        f"{len(keys)} pairs, split-across-frames={short}"
+    )
+    return keys
+
+
+async def _confirmed_by_device(
+    coordinator: GlowriumCoordinator, key: int, want: object, seconds: float = 3.0
+) -> str:
+    """Wait for the lamp itself to report ``key`` as ``want``.
+
+    The coordinator echoes a successful write into its own mirror, so comparing
+    against the mirror proves nothing about the lamp. Watching the report count
+    move is what shows the device agreed.
+    """
+    reports = coordinator._reports  # noqa: SLF001
+    deadline = asyncio.get_running_loop().time() + seconds
+    while asyncio.get_running_loop().time() < deadline:
+        if coordinator._reports > reports and coordinator.state.get(key) == want:  # noqa: SLF001
+            return "confirmed by the lamp"
+        await asyncio.sleep(0.05)
+    if coordinator.state.get(key) == want:
+        return "our echo only - the lamp did not report it back"
+    return f"NOT confirmed (mirror says {coordinator.state.get(key)!r})"
+
+
+async def _exercise_commands(coordinator: GlowriumCoordinator) -> None:
+    """Toggle power and brightness, checking the lamp agrees, then put it back."""
+    was_on = coordinator.state.get(KEY_POWER)
+    was_bright = coordinator.state.get(KEY_BRIGHTNESS)
+    print(f"\nwrite path - restoring power={was_on} brightness={was_bright} at the end")
+
+    async def _timed(what: str, coro: object) -> None:
+        start = asyncio.get_running_loop().time()
+        try:
+            await coro
+            took = asyncio.get_running_loop().time() - start
+            print(f"  {what:<28} ok in {took:.2f}s")
+        except Exception as err:
+            took = asyncio.get_running_loop().time() - start
+            print(f"  {what:<28} FAILED in {took:.2f}s: {err}")
+
+    target = not bool(was_on)
+    await _timed(f"power -> {target}", coordinator.async_set_power(target))
+    print(f"    {await _confirmed_by_device(coordinator, KEY_POWER, target)}")
+
+    if was_on is not None:
+        await _timed(
+            f"power -> {bool(was_on)}", coordinator.async_set_power(bool(was_on))
+        )
+        print(f"    {await _confirmed_by_device(coordinator, KEY_POWER, bool(was_on))}")
+
+    if isinstance(was_bright, int):
+        probe = _BRIGHT_LOW if was_bright > _BRIGHT_MIDPOINT else _BRIGHT_HIGH
+        await _timed(f"brightness -> {probe}", coordinator.async_set_brightness(probe))
+        print(f"    {await _confirmed_by_device(coordinator, KEY_BRIGHTNESS, probe)}")
+        await _timed(
+            f"brightness -> {was_bright}", coordinator.async_set_brightness(was_bright)
+        )
+        print(
+            f"    {await _confirmed_by_device(coordinator, KEY_BRIGHTNESS, was_bright)}"
+        )
+
+
 async def main() -> int:
     """Connect once, prime, report, and optionally follow notifications."""
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--scan", type=float, default=10.0, help="scan seconds")
     parser.add_argument("--watch", type=float, default=0.0, help="follow N seconds")
     parser.add_argument("--debug", action="store_true", help="integration debug log")
+    parser.add_argument(
+        "--commands",
+        action="store_true",
+        help="exercise the write path (power, brightness) and restore afterwards",
+    )
     args = parser.parse_args()
 
     logging.basicConfig(
@@ -127,23 +219,6 @@ async def main() -> int:
     # 0x14 reads back the way we expect.
     coordinator._activation_checked = True  # noqa: SLF001
 
-    # Record what the READ alone returns, before the batched request fills in
-    # the rest. Reporting only the total is how this bench misled its author:
-    # 24 keys after priming looks like "the read carries everything", when the
-    # read had returned 20 and the request supplied the other four.
-    from_read: set[int] = set()
-    original_ingest = coordinator._ingest  # noqa: SLF001
-    first = True
-
-    def _watch_first(data: bytes) -> None:
-        nonlocal first
-        original_ingest(data)
-        if first:
-            first = False
-            from_read.update(coordinator.state)
-
-    coordinator._ingest = _watch_first  # noqa: SLF001
-
     print(f"\nconnecting to {device.name} ({device.address})…")
     try:
         async with coordinator._lock:  # noqa: SLF001
@@ -152,6 +227,11 @@ async def main() -> int:
         print(f"connect failed: {err!r}")
         return 1
 
+    # Ask the characteristic directly rather than inferring from the mirror.
+    # Two earlier attempts to infer it were both wrong: the total after priming
+    # counts what the request supplied, and "the first frame ingested" can be a
+    # notification the lamp pushed on subscribe, not the read at all.
+    from_read = await _read_directly(coordinator)
     _report(coordinator, from_read)
 
     if args.watch:
@@ -163,6 +243,9 @@ async def main() -> int:
         for key, raw in sorted(changed.items()):
             shown = raw.hex() if isinstance(raw, (bytes, bytearray)) else raw
             print(f"  0x{key:02x} {_KEY_NAMES.get(key, '?'):<14} {shown}")
+
+    if args.commands:
+        await _exercise_commands(coordinator)
 
     client = coordinator._client  # noqa: SLF001
     if client is not None:
