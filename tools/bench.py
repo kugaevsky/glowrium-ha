@@ -9,9 +9,11 @@ on a link that actually works - which is the only way to answer questions like
     .venv/bin/python tools/bench.py            # connect, prime, report
     .venv/bin/python tools/bench.py --watch 5  # ...then follow notifications
 
-It never writes a setting. The bring-up sequence is disabled outright rather
-than relied upon not to trigger: a bench should not be able to reprovision
-somebody's lamp because a flag read back wrong.
+It never writes a setting of its own accord. The bring-up sequence is disabled
+outright rather than relied upon not to trigger: a bench should not be able to
+reprovision somebody's lamp because a flag read back wrong. Priming, though,
+now corrects a drifted clock - that is the integration's behaviour, not the
+bench's.
 
 Docker on macOS cannot reach the host's Bluetooth controller, so this runs
 directly on the machine. The address here is a CoreBluetooth UUID, not a MAC.
@@ -21,6 +23,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+from datetime import datetime
 import logging
 from pathlib import Path
 import sys
@@ -28,6 +31,7 @@ import sys
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from bleak import BleakScanner
+from homeassistant.util import dt as dt_util
 
 from custom_components.glowrium import cbor
 from custom_components.glowrium.const import (
@@ -284,6 +288,14 @@ async def main() -> int:
         format="%(asctime)s %(levelname)-7s %(message)s",
         datefmt="%H:%M:%S",
     )
+
+    # Home Assistant sets this during setup; nothing does outside it, and the
+    # default is UTC. The lamp's clock is local wall time, so a bench that
+    # skipped this would hand a +05 lamp a clock five hours slow the moment
+    # priming decided it had drifted - the bench corrupting the very thing it
+    # is here to check.
+    dt_util.set_default_time_zone(datetime.now().astimezone().tzinfo)
+    print(f"local time: {dt_util.now():%Y-%m-%d %H:%M:%S %Z}")
 
     device = await _find(args.scan)
     if device is None:
