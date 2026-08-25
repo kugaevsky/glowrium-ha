@@ -8,12 +8,13 @@ on a link that actually works - which is the only way to answer questions like
 
     .venv/bin/python tools/bench.py            # connect, prime, report
     .venv/bin/python tools/bench.py --watch 5  # ...then follow notifications
+    .venv/bin/python tools/bench.py --clock    # verify the clock resync, both branches
 
 It never writes a setting of its own accord. The bring-up sequence is disabled
 outright rather than relied upon not to trigger: a bench should not be able to
 reprovision somebody's lamp because a flag read back wrong. Priming, though,
 now corrects a drifted clock - that is the integration's behaviour, not the
-bench's.
+bench's, and --clock is the mode that puts it on trial deliberately.
 
 Docker on macOS cannot reach the host's Bluetooth controller, so this runs
 directly on the machine. The address here is a CoreBluetooth UUID, not a MAC.
@@ -23,7 +24,8 @@ from __future__ import annotations
 
 import argparse
 import asyncio
-from datetime import datetime
+import contextlib
+from datetime import datetime, timedelta
 import logging
 from pathlib import Path
 import sys
@@ -38,11 +40,17 @@ from custom_components.glowrium.const import (
     KEY_BRIGHTNESS,
     KEY_DST,
     KEY_POWER,
+    KEY_TIME,
+    KEY_TIME_SYNCED,
     NAME_PREFIX,
     NOTIFY_UUID,
     STATE_KEYS,
 )
-from custom_components.glowrium.coordinator import GlowriumCoordinator
+from custom_components.glowrium.coordinator import (
+    _CLOCK_TOLERANCE,
+    GlowriumCoordinator,
+    _encode_device_time,
+)
 
 # Probe brightness: pick whichever end the lamp is not already near, so the
 # change is visible and the restore is meaningful.
@@ -265,6 +273,182 @@ async def _probe_dst(coordinator: GlowriumCoordinator) -> None:
         )
 
 
+# Ten times the coordinator's tolerance, and nothing like an hour: an offset of
+# exactly an hour could be confused with a DST convention, and a smaller one
+# with the lamp's own second-level jitter.
+_INDUCED_DRIFT = timedelta(minutes=10)
+
+
+async def _device_clock(
+    coordinator: GlowriumCoordinator,
+) -> tuple[datetime | None, float | None]:
+    """Read 0x05 off the characteristic and return it with its drift, in seconds.
+
+    Straight from the lamp rather than from the state mirror: a write echoes
+    into the mirror, so the mirror would agree with us about a clock the lamp
+    never took.
+    """
+    client = coordinator._client  # noqa: SLF001
+    if client is None:
+        return None, None
+    # Retried: a read taken the instant a link is rebuilt has come back without
+    # 0x05 in it, and reporting that as "the lamp has no clock" would condemn a
+    # correction that did happen. Three tries cost a second and remove the
+    # question.
+    got: object = None
+    for _ in range(3):
+        try:
+            raw = bytes(await client.read_gatt_char(NOTIFY_UUID))
+        except Exception as err:
+            print(f"  clock read failed: {err!r}")
+            return None, None
+        value, _short = cbor.decode_frame(raw)
+        got = value.get(KEY_TIME) if isinstance(value, dict) else None
+        if isinstance(got, (bytes, bytearray)) and len(got) >= _CLOCK_BYTES:
+            break
+        await asyncio.sleep(0.4)
+    if not isinstance(got, (bytes, bytearray)) or len(got) < _CLOCK_BYTES:
+        return None, None
+    try:
+        reported = datetime(
+            (got[0] << 8) | got[1], got[2], got[3], got[4], got[5], got[6]
+        )
+    except ValueError:  # the lamp can report an impossible date
+        return None, None
+    now = dt_util.now().replace(tzinfo=None)
+    return reported, (reported - now).total_seconds()
+
+
+async def _reconnect(coordinator: GlowriumCoordinator, tries: int = 3) -> bool:
+    """Drop the link and build a fresh one exactly as the integration does."""
+    client = coordinator._client  # noqa: SLF001
+    if client is not None:
+        with contextlib.suppress(Exception):
+            await client.disconnect()
+    coordinator._client = None  # noqa: SLF001
+    coordinator._primed_client = None  # noqa: SLF001
+    for attempt in range(1, tries + 1):
+        await asyncio.sleep(2.0)
+        try:
+            async with coordinator._lock:  # noqa: SLF001
+                await coordinator._connect_locked()  # noqa: SLF001
+        except Exception as err:
+            print(f"    reconnect {attempt}/{tries} failed: {err!r}")
+            continue
+        if coordinator._client is not None:  # noqa: SLF001
+            return True
+        print(f"    reconnect {attempt}/{tries}: the link answered nothing")
+    return False
+
+
+async def _ensure_clock_right(coordinator: GlowriumCoordinator) -> bool:
+    """Leave the lamp with a correct clock, whatever the test did to it.
+
+    Unconditional, and not an afterthought: the Home Assistant instance that
+    gets the lamp back runs a version with no resync at all, so a lamp handed
+    over with a wrong clock would run its schedule and its circadian curve off
+    it indefinitely, with nothing to show for it - which is precisely the
+    failure this fix exists to prevent.
+    """
+    for attempt in range(1, 4):
+        reported, drift = await _device_clock(coordinator)
+        if drift is not None and abs(drift) < _CLOCK_TOLERANCE:
+            print(f"  clock left correct: {reported} ({drift:+.0f}s)")
+            return True
+        print(f"  restoring the clock by hand ({attempt}/3)…")
+        try:
+            async with coordinator._lock:  # noqa: SLF001
+                await coordinator._write_raw(  # noqa: SLF001
+                    {KEY_TIME: _encode_device_time(), KEY_TIME_SYNCED: 1}
+                )
+        except Exception as err:
+            print(f"    write failed: {err!r}")
+            await _reconnect(coordinator)
+        await asyncio.sleep(1.5)
+    reported, drift = await _device_clock(coordinator)
+    print(f"  !! THE LAMP'S CLOCK IS STILL WRONG: {reported} ({drift})")
+    print("  !! do not hand it back to Home Assistant until this is put right")
+    return False
+
+
+async def _probe_clock(coordinator: GlowriumCoordinator) -> bool:
+    """Put the clock resync on trial against the lamp, both branches.
+
+    Called on a link that is up but deliberately not primed, so the clock can
+    be read as found before anything has had the chance to correct it.
+    """
+    print("\nclock resync - the lamp's own 0x05 against real time")
+    reported, drift = await _device_clock(coordinator)
+    if drift is None:
+        print("  the lamp reports no readable clock - nothing to judge")
+        return False
+    print(f"  as found:        {reported}  {drift:+.0f}s   (up, not yet primed)")
+
+    writes = coordinator._writes_sent  # noqa: SLF001
+    await coordinator._async_prime()  # noqa: SLF001
+    primed, primed_drift = await _device_clock(coordinator)
+    wrote = coordinator._writes_sent - writes  # noqa: SLF001
+    print(f"  after priming:   {primed}  {primed_drift:+.0f}s   writes={wrote}")
+
+    quiet_ok = True
+    if abs(drift) < _CLOCK_TOLERANCE:
+        quiet_ok = wrote == 0
+        print(
+            "  quiet branch:    "
+            + (
+                "OK - a clock this close was left alone"
+                if quiet_ok
+                else f"FAILED - it wrote {wrote} time(s) anyway"
+            )
+        )
+    else:
+        print(
+            f"  the lamp was already {drift:+.0f}s out, so priming should have "
+            "corrected it"
+        )
+        quiet_ok = wrote >= 1 and abs(primed_drift) < _CLOCK_TOLERANCE
+        print("  correcting branch (as found): " + ("OK" if quiet_ok else "FAILED"))
+
+    seconds = int(_INDUCED_DRIFT.total_seconds())
+    print(f"\n  inducing a {seconds}s drift - ten times the tolerance, and not")
+    print("  an hour, so it cannot be read as a daylight-saving offset")
+    wrong = _encode_device_time(dt_util.now() - _INDUCED_DRIFT)
+    try:
+        async with coordinator._lock:  # noqa: SLF001
+            await coordinator._write_raw(  # noqa: SLF001
+                {KEY_TIME: wrong, KEY_TIME_SYNCED: 1}
+            )
+    except Exception as err:
+        print(f"  could not write the wrong clock: {err!r}")
+        await _ensure_clock_right(coordinator)
+        return False
+    await asyncio.sleep(1.5)
+    bad, bad_drift = await _device_clock(coordinator)
+    shown = "unreadable" if bad_drift is None else f"{bad_drift:+.0f}s"
+    print(f"  lamp now reads:  {bad}  {shown}")
+    if bad_drift is None or abs(bad_drift) < _CLOCK_TOLERANCE:
+        print("  the lamp did not take the wrong clock - the correction is untestable")
+        await _ensure_clock_right(coordinator)
+        return False
+
+    print("  reconnecting - the same connect->prime path the integration runs")
+    if not await _reconnect(coordinator):
+        print("  !! lost the lamp while its clock is wrong")
+        await _ensure_clock_right(coordinator)
+        return False
+    fixed, fixed_drift = await _device_clock(coordinator)
+    corrected = fixed_drift is not None and abs(fixed_drift) < _CLOCK_TOLERANCE
+    shown = "unreadable" if fixed_drift is None else f"{fixed_drift:+.0f}s"
+    print(f"  after reconnect: {fixed}  {shown}")
+    print(
+        "  correcting branch: "
+        + ("OK - the lamp was put right by the resync" if corrected else "FAILED")
+    )
+
+    restored = await _ensure_clock_right(coordinator)
+    return quiet_ok and corrected and restored
+
+
 async def main() -> int:
     """Connect once, prime, report, and optionally follow notifications."""
     parser = argparse.ArgumentParser(description=__doc__)
@@ -275,6 +459,12 @@ async def main() -> int:
         "--dst",
         action="store_true",
         help="settle the DST convention: does the lamp shift its own clock?",
+    )
+    parser.add_argument(
+        "--clock",
+        action="store_true",
+        help="put the clock resync on trial: leave a correct clock alone, "
+        "correct a wrong one, and hand the lamp back right either way",
     )
     parser.add_argument(
         "--commands",
@@ -311,10 +501,17 @@ async def main() -> int:
     print(f"\nconnecting to {device.name} ({device.address})…")
     try:
         async with coordinator._lock:  # noqa: SLF001
-            await coordinator._connect_locked()  # noqa: SLF001
+            # The clock probe primes itself, after it has read the clock as
+            # found: priming is what corrects a drift, so priming here would
+            # destroy the measurement before it was taken.
+            await coordinator._connect_locked(prime=not args.clock)  # noqa: SLF001
     except Exception as err:
         print(f"connect failed: {err!r}")
         return 1
+
+    clock_ok = True
+    if args.clock:
+        clock_ok = await _probe_clock(coordinator)
 
     # Ask the characteristic directly rather than inferring from the mirror.
     # Two earlier attempts to infer it were both wrong: the total after priming
@@ -343,7 +540,7 @@ async def main() -> int:
     if client is not None:
         await client.disconnect()
         print("\ndisconnected")
-    return 0
+    return 0 if clock_ok else 1
 
 
 if __name__ == "__main__":
