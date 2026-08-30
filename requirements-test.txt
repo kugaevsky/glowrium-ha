@@ -1,5 +1,5 @@
 pytest-homeassistant-custom-component
-ruff~=0.16.4
+ruff~=0.16.5
 
 # homeassistant.components.bluetooth pulls in usb -> serialx -> aioesphomeapi;
 # these are not in the base homeassistant / PHACC distribution. The
