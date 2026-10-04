@@ -48,6 +48,7 @@ def _connected_coordinator(
     client = MagicMock()
     client.is_connected = True
     client.write_gatt_char = AsyncMock()
+    client.disconnect = AsyncMock()
     coordinator._client = client
     return coordinator, client
 
@@ -1342,11 +1343,14 @@ async def test_an_old_client_disconnecting_does_not_drop_the_live_one(
     """
     coordinator, live = _connected_coordinator(hass)
     superseded = MagicMock()  # the client an earlier attempt gave up on
+    superseded.disconnect = AsyncMock()
 
     coordinator._async_on_disconnect(superseded)
 
     assert coordinator._client is live
     assert coordinator._is_connected is True
+    live.disconnect.assert_not_awaited()
+    superseded.disconnect.assert_not_awaited()
 
     # The live one going down is still heard.
     coordinator._async_on_disconnect(live)
@@ -1721,3 +1725,282 @@ async def test_only_an_application_level_refusal_silences_the_request(
             await coordinator._request_state(client)
 
         assert coordinator._state_request_muted is should_mute, message
+
+
+def _dialling(
+    coordinator: GlowriumCoordinator,
+    monkeypatch: pytest.MonkeyPatch,
+    *clients: MagicMock,
+) -> AsyncMock:
+    """Make the coordinator's next connects hand back ``clients``, in order."""
+    dial = AsyncMock(side_effect=list(clients))
+    monkeypatch.setattr(coordinator_module, "establish_connection", dial)
+
+    def _in_range() -> object:
+        return object()
+
+    coordinator._ble_device = _in_range
+    return dial
+
+
+def _fresh_client() -> MagicMock:
+    """Return a client as establish_connection hands one back: up, but unread."""
+    client = MagicMock()
+    client.is_connected = True
+    client.start_notify = AsyncMock()
+    client.disconnect = AsyncMock()
+    client.read_gatt_char = AsyncMock(side_effect=BleakError("Not connected"))
+    client.write_gatt_char = AsyncMock(side_effect=BleakError("Not connected"))
+    return client
+
+
+async def test_a_link_the_poll_gives_up_on_is_hung_up(hass: HomeAssistant) -> None:
+    """Forgetting a client is not disconnecting it.
+
+    Found on the real integration: the system bus refused every new connection
+    from Home Assistant's user, Bluetooth included, about two and a half hours
+    after each start. bleak opens a D-Bus connection per client and closes it
+    only in ``disconnect()``; a link that answered nothing was "dropped" by
+    clearing the reference, which closes nothing, and every client let go of
+    that way kept its connection until the bus's limit of 256 per user was
+    reached.
+    """
+    coordinator, client = _connected_coordinator(hass)
+    client.read_gatt_char = AsyncMock(side_effect=BleakError("Not connected"))
+    client.write_gatt_char = AsyncMock(side_effect=BleakError("Not connected"))
+
+    await coordinator._async_prime()
+    await hass.async_block_till_done()
+
+    assert coordinator._client is None
+    client.disconnect.assert_awaited_once()
+
+
+async def test_a_connect_that_cannot_be_read_is_hung_up(
+    hass: HomeAssistant, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The same on the connect path, which is the one the poll takes every tick."""
+    coordinator, _ = _connected_coordinator(hass)
+    coordinator._client = None
+    client = _fresh_client()
+    _dialling(coordinator, monkeypatch, client)
+
+    await coordinator._connect_locked()
+    await hass.async_block_till_done()
+
+    assert coordinator._client is None
+    client.disconnect.assert_awaited_once()
+
+
+async def test_a_write_retry_hangs_up_before_it_dials_again(
+    hass: HomeAssistant, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The client a write failed on is closed, and closed before the retry.
+
+    Order matters as much as the hang-up. The lamp has one slot: a connect made
+    while the old link is still up is handed that same link, and the hang-up
+    then closes it underneath the retry.
+    """
+    coordinator, first = _connected_coordinator(hass)
+    first.write_gatt_char = AsyncMock(side_effect=BleakError("dropped"))
+    second = _fresh_client()
+    second.write_gatt_char = AsyncMock()
+    order: list[str] = []
+
+    async def _hang_up_slowly() -> None:
+        await asyncio.sleep(0.01)  # a real disconnect is not instant either
+        order.append("hung up")
+
+    async def _dial(*_a: object, **_kw: object) -> MagicMock:
+        order.append("dialled")
+        return second
+
+    first.disconnect = AsyncMock(side_effect=_hang_up_slowly)
+    _dialling(coordinator, monkeypatch).side_effect = _dial
+
+    await coordinator.async_set_power(True)
+
+    assert order == ["hung up", "dialled"]
+    first.disconnect.assert_awaited_once()
+    assert coordinator._client is second
+    second.disconnect.assert_not_awaited()  # the link that worked is kept
+
+
+async def test_a_failed_command_hangs_up_only_after_the_device_could_confirm(
+    hass: HomeAssistant, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The last client is closed too - but not before confirmation has listened.
+
+    A client whose write failed is still the channel the confirming report
+    arrives on (see test_confirmation_waits_for_a_report_that_arrives_late).
+    Hanging it up the moment the write fails would close the leak and quietly
+    take that away: every command whose acknowledgement was lost would be
+    reported as failed again.
+    """
+    coordinator, first = _connected_coordinator(hass)
+    first.write_gatt_char = AsyncMock(side_effect=BleakError("Unlikely Error"))
+    second = _fresh_client()
+    second.write_gatt_char = AsyncMock(side_effect=BleakError("Unlikely Error"))
+    _dialling(coordinator, monkeypatch, second)
+    hung_up_when_confirming: list[int] = []
+
+    async def _nothing_confirms(*_a: object) -> bool:
+        hung_up_when_confirming.append(second.disconnect.await_count)
+        return False
+
+    coordinator._async_device_confirms = _nothing_confirms
+
+    with pytest.raises(HomeAssistantError):
+        await coordinator.async_set_power(True)
+    await hass.async_block_till_done()
+
+    assert hung_up_when_confirming == [0]  # still up while the device could answer
+    first.disconnect.assert_awaited_once()
+    second.disconnect.assert_awaited_once()
+    assert coordinator._client is None
+
+
+async def test_a_confirmed_command_still_hangs_up_the_client_it_gave_up_on(
+    hass: HomeAssistant, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Being told the command worked is no reason to keep the leak."""
+    coordinator, first = _connected_coordinator(hass)
+    second = _fresh_client()
+
+    async def _write_then_notify(*_a: object, **_kw: object) -> None:
+        coordinator._ingest(cbor.encode({KEY_POWER: True}))
+        raise BleakError("GATT Protocol Error: Unlikely Error")
+
+    first.write_gatt_char = AsyncMock(side_effect=_write_then_notify)
+    second.write_gatt_char = AsyncMock(side_effect=_write_then_notify)
+    _dialling(coordinator, monkeypatch, second)
+
+    await coordinator.async_set_power(True)  # confirmed by the report
+    await hass.async_block_till_done()
+
+    first.disconnect.assert_awaited_once()
+    second.disconnect.assert_awaited_once()
+
+
+async def test_a_link_the_lamp_dropped_is_hung_up_as_well(hass: HomeAssistant) -> None:
+    """The link going down by itself closes the link, not the client.
+
+    bleak leaves the client's D-Bus connection open after the device
+    disconnects; only ``disconnect()`` releases it. This was where the quota
+    actually went. On the lamp it was found on, at the edge of range, the link
+    came up on every poll tick and the lamp dropped it two to ten seconds
+    later - 678 times in one night - and each time the callback only cleared
+    the reference.
+    """
+    coordinator, client = _connected_coordinator(hass)
+
+    coordinator._async_on_disconnect(client)
+    await hass.async_block_till_done()
+
+    assert coordinator._client is None
+    client.disconnect.assert_awaited_once()
+
+
+async def test_a_client_that_is_not_ours_is_left_to_bleak(
+    hass: HomeAssistant,
+) -> None:
+    """Only the client the coordinator holds is hung up from the callback.
+
+    The first build of this fix hung up whichever client the callback named, as
+    a second chance for a hang-up cut short by its ceiling. On the real lamp it
+    lasted minutes: bleak reports a link lost in the middle of a connect to the
+    same callback, while establish_connection is still working on that client.
+    Disconnecting it there closed the bus underneath bleak's own clean-up -
+    "Failed to cancel connection ... Bad file descriptor" on every such drop,
+    and a retry that died on a bus that was no longer there.
+    """
+    coordinator, live = _connected_coordinator(hass)
+    connecting = MagicMock()  # still inside establish_connection
+    connecting.disconnect = AsyncMock()
+
+    coordinator._async_on_disconnect(connecting)
+    await hass.async_block_till_done()
+
+    connecting.disconnect.assert_not_awaited()
+    assert coordinator._client is live
+
+
+async def test_a_hang_up_outlives_the_deadline_of_whoever_asked_for_it(
+    hass: HomeAssistant, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A command running out of time must not take the hang-up with it.
+
+    A disconnect that is cancelled part-way has asked BlueZ to drop the link
+    and then walked away before closing its own D-Bus connection - the leak
+    again, by another route.
+    """
+    coordinator, first = _connected_coordinator(hass)
+    monkeypatch.setattr(coordinator_module, "_COMMAND_TIMEOUT", 0.05)
+    monkeypatch.setattr(coordinator_module, "_CONFIRM_TIMEOUT", 0.01)
+    first.write_gatt_char = AsyncMock(side_effect=BleakError("dropped"))
+    released = asyncio.Event()
+    finished: list[int] = []
+
+    async def _slow_hang_up() -> None:
+        await released.wait()
+        finished.append(1)
+
+    first.disconnect = AsyncMock(side_effect=_slow_hang_up)
+    dial = _dialling(coordinator, monkeypatch, _fresh_client())
+
+    with pytest.raises(HomeAssistantError):
+        await coordinator.async_set_power(True)  # the deadline ends the wait
+
+    assert finished == []
+    dial.assert_not_awaited()  # and it never dialled over the old link
+    released.set()
+    await hass.async_block_till_done()
+    assert finished == [1]  # the hang-up itself ran to the end
+
+
+async def test_a_hang_up_that_fails_or_hangs_troubles_nobody(
+    hass: HomeAssistant, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Hanging up is cleanup: it is bounded, and its failures stay in the log.
+
+    bleak's disconnect passes on whatever the bus raised and ends on an
+    assertion, and against a wedged BlueZ it can wait indefinitely. None of
+    that may reach the path that gave the link up, or outlive the test.
+    """
+    monkeypatch.setattr(coordinator_module, "_HANG_UP_TIMEOUT", 0.05)
+    for failure in (BleakError("gone"), OSError(9, "Bad file descriptor"), EOFError()):
+        coordinator, client = _connected_coordinator(hass)
+        client.disconnect = AsyncMock(side_effect=failure)
+        coordinator._async_on_disconnect(client)
+        await hass.async_block_till_done()
+        assert coordinator._client is None
+
+    coordinator, client = _connected_coordinator(hass)
+
+    async def _never() -> None:
+        await asyncio.Event().wait()
+
+    client.disconnect = AsyncMock(side_effect=_never)
+    async with asyncio.timeout(1):
+        await coordinator._hang_up(client)  # ends at the ceiling, not never
+    assert coordinator._client is None
+
+
+async def test_a_hang_up_is_not_tied_to_the_entry(hass: HomeAssistant) -> None:
+    """The one background task that must survive the entry being unloaded.
+
+    Everything else is created on the entry so that it dies with it (see
+    test_background_work_is_tied_to_the_entry): a connect that outlives its
+    coordinator claims the lamp's slot for nobody. A hang-up is the opposite -
+    cancelled by an unload, it leaves the slot taken and the D-Bus connection
+    open.
+    """
+    coordinator, client = _connected_coordinator(hass)
+    entry = MagicMock()
+    coordinator._entry = entry
+
+    coordinator._hang_up(client)
+    await hass.async_block_till_done()
+
+    entry.async_create_background_task.assert_not_called()
+    client.disconnect.assert_awaited_once()

@@ -4,6 +4,33 @@ All notable changes to this project are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+- **Home Assistant no longer runs the system bus out of connections.** bleak opens
+  a D-Bus connection of its own for every Bluetooth client and closes it only when
+  that client is told to disconnect — not when the last reference to it is dropped,
+  and not when the link goes down by itself. The integration did both. A link that
+  connected but answered nothing was forgotten, so was the client behind a failed
+  write, and a link the lamp dropped was only noted; each left one connection open
+  for as long as Home Assistant ran. With the lamp at the edge of range that is one
+  every thirty seconds, and the bus allows a user 256 of them: about two and a half
+  hours after a start, nothing running as Home Assistant's user could open a new
+  one. Every new Bluetooth connection needs one, and where that user is root so do
+  host tools such as `networkctl` and `hostnamectl`. Every client the integration
+  lets go of is now disconnected — in the background, and outside the deadline of
+  whatever gave it up, so a command that runs out of time cannot cut the hang-up
+  short. A lamp in comfortable range leaked as well, only slowly: once for each
+  link the lamp dropped by itself.
+
+### Changed
+
+- **A command that has to retry now reconnects for real.** The retry used to dial
+  while the client it had just given up on was still connected. It now waits for
+  that link to be closed first, so a command that needs its second attempt takes
+  longer than it did; one that works first time is unaffected.
+
 ## [0.2.1] - 2026-08-25
 
 Follow-up to 0.2.0, which shipped a defect that showed up on real hardware

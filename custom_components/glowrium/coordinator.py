@@ -96,6 +96,11 @@ _CONFIRM_TIMEOUT = 2.0
 # Ceiling on the disconnect during unload, so reloading the integration does
 # not wait out whatever connect currently holds the lock.
 _STOP_TIMEOUT = 3.0
+# Ceiling on hanging up a link the coordinator has given up on (see _hang_up).
+# It runs in the background, so nothing waits this out except a write retry,
+# which has its own deadline. It matches how long bleak itself waits for BlueZ
+# to confirm a disconnect.
+_HANG_UP_TIMEOUT = 10.0
 # The batched state request is muted after this many consecutive failures. One
 # failure means nothing on a weak link - a dropped connection surfaces as the
 # same BleakError as an outright refusal - and giving up after one leaves every
@@ -427,6 +432,46 @@ class GlowriumCoordinator:
                 self._lock.release()
 
     @callback
+    def _hang_up(self, client: BleakClientWithServiceCache) -> asyncio.Task[None]:
+        """Let go of ``client`` and disconnect it in the background.
+
+        The two belong together. bleak opens a D-Bus connection of its own for
+        every client and closes it in ``disconnect()`` and nowhere else - not
+        when the reference is dropped, and not when the link itself goes down.
+        A client that is merely forgotten keeps that connection for the life
+        of the process, and the system bus allows one user 256 of them. On a
+        lamp at the edge of range, where a link is made and lost on every poll
+        tick, that took about two and a half hours; after it nothing running as
+        that user could reach the bus at all, Bluetooth included.
+
+        So this is called for every client the coordinator is finished with,
+        including one whose link is already gone - then it costs nothing, as
+        bleak has no device left to disconnect and only closes the bus.
+
+        The task goes on hass, not on the entry like the rest of the background
+        work (see ``_spawn``), and its caller's deadline cannot cancel it. That
+        rule exists because a connect that outlives its coordinator claims the
+        lamp's slot for nobody; a hang-up that outlives it gives the slot back,
+        and one cut short is exactly the leak described above.
+        """
+        if client is self._client:
+            self._client = None
+        return self.hass.async_create_task(
+            self._async_disconnect(client), f"glowrium hang up {self.address}"
+        )
+
+    async def _async_disconnect(self, client: BleakClientWithServiceCache) -> None:
+        """Disconnect ``client`` under a ceiling; a failure is only logged."""
+        try:
+            async with asyncio.timeout(_HANG_UP_TIMEOUT):
+                await client.disconnect()
+        except Exception as err:
+            # Anything at all: besides its own errors, bleak passes on whatever
+            # the bus raised and ends on an assertion. Nobody is waiting for
+            # this, and there is nothing a caller could do about it.
+            _LOGGER.debug("Hanging up %s failed: %r", self.address, err)
+
+    @callback
     def _async_on_advertisement(
         self,
         service_info: bluetooth.BluetoothServiceInfoBleak,
@@ -476,7 +521,7 @@ class GlowriumCoordinator:
                     # re-prime, leaving the entities frozen for the whole life
                     # of a link that never worked.
                     _LOGGER.debug("%s: link answers nothing, dropping", self.address)
-                    self._client = None
+                    self._hang_up(client)
                     return
                 await self._async_activate_if_needed()
                 self._primed_client = client
@@ -570,7 +615,7 @@ class GlowriumCoordinator:
             # meantime _is_connected would claim a connection a command would
             # write into before failing.
             _LOGGER.debug("%s: link answers nothing, dropping", self.address)
-            self._client = None
+            self._hang_up(client)
             self._async_notify_listeners()
             return
         await self._async_activate_if_needed()
@@ -758,10 +803,21 @@ class GlowriumCoordinator:
             # some time later. Clearing the live connection here would leave it
             # holding the lamp's single slot with nothing referencing it, while
             # every reconnect fails for want of that slot.
+            #
+            # Or a client that is not ours yet: bleak reports a link lost in
+            # the middle of a connect to this same callback, while
+            # establish_connection is still at work on that client. Neither is
+            # hung up from here. The first already has been; the second is
+            # bleak's to clean up, and disconnecting it underneath its own
+            # connect closes the bus that clean-up needs - seen on a real lamp
+            # as "Failed to cancel connection ... Bad file descriptor" on
+            # every such drop.
             _LOGGER.debug("%s: a superseded connection dropped", self.address)
             return
         _LOGGER.debug("%s disconnected", self.address)
-        self._client = None
+        # The link is down, but the client still holds its D-Bus connection
+        # (see _hang_up).
+        self._hang_up(client)
         self._async_notify_listeners()
 
     @callback
@@ -798,6 +854,8 @@ class GlowriumCoordinator:
         a stack trace after a long hang.
         """
         reports_before, writes_before = self._reports, self._writes_sent
+        # The client the last attempt failed on, if it got as far as having one.
+        failed: BleakClientWithServiceCache | None = None
         try:
             async with asyncio.timeout(_COMMAND_TIMEOUT), self._lock:
                 for attempt in range(1, _WRITE_ATTEMPTS + 1):
@@ -806,31 +864,48 @@ class GlowriumCoordinator:
                         await self._write_raw(payload)
                         break
                     except (BleakError, TimeoutError) as err:
-                        self._client = None
+                        client, self._client = self._client, None
                         if attempt == _WRITE_ATTEMPTS:
+                            failed = client
                             raise
                         _LOGGER.debug(
                             "Write to %s failed (%s); reconnecting and retrying",
                             self.address,
                             err,
                         )
+                        if client is not None:
+                            # Finished before the retry dials: the hang-up
+                            # closes the link in BlueZ, and a connect made
+                            # ahead of that either fails or is handed the very
+                            # link being closed. Shielded, so the command's
+                            # deadline ends the wait and not the hang-up.
+                            await asyncio.shield(self._hang_up(client))
         except (BleakError, TimeoutError) as err:
-            if self._writes_sent > writes_before and await self._async_device_confirms(
-                payload, reports_before
-            ):
-                _LOGGER.debug(
-                    "Command to %s reported %s, but the device reports the state "
-                    "it asked for - treating it as delivered",
-                    self.address,
-                    err,
-                )
-            else:
-                _LOGGER.debug("Command to %s failed: %s", self.address, err)
-                raise HomeAssistantError(
-                    translation_domain=DOMAIN,
-                    translation_key="cannot_connect",
-                    translation_placeholders={"name": self.name},
-                ) from err
+            try:
+                if (
+                    self._writes_sent > writes_before
+                    and await self._async_device_confirms(payload, reports_before)
+                ):
+                    _LOGGER.debug(
+                        "Command to %s reported %s, but the device reports the "
+                        "state it asked for - treating it as delivered",
+                        self.address,
+                        err,
+                    )
+                else:
+                    _LOGGER.debug("Command to %s failed: %s", self.address, err)
+                    raise HomeAssistantError(
+                        translation_domain=DOMAIN,
+                        translation_key="cannot_connect",
+                        translation_placeholders={"name": self.name},
+                    ) from err
+            finally:
+                # Only now. The coordinator let go of this client when the
+                # write failed, but its notifications are the channel the
+                # confirmation above listens on, so it had to stay up until
+                # the device had its chance to answer.
+                if failed is not None:
+                    self._hang_up(failed)
         self._async_notify_listeners()
 
     async def _async_device_confirms(
