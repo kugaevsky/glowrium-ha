@@ -6,23 +6,65 @@ All notable changes to this project are documented here. The format is based on
 
 ## [Unreleased]
 
+Mostly one fix, and the most serious this integration has needed: left running,
+0.2.1 used up a limit it shares with everything else on the host. With it comes
+what the same investigation turned up about how a link is let go of — on a
+reload, when Home Assistant stops, and when the bus itself is the thing that
+failed — and three fixes that were waiting for a release: the lamp's clock, its
+daylight-saving offset, and settings changed from the vendor app.
+
 ### Fixed
 
 - **Home Assistant no longer runs the system bus out of connections.** bleak opens
-  a D-Bus connection of its own for every Bluetooth client and closes it only when
-  that client is told to disconnect — not when the last reference to it is dropped,
-  and not when the link goes down by itself. The integration did both. A link that
-  connected but answered nothing was forgotten, so was the client behind a failed
-  write, and a link the lamp dropped was only noted; each left one connection open
-  for as long as Home Assistant ran. With the lamp at the edge of range that is one
-  every thirty seconds, and the bus allows a user 256 of them: about two and a half
-  hours after a start, nothing running as Home Assistant's user could open a new
-  one. Every new Bluetooth connection needs one, and where that user is root so do
-  host tools such as `networkctl` and `hostnamectl`. Every client the integration
-  lets go of is now disconnected — in the background, and outside the deadline of
-  whatever gave it up, so a command that runs out of time cannot cut the hang-up
-  short. A lamp in comfortable range leaked as well, only slowly: once for each
-  link the lamp dropped by itself.
+  a D-Bus connection of its own for every Bluetooth client and, once the client has
+  connected, closes it only when that client is told to disconnect — not when the
+  last reference to it is dropped, and not when the link goes down by itself. The
+  integration did both. A link that connected but answered nothing was forgotten,
+  so was the client behind a failed write, and a link the lamp dropped was only
+  noted; each left one connection open for as long as Home Assistant ran. With the
+  lamp at the edge of range that is one every thirty seconds, and the bus allows a
+  user 256 of them: about two and a half hours after a start, nothing running as
+  Home Assistant's user could open a new one. Every new Bluetooth connection needs
+  one, and where that user is root so do host tools such as `networkctl` and
+  `hostnamectl`. Every client the integration lets go of is now disconnected — in
+  the background, and outside the deadline of whatever gave it up, so neither a
+  command that runs out of time nor a reload can cut the hang-up short. A lamp in
+  comfortable range leaked as well, only slowly: once for each link the lamp
+  dropped by itself.
+- **Reloading the integration no longer leaks a connection on a slow link, or
+  leaves an exception in the log on a dead one.** Unload disconnected under a
+  three-second ceiling and walked away when it ran out, which left that
+  connection open — the same leak, once per reload. It also let through the
+  errors a bus that is out of quota answers with; Home Assistant carried on with
+  the reload, but logged them as an exception nobody had handled, in the one
+  state where the log is being read. Unload still waits no longer than it did —
+  up to three seconds for the lock and three for the hang-up — and the hang-up
+  finishes behind it.
+- **A reload no longer leaves the old instance connecting, or connected.** Home
+  Assistant replays the last advertisement the moment the integration starts
+  listening, and the reconnect that started was created before the integration
+  had been given its config entry — so nothing cancelled it when the entry was
+  unloaded. After a reload the instance that had just been replaced went on
+  connecting for up to ten seconds, competing with its successor for the lamp's
+  single connection. A command still running during the unload could do the
+  same and finish its connect afterwards, leaving the link with an instance
+  nothing would ever stop again; on a lamp whose link holds, that keeps the new
+  instance out until Home Assistant is restarted. An instance that has been
+  stopped now takes no new link at all.
+- **The lamp's link is hung up when Home Assistant stops.** Home Assistant does
+  not unload integrations on shutdown, so the link was left to be dropped at
+  the very end of a clean stop. A stop that is cut short never gets there — a
+  container restart allows ten seconds — and BlueZ was left holding the link:
+  the lamp then read as connected and answered nothing until the Bluetooth
+  adapter was power-cycled. The integration now asks for the link to be dropped
+  as soon as Home Assistant announces that it is stopping. Whether that is
+  enough on a stop that is killed has not been measured.
+- **Errors from the bus itself are handled as the lost link they are.** When the
+  system bus refuses Home Assistant, or a connection to it closes with a call
+  still waiting, bleak's calls end in `EOFError` or "Bad file descriptor" rather
+  than in its own errors. Only the latter were caught, so a background connect
+  could end as an unhandled exception with a traceback in the log, and a
+  command could fail with a raw error — no retry, and no "cannot connect".
 - **Turning the DST switch no longer overwrites the offset the lamp reported.**
   The `0x35` slot carries a flag and the offset to apply, written together, and
   only the flag was ever ours to change — sending a fixed hour turned a half-hour
@@ -40,7 +82,6 @@ All notable changes to this project are documented here. The format is based on
   difference between a write when needed and a write an hour for nothing.
   Verified on a G7: it was 39 minutes slow five weeks after this integration
   set its clock, and priming put it right with a single write.
-
 - **A setting changed from the vendor app while Home Assistant was disconnected
   is picked up again.** The connect-time read never carries the indicator,
   lighting mode, ramp or DST, so once the batched request had supplied them, the
