@@ -6,6 +6,7 @@ import asyncio
 from collections.abc import Callable, Coroutine
 import contextlib
 from datetime import datetime, time, timedelta
+from enum import Enum, auto
 import logging
 from time import monotonic
 from typing import Any
@@ -129,6 +130,11 @@ _LOST_GRACE = 10.0
 # there. The lamp only speaks when something changes, so silence is normal -
 # and it is also all a link gives off that died without BlueZ noticing.
 _PROBE_INTERVAL = 300.0
+# How long the lamp gets to report once it has acknowledged the state request.
+# On a G7 the report arrives inside the write call itself. The wait is for a
+# model that splits its map across notifications, and with the dial before it
+# has to fit inside _CONNECT_TIMEOUT.
+_REPORT_TIMEOUT = 3.0
 # The batched state request is muted after this many consecutive failures. One
 # failure means nothing on a weak link - a dropped connection surfaces as the
 # same BleakError as an outright refusal - and giving up after one leaves every
@@ -175,7 +181,24 @@ _LINK_ERRORS = (BleakError, TimeoutError, EOFError, OSError)
 _REFUSAL_MARKERS = ("authorization", "authentication", "not permitted")
 
 
-def _close_bus(backend: Any, address: str) -> bool:
+class _Bus(Enum):
+    """What was behind a client that had been told to disconnect."""
+
+    CLEAR = auto()  # no bus open: closed by bleak, already down, or none at all
+    CLOSED = auto()  # one still open, and closed here
+    OPEN = auto()  # one that may still be open and could not be closed
+
+
+class _Asked(Enum):
+    """What came of asking the lamp to report its state."""
+
+    REPORTED = auto()  # it did
+    SILENT = auto()  # it acknowledged the request and reported nothing
+    REFUSED = auto()  # it answered the request with a refusal
+    LOST = auto()  # the request met a link that is gone
+
+
+def _close_bus(backend: Any, address: str) -> _Bus:
     """See that no D-Bus connection is left open behind a client we let go of.
 
     ``backend`` is what sits behind the client: for a local adapter, bleak's
@@ -196,20 +219,22 @@ def _close_bus(backend: Any, address: str) -> bool:
     traceback instead of raising - once per client, in the very state where the
     log is being read.
 
-    Returns False when there may be a connection and it could not be closed -
-    bleak has moved what this reaches for, or the bus refused. The caller then
-    keeps the client instead of forgetting it (see ``_async_disconnect``).
+    Returns ``_Bus.OPEN`` when there may be a connection and it could not be
+    closed - bleak has moved what this reaches for, or the bus refused. The
+    caller then keeps the client instead of forgetting it (see
+    ``_async_disconnect``).
     """
     if backend is None:
-        return False
+        return _Bus.OPEN
     if not hasattr(backend, "_bus"):
         # A Bluetooth proxy's client has no bus of its own, and nothing to
         # close. BlueZ's client without one is bleak rearranged.
-        return "bluezdbus" not in type(backend).__module__
+        moved = "bluezdbus" in type(backend).__module__
+        return _Bus.OPEN if moved else _Bus.CLEAR
     # bleak's own attributes from here on: there is no public way to do this.
     bus = backend._bus  # noqa: SLF001
     if bus is None:
-        return True
+        return _Bus.CLEAR
     try:
         backend._is_connected = False  # noqa: SLF001
         monitor = getattr(backend, "_disconnect_monitor_event", None)
@@ -220,15 +245,18 @@ def _close_bus(backend: Any, address: str) -> bool:
     except Exception as err:
         # Tidying, and not ours to rely on: the bus is closed either way.
         _LOGGER.debug("%s: tidying up behind a client failed: %r", address, err)
+    was_up = getattr(bus, "connected", True)
     try:
-        if getattr(bus, "connected", True):
+        if was_up:
             bus.disconnect()
     except Exception as err:
         _LOGGER.debug("%s: closing a client's bus failed: %r", address, err)
-        return False
+        return _Bus.OPEN
     backend._bus = None  # noqa: SLF001
+    if not was_up:
+        return _Bus.CLEAR
     _LOGGER.debug("%s: closed the bus a hang-up left open", address)
-    return True
+    return _Bus.CLOSED
 
 
 def _looks_like_a_refusal(err: Exception) -> bool:
@@ -316,6 +344,8 @@ class GlowriumCoordinator:
         self._lost: tuple[Any, float] | None = None
         # When the lamp last answered anything (see _PROBE_INTERVAL).
         self._last_answer = monotonic()
+        # The keys the lamp has reported since it was last asked for its state.
+        self._carried: set[int] = set()
         self._present = False
         self._reconnecting = False
         # Set by async_stop and never cleared: a stopped coordinator takes no
@@ -680,26 +710,34 @@ class GlowriumCoordinator:
         backend = self._backends.get(client)
         if backend is None:
             backend = getattr(client, "_backend", None)
-        hung_up = False
+        hung_up = unanswered = False
         try:
             async with asyncio.timeout(ceiling):
                 await client.disconnect()
             hung_up = True
         except Exception as err:
-            if isinstance(err, TimeoutError):
-                # BlueZ said nothing at all. Any other failure is an answer.
-                self._note_stuck_hang_up()
+            unanswered = isinstance(err, TimeoutError)
             # Anything at all: besides its own errors, bleak passes on whatever
             # the bus raised and ends on an assertion. Nobody is waiting for
             # this, and there is nothing a caller could do about it.
             _LOGGER.debug("Hanging up %s failed: %r", self.address, err)
         finally:
             # On a cancellation too: it leaves the bus as open as a failure.
-            if _close_bus(backend, self.address) or hung_up:
+            bus = _close_bus(backend, self.address)
+            if hung_up or bus is not _Bus.OPEN:
                 self._backends.pop(client, None)
                 self._unreleased.discard(client)
             else:
                 self._unreleased.add(client)
+            if unanswered and bus is _Bus.CLOSED:
+                # BlueZ's own client, its bus still open, and no answer at
+                # all: BlueZ would not hang up. An error would have been an
+                # answer, and a proxy's client is not BlueZ's to answer for.
+                self._note_stuck_hang_up()
+            elif hung_up and self._stuck_hang_ups < _STACK_FAULT_AFTER:
+                # "In a row" means in a row. Once it has been called a
+                # fault, only the lamp answering ends it (_note_answer).
+                self._stuck_hang_ups = 0
 
     def _note_stuck_hang_up(self) -> None:
         """Count a hang-up BlueZ did not answer; a run of them is the stack.
@@ -713,7 +751,9 @@ class GlowriumCoordinator:
         over = self._stuck_hang_ups - _STACK_FAULT_AFTER
         if over < 0:
             return
-        gap = _RECONNECT_INTERVAL.total_seconds() * 2 ** (over + 1)
+        # The exponent is capped as well as the gap: a wedge left alone for
+        # days would otherwise raise OverflowError here, on every hang-up.
+        gap = _RECONNECT_INTERVAL.total_seconds() * 2 ** min(over + 1, 16)
         self._dial_not_before = monotonic() + min(gap, _STACK_FAULT_BACKOFF_MAX)
         if over == 0:
             _LOGGER.warning(
@@ -731,9 +771,15 @@ class GlowriumCoordinator:
         """Record that the lamp answered: the link is alive, the stack with it."""
         self._last_answer = monotonic()
         if self._stuck_hang_ups >= _STACK_FAULT_AFTER:
-            _LOGGER.info("%s: the Bluetooth stack answers again", self.address)
+            # At the level the episode was announced at, or whoever read
+            # that warning never learns it is over.
+            _LOGGER.warning(
+                "%s: the lamp answers again; the Bluetooth stack has let go",
+                self.address,
+            )
         self._stuck_hang_ups = 0
         self._dial_not_before = 0.0
+        self._lost = None  # whatever BlueZ called it, it is answering
 
     @callback
     def _async_on_advertisement(
@@ -783,8 +829,8 @@ class GlowriumCoordinator:
                 # BlueZ said "not connected" and then never reported the link
                 # dropped. Waiting any longer is waiting for ever.
                 _LOGGER.debug(
-                    "%s: a link BlueZ called not connected was never reported "
-                    "dropped; dropping it",
+                    "%s: the state request failed on this link and it was "
+                    "never reported dropped; dropping it",
                     self.address,
                 )
                 self._hang_up(lost[0])
@@ -816,6 +862,8 @@ class GlowriumCoordinator:
                 await self._async_activate_if_needed()
                 await self._async_sync_clock_if_needed()
                 self._primed_client = client
+                _LOGGER.debug("%s: primed a link a command made", self.address)
+                await self._async_read_device_info(client)
         except _LINK_ERRORS as err:
             _LOGGER.debug("Priming state of %s failed: %s", self.address, err)
         else:
@@ -824,31 +872,31 @@ class GlowriumCoordinator:
     async def _async_probe(self) -> None:
         """Ask a link that has been silent whether it is still there.
 
-        A read, because it is the one request every model answers and its
-        answer is worth having anyway. A link that cannot be read is dropped,
-        and the poll rebuilds it.
+        By priming it again: the lamp is asked for its state, which costs one
+        write, proves the link if it answers, and refreshes the mirror for free.
+        A link that does not answer - or keeps the question waiting until the
+        deadline - is dropped, and the poll rebuilds it.
         """
+        client: BleakClientWithServiceCache | None = None
+        alive = False
         try:
             async with asyncio.timeout(_CONNECT_TIMEOUT), self._lock:
-                client = self._client
-                if client is None or (
-                    monotonic() - self._last_answer < _PROBE_INTERVAL
-                ):
+                held = self._client
+                if held is None or (monotonic() - self._last_answer < _PROBE_INTERVAL):
                     return
-                try:
-                    raw = bytes(await client.read_gatt_char(NOTIFY_UUID))
-                except _LINK_ERRORS as err:
-                    _LOGGER.debug(
-                        "%s: the held link no longer answers (%s), dropping",
-                        self.address,
-                        err,
-                    )
-                    self._hang_up(client)
-                    self._async_notify_listeners()
-                    return
-                self._ingest(raw)
+                client = held
+                alive = await self._request_state(client)
         except _LINK_ERRORS as err:
-            _LOGGER.debug("Probing the link to %s failed: %s", self.address, err)
+            _LOGGER.debug("Probing the link to %s failed: %r", self.address, err)
+        if client is None:
+            return  # never got as far as asking; nothing was learnt
+        if alive:
+            _LOGGER.debug("%s: the held link answers", self.address)
+            return
+        _LOGGER.debug("%s: the held link no longer answers, dropping", self.address)
+        if client is self._client:
+            self._hang_up(client)
+            self._async_notify_listeners()
 
     async def _async_reconnect(self) -> None:
         try:
@@ -940,16 +988,6 @@ class GlowriumCoordinator:
         # Committed only once notifications are live: a client without them
         # reports as connected forever while no state ever arrives again.
         self._client = client
-        # Read the device-info string BEFORE the state request: on a model that
-        # rejects that request the device drops the link, and the info read
-        # would be lost along with it - leaving us unable to name the model in
-        # the very warning that asks which model it is.
-        if not self.device_info:
-            try:
-                raw = await client.read_gatt_char(INFO_UUID)
-                self.device_info = _parse_device_info(bytes(raw))
-            except _LINK_ERRORS as err:
-                _LOGGER.debug("Device-info read from %s failed: %s", self.address, err)
         if not prime:
             return
         if not await self._request_state(client):
@@ -965,6 +1003,8 @@ class GlowriumCoordinator:
         await self._async_activate_if_needed()
         await self._async_sync_clock_if_needed()
         self._primed_client = client
+        _LOGGER.debug("%s: connected and primed", self.address)
+        await self._async_read_device_info(client)
         self._async_notify_listeners()
 
     def _require_read(self, value: Any, translation_key: str) -> Any:
@@ -987,55 +1027,97 @@ class GlowriumCoordinator:
             )
         return value
 
-    async def _request_state(self, client: BleakClientWithServiceCache) -> None:
-        """Prime the state mirror: read first, then ask for whatever is missing.
+    async def _async_read_device_info(
+        self, client: BleakClientWithServiceCache
+    ) -> None:
+        """Read the device-info string - once, and after everything else.
 
-        ``NOTIFY_UUID`` is readable, and one read returns a property map in a
-        single response - cheaper and sturdier than asking the device to report,
-        since the request-and-notify path is subject to the map being split
-        across notifications (see ``_ingest``), and the request write itself is
-        unreliable on some models: a G8 (``Glowrium-C064``) answers it with ATT
-        ``Insufficient authorization``, a not-connected error, or a timeout
-        depending on route and timing, and drops the link while doing so.
-
-        **But the read does not return everything.** Measured on a G7 at RSSI
-        -40 and reported for a G8 in issue #3: a complete twenty-pair map that
-        stops at 0x15, so the indicator (0x17), lighting mode (0x2b), ramp
-        (0x2f) and DST (0x35) never appear in it. The frame is not truncated -
-        it simply ends there. Treating a successful read as the whole story
-        left those four unread for the entire session. So the read primes what
-        it can, and the request still goes out unless the read happened to
-        cover every key we want.
-
-        A model that genuinely refuses the request is stopped from being asked
-        again, but only after ``_STATE_REQUEST_ATTEMPTS`` consecutive failures:
-        a dropped link raises the same error as a refusal, and on a weak link
-        the first attempt fails routinely.
-
-        Returns whether the READ answered, which is the caller's evidence that
-        the link is alive at all: bleak can hand back a client that reports
-        itself connected while every operation on it answers "not connected",
-        and a link that cannot even be read is not a working link.
+        It names the model, the firmware and the serial, and it is the one thing
+        here that only a GATT read gives. On BlueZ a read of this lamp ends the
+        link about two seconds later (see ``_request_state``), so it is left
+        until the state has arrived and whatever had to be written has been:
+        that link is spent, and the next one has nothing left to read.
         """
-        read_ok = False
-        carried: frozenset[int] = frozenset()
+        if self.device_info:
+            return
+        try:
+            raw = await client.read_gatt_char(INFO_UUID)
+        except _LINK_ERRORS as err:
+            _LOGGER.debug("Device-info read from %s failed: %s", self.address, err)
+            return
+        self.device_info = _parse_device_info(bytes(raw))
+        _LOGGER.debug(
+            "%s: device info read; on BlueZ this link does not outlive a read",
+            self.address,
+        )
+
+    async def _request_state(self, client: BleakClientWithServiceCache) -> bool:
+        """Prime the state mirror: ask the lamp to report, read only if it will not.
+
+        Writing the ids in ``STATE_KEYS`` to ``NOTIFY_UUID`` makes the lamp
+        report them in a notification. ``NOTIFY_UUID`` is readable too, and
+        from 0.2.0 it was read first, on every connect - which looked sturdier,
+        and on BlueZ ended every link it touched. Measured on a G7 (BlueZ 5.82,
+        2026-10-05), outside this integration and between its poll ticks: a
+        link left alone, subscribed to, or asked for its state by a write was
+        still up at the end of the test, nine runs out of nine; a link that had
+        one characteristic read - the 235-byte state, the 93-byte device info,
+        a single byte - was gone 2.02 to 2.04 s later, six runs out of six. The
+        read itself succeeds; BlueZ takes the ATT channel down right after it,
+        so the very next call answers "Not connected", and two seconds later
+        the link follows. That was read as a lamp at the edge of range dropping
+        its link on every poll. It was this method. (Why BlueZ does it is not
+        established; a read through macOS does no such thing.)
+
+        So the lamp is asked first, and a link whose lamp reports is never
+        read. The report is waited for, briefly: on a G7 it arrives inside the
+        write, and a model that splits its map across notifications needs a
+        moment more.
+
+        Reading remains the way out for a lamp that will not report - one that
+        refuses the request, as a G8 (``Glowrium-C064``) does with ATT
+        ``Insufficient authorization``, or acknowledges it and stays silent. A
+        lamp that has refused before is read first, as it always was, and the
+        request is repeated until ``_STATE_REQUEST_ATTEMPTS`` refusals in a row
+        silence it: a dropped link raises the same kind of error as a refusal,
+        and one failure proves nothing. The read does not carry everything - a
+        complete twenty-pair map that stops at 0x15, so no indicator, lighting
+        mode, ramp or DST - which is why the request is not simply given up.
+
+        Returns whether the link answered at all: the lamp reported, or
+        acknowledged or refused the request, or could be read. bleak can hand
+        back a client that reports itself connected while every call on it
+        answers "not connected", and such a link is not a working one.
+        """
+        if self._state_request_muted or self._state_request_failures:
+            read_ok, carried = await self._async_read_state(client)
+            if not carried.issuperset(STATE_KEYS) and not self._state_request_muted:
+                # Judged on what this read carried rather than on the mirror:
+                # the mirror accumulates, so a key seen once would look
+                # covered for the rest of the session.
+                await self._async_ask_state(client)
+            return read_ok
+        asked = await self._async_ask_state(client)
+        if asked is _Asked.REPORTED:
+            return True
+        read_ok, _ = await self._async_read_state(client)
+        return read_ok or asked in (_Asked.SILENT, _Asked.REFUSED)
+
+    async def _async_read_state(
+        self, client: BleakClientWithServiceCache
+    ) -> tuple[bool, frozenset[int]]:
+        """Read the state map; return whether it answered and what it carried."""
         try:
             raw = bytes(await client.read_gatt_char(NOTIFY_UUID))
         except _LINK_ERRORS as err:
             _LOGGER.debug("%s state read failed: %s", self.address, err)
-        else:
-            read_ok = True
-            carried = self._ingest(raw)
-        if carried.issuperset(STATE_KEYS):
-            # This read covered everything, so there is nothing to ask for.
-            # Judged on what this read carried rather than on the mirror: the
-            # mirror accumulates, so a key seen once would look covered for the
-            # rest of the session and the request would never go out again -
-            # leaving anything changed from the vendor app while we were away
-            # invisible until a restart.
-            return read_ok
-        if self._state_request_muted:
-            return read_ok
+            return False, frozenset()
+        return True, self._ingest(raw)
+
+    async def _async_ask_state(self, client: BleakClientWithServiceCache) -> _Asked:
+        """Write the state request and wait for the lamp to report."""
+        self._carried.clear()
+        before = self._reports
         try:
             await client.write_gatt_char(NOTIFY_UUID, bytes(STATE_KEYS), response=True)
         except _LINK_ERRORS as err:
@@ -1048,7 +1130,7 @@ class GlowriumCoordinator:
                 # The link is going, and BlueZ normally says so within seconds.
                 # Noted in case it never does (see _LOST_GRACE).
                 self._lost = (client, monotonic())
-                return read_ok
+                return _Asked.LOST
             self._state_request_failures += 1
             if self._state_request_failures < _STATE_REQUEST_ATTEMPTS:
                 _LOGGER.debug(
@@ -1058,7 +1140,7 @@ class GlowriumCoordinator:
                     _STATE_REQUEST_ATTEMPTS,
                     err,
                 )
-                return read_ok
+                return _Asked.REFUSED
             self._state_request_failures = 0
             served_a_cooldown = self._state_request_muted_until > 0.0
             self._state_request_given_up = served_a_cooldown
@@ -1077,9 +1159,24 @@ class GlowriumCoordinator:
                 if served_a_cooldown
                 else f"Pausing it for {int(_STATE_REQUEST_COOLDOWN // 60)} minutes.",
             )
-        else:
-            self._state_request_failures = 0
-        return read_ok
+            return _Asked.REFUSED
+        self._state_request_failures = 0
+        self._note_answer()  # the write was acknowledged
+        try:
+            async with asyncio.timeout(_REPORT_TIMEOUT):
+                while True:
+                    # Cleared before checking, as in _async_device_confirms.
+                    self._state_reported.clear()
+                    if self._reports > before and self._carried.issuperset(STATE_KEYS):
+                        return _Asked.REPORTED
+                    await self._state_reported.wait()
+        except TimeoutError:
+            if self._reports > before:
+                return _Asked.REPORTED  # in part; a read would add nothing asked for
+        _LOGGER.debug(
+            "%s acknowledged the state request and reported nothing", self.address
+        )
+        return _Asked.SILENT
 
     def _log_trailing_bytes(self, data: bytes, count: int) -> None:
         """Report a frame rejected for trailing bytes: once loudly, then quietly.
@@ -1184,7 +1281,7 @@ class GlowriumCoordinator:
 
     @callback
     def _on_notify(self, _characteristic: Any, data: bytearray) -> None:
-        self._ingest(bytes(data))
+        self._carried |= self._ingest(bytes(data))
 
     async def _write_raw(self, payload: dict[int, Any]) -> None:
         """Write one command frame to the connected device.

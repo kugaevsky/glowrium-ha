@@ -4,6 +4,7 @@ import asyncio
 from datetime import datetime
 import logging
 from time import monotonic
+from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
 from bleak.exc import BleakError
@@ -16,6 +17,7 @@ from custom_components.glowrium import cbor, coordinator as coordinator_module
 from custom_components.glowrium.const import (
     DST_OFF,
     DST_ON,
+    INFO_UUID,
     KEY_ACTIVATED,
     KEY_BRIGHTNESS,
     KEY_CIRCADIAN,
@@ -55,6 +57,33 @@ def _connected_coordinator(
     client.disconnect = AsyncMock()
     coordinator._client = client
     return coordinator, client
+
+
+def _answers(
+    coordinator: GlowriumCoordinator,
+    client: MagicMock,
+    values: dict[int, Any] | None = None,
+    *,
+    only: tuple[int, ...] | None = None,
+) -> AsyncMock:
+    """Put a lamp behind ``client`` that answers the state request, as a G7 does.
+
+    The request is a write of ids to ``NOTIFY_UUID``; the answer is one
+    notification carrying a map of exactly those ids, and on a real lamp it
+    arrives before the write has returned (measured, 2026-10-05). ``only``
+    makes it a lamp that knows just some of what it is asked. Any other
+    write is accepted and answered with nothing.
+    """
+
+    async def _write(uuid: str, payload: bytes, **_kwargs: object) -> None:
+        if uuid != NOTIFY_UUID:
+            return
+        asked = [key for key in bytes(payload) if only is None or key in only]
+        answer = dict.fromkeys(asked, 0) | (values or {})
+        coordinator._on_notify(None, bytearray(cbor.encode(answer)))
+
+    client.write_gatt_char = AsyncMock(side_effect=_write)
+    return client.write_gatt_char
 
 
 async def test_set_power(hass: HomeAssistant) -> None:
@@ -370,13 +399,13 @@ async def test_state_request_abandoned_only_after_repeated_refusal(
 ) -> None:
     """A device that keeps rejecting the request is eventually left alone.
 
-    Re-sending it is what destroyed the link on every command for models that
-    answer ATT "Insufficient authorization" (0x08) and disconnect - but it takes
-    a run of failures, not one: see the transient-failure test below.
+    A G8 answers it with ATT "Insufficient authorization" (0x08) every time,
+    and asking on every connect gets nothing from it - but it takes a run of
+    refusals, not one: see the transient-failure test below.
     """
     coordinator = GlowriumCoordinator(hass, "AA:BB:CC:DD:EE:FF", "Glowrium-G8")
-    # The read has to work: a request that fails on a link which just served a
-    # read is a refusal, and one that fails alongside the read is a bad link.
+    # A refusal is told by what the error says. The read is what such a lamp
+    # is primed by instead.
     client = _refusing_client()
 
     for _ in range(coordinator_module._STATE_REQUEST_ATTEMPTS):
@@ -412,31 +441,44 @@ async def test_one_dropped_link_does_not_abandon_the_state_request(
         side_effect=BleakError("[org.bluez.Error.Failed] Not connected")
     )
 
-    await coordinator._request_state(client)
-    assert coordinator._state_request_muted is False  # one failure means nothing
+    assert await coordinator._request_state(client) is False  # nothing answered
+    assert coordinator._state_request_muted is False  # and one failure means nothing
+    assert coordinator._state_request_failures == 0  # it is not even counted
 
-    # And a success clears the count, so occasional failures never accumulate
-    # into a false refusal.
-    client.write_gatt_char = AsyncMock()
+    # And an answer clears the count, so that the odd refusal on a bad link
+    # never adds up to a silenced request.
+    coordinator._state_request_failures = coordinator_module._STATE_REQUEST_ATTEMPTS - 1
+    _answers(coordinator, client)
     await coordinator._request_state(client)
     assert coordinator._state_request_failures == 0
 
 
-async def test_state_request_repeats_while_accepted(hass: HomeAssistant) -> None:
-    """An unreadable device that accepts the request keeps being asked."""
+async def test_a_lamp_that_reports_is_asked_and_never_read(hass: HomeAssistant) -> None:
+    """A lamp that answers the state request is primed by that alone.
+
+    From 0.2.0 the state was read first, on every connect. On BlueZ a read of
+    this lamp ends the link: measured on a G7 between poll ticks, a link that
+    was left alone, subscribed to or asked for its state by a write was still
+    up at the end, nine runs of nine, and a link that had one characteristic
+    read was gone 2.0 s later, six runs of six. A hundred links an hour were
+    lost that way and put down to range.
+    """
     coordinator = GlowriumCoordinator(hass, "AA:BB:CC:DD:EE:FF", "Glowrium-G7")
     client = MagicMock()
     client.is_connected = True
-    client.read_gatt_char = AsyncMock(side_effect=BleakError("unreadable"))
-    client.write_gatt_char = AsyncMock()
-
-    await coordinator._request_state(client)
-    await coordinator._request_state(client)
-    assert client.write_gatt_char.await_count == 2
-    assert coordinator._state_request_muted is False
-    client.write_gatt_char.assert_awaited_with(
-        NOTIFY_UUID, bytes(STATE_KEYS), response=True
+    client.read_gatt_char = AsyncMock(
+        return_value=bytearray(cbor.encode({KEY_POWER: False}))
     )
+    asked = _answers(coordinator, client, {KEY_POWER: True, KEY_BRIGHTNESS: 70})
+
+    async with asyncio.timeout(1):  # the answer is there when the write returns
+        assert await coordinator._request_state(client) is True
+
+    asked.assert_awaited_once_with(NOTIFY_UUID, bytes(STATE_KEYS), response=True)
+    client.read_gatt_char.assert_not_awaited()
+    assert coordinator.state[KEY_POWER] is True  # what the lamp reported
+    assert coordinator.state[KEY_BRIGHTNESS] == 70
+    assert coordinator._state_request_muted is False
 
 
 async def test_activation_skipped_when_state_unreadable(hass: HomeAssistant) -> None:
@@ -460,22 +502,36 @@ async def test_activation_skipped_when_state_unreadable(hass: HomeAssistant) -> 
 
 
 async def test_partial_read_still_sends_the_request(hass: HomeAssistant) -> None:
-    """A read that covers only part of the map must not skip the request.
+    """For a lamp that is read, a read covering part of the map is not the end.
 
-    Measured on a real lamp: the connect-time read carries only the low property
-    block, so the indicator (0x17), lighting mode (0x2b), ramp (0x2f) and DST
-    (0x35) are absent from it and arrive solely through the batched request.
-    Treating the read as the whole story left those four entities `unknown` for
-    the entire session.
+    A lamp that has refused the request is read first from then on, as every
+    lamp was before. Measured on a real one: the read carries only the low
+    property block, so the indicator (0x17), lighting mode (0x2b), ramp (0x2f)
+    and DST (0x35) are absent from it and arrive solely through the request.
+    Treating the read as the whole story left those four entities `unknown`
+    for the entire session, so the request is repeated until it is silenced.
     """
-    coordinator = GlowriumCoordinator(hass, "AA:BB:CC:DD:EE:FF", "Glowrium-G7")
-    client = MagicMock()
-    client.is_connected = True
-    client.write_gatt_char = AsyncMock()
-    client.read_gatt_char = AsyncMock(return_value=bytearray.fromhex("a206f5081846"))
+    coordinator = GlowriumCoordinator(hass, "AA:BB:CC:DD:EE:FF", "Glowrium-G8")
+    coordinator._state_request_failures = 1  # refused once: read first
+    client = _refusing_client()
+    order: list[str] = []
+
+    async def _read(_uuid: str) -> bytearray:
+        order.append("read")
+        return bytearray.fromhex("a206f5081846")
+
+    async def _refuse(*_args: object, **_kwargs: object) -> None:
+        order.append("asked")
+        raise BleakError("Insufficient authorization (8)")
+
+    client.read_gatt_char = AsyncMock(side_effect=_read)
+    client.write_gatt_char = AsyncMock(side_effect=_refuse)
 
     await coordinator._request_state(client)
 
+    # Read before it is asked again: it was reported of a G8 that the refused
+    # request takes the link with it, and then there is nothing left to read.
+    assert order == ["read", "asked"]
     client.read_gatt_char.assert_awaited_once_with(NOTIFY_UUID)
     assert coordinator.state[KEY_POWER] is True  # what the read did carry
     assert coordinator.state[KEY_BRIGHTNESS] == 70
@@ -485,8 +541,9 @@ async def test_partial_read_still_sends_the_request(hass: HomeAssistant) -> None
 
 
 async def test_read_covering_every_key_skips_the_request(hass: HomeAssistant) -> None:
-    """The unreliable request is skipped when the read already has everything."""
+    """A lamp that is read is not asked when the read already has everything."""
     coordinator = GlowriumCoordinator(hass, "AA:BB:CC:DD:EE:FF", "Glowrium-G8")
+    coordinator._state_request_failures = 1  # refused once: read first
     client = MagicMock()
     client.is_connected = True
     client.write_gatt_char = AsyncMock()
@@ -495,14 +552,16 @@ async def test_read_covering_every_key_skips_the_request(hass: HomeAssistant) ->
     )
 
     await coordinator._request_state(client)
+    await coordinator._request_state(client)  # nor on the next connect
 
-    client.read_gatt_char.assert_awaited_once_with(NOTIFY_UUID)
+    assert client.read_gatt_char.await_count == 2
     client.write_gatt_char.assert_not_awaited()
 
 
 async def test_falls_back_to_request_when_read_fails(hass: HomeAssistant) -> None:
-    """If the read is unavailable the batched request is still tried."""
+    """For a lamp that is read first, a failed read still leaves the request."""
     coordinator = GlowriumCoordinator(hass, "AA:BB:CC:DD:EE:FF", "Glowrium-G7")
+    coordinator._state_request_failures = 1  # refused once: read first
     client = MagicMock()
     client.is_connected = True
     client.read_gatt_char = AsyncMock(side_effect=BleakError("not readable"))
@@ -513,6 +572,136 @@ async def test_falls_back_to_request_when_read_fails(hass: HomeAssistant) -> Non
     client.write_gatt_char.assert_awaited_with(
         NOTIFY_UUID, bytes(STATE_KEYS), response=True
     )
+
+
+async def test_a_refused_request_falls_back_to_the_read(hass: HomeAssistant) -> None:
+    """A lamp that will not report is read instead, link or no link.
+
+    A G8 refuses the request, and the read is the only way to its state. It
+    costs the link on BlueZ, and for such a lamp that is the price of having
+    a state at all.
+    """
+    coordinator = GlowriumCoordinator(hass, "AA:BB:CC:DD:EE:FF", "Glowrium-G8")
+    client = _refusing_client()
+
+    assert await coordinator._request_state(client) is True
+
+    client.write_gatt_char.assert_awaited_once()  # asked first
+    client.read_gatt_char.assert_awaited_once_with(NOTIFY_UUID)  # then read
+    assert coordinator.state[KEY_POWER] is True
+    assert coordinator._state_request_failures == 1
+
+
+async def test_a_lamp_that_acknowledges_and_says_nothing_is_read(
+    hass: HomeAssistant, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The request can be accepted and still bring nothing. Then the read does.
+
+    Not an error and not a refusal, so neither of those paths sees it: the
+    write is acknowledged, and no report follows. The wait for one is
+    bounded, and a lamp that stays silent is not left with no state.
+    """
+    monkeypatch.setattr(coordinator_module, "_REPORT_TIMEOUT", 0.05)
+    coordinator = GlowriumCoordinator(hass, "AA:BB:CC:DD:EE:FF", "Glowrium-G7")
+    client = MagicMock()
+    client.is_connected = True
+    client.write_gatt_char = AsyncMock()  # accepted; nothing comes of it
+    client.read_gatt_char = AsyncMock(
+        return_value=bytearray(cbor.encode({KEY_POWER: True}))
+    )
+
+    async with asyncio.timeout(1):
+        assert await coordinator._request_state(client) is True
+
+    client.read_gatt_char.assert_awaited_once_with(NOTIFY_UUID)
+    assert coordinator.state[KEY_POWER] is True
+
+    # And if the read fails as well, the acknowledgement still stands: the
+    # link answered, so it is not dropped as one that answers nothing.
+    client.read_gatt_char = AsyncMock(side_effect=BleakError("unreadable"))
+    async with asyncio.timeout(1):
+        assert await coordinator._request_state(client) is True
+
+
+async def test_a_report_from_before_the_request_is_not_its_answer(
+    hass: HomeAssistant, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Only what the lamp says after being asked counts as its answer.
+
+    The lamp reports on its own whenever something changes, and a complete
+    map that happened to arrive a moment earlier says nothing about whether
+    this request was answered.
+    """
+    monkeypatch.setattr(coordinator_module, "_REPORT_TIMEOUT", 0.05)
+    coordinator = GlowriumCoordinator(hass, "AA:BB:CC:DD:EE:FF", "Glowrium-G7")
+    client = MagicMock()
+    client.is_connected = True
+    client.write_gatt_char = AsyncMock()  # accepted; nothing comes of it
+    client.read_gatt_char = AsyncMock(
+        return_value=bytearray(cbor.encode({KEY_POWER: True}))
+    )
+    everything = bytearray(cbor.encode(dict.fromkeys(STATE_KEYS, 0)))
+    coordinator._on_notify(None, everything)  # before the request went out
+
+    await coordinator._request_state(client)
+
+    client.read_gatt_char.assert_awaited_once_with(NOTIFY_UUID)
+
+
+async def test_an_answer_in_two_notifications_is_waited_for(
+    hass: HomeAssistant,
+) -> None:
+    """A lamp may spread its answer; the rest is waited for, not read.
+
+    A G8 splits its property map across notifications. Taking the first one
+    for the whole answer would leave the caller - the activation check, the
+    clock - looking at half a state.
+    """
+    coordinator = GlowriumCoordinator(hass, "AA:BB:CC:DD:EE:FF", "Glowrium-G7")
+    client = MagicMock()
+    client.is_connected = True
+    client.read_gatt_char = AsyncMock()
+    first, second = STATE_KEYS[:5], STATE_KEYS[5:]
+    earlier = bytearray(cbor.encode(dict.fromkeys(STATE_KEYS, 9)))
+    coordinator._on_notify(None, earlier)  # a complete report, from before
+
+    async def _write(_uuid: str, _payload: bytes, **_kwargs: object) -> None:
+        coordinator._on_notify(None, bytearray(cbor.encode(dict.fromkeys(first, 1))))
+        hass.loop.call_later(
+            0.05,
+            coordinator._on_notify,
+            None,
+            bytearray(cbor.encode(dict.fromkeys(second, 2))),
+        )
+
+    client.write_gatt_char = AsyncMock(side_effect=_write)
+
+    assert await coordinator._request_state(client) is True
+
+    assert coordinator.state[second[-1]] == 2  # it waited for the second one
+    client.read_gatt_char.assert_not_awaited()
+
+
+async def test_a_partial_answer_is_not_topped_up_by_a_read(
+    hass: HomeAssistant, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A lamp that reports some of what it was asked has answered.
+
+    The read would not add what is missing - it stops at 0x15, short of
+    everything a lamp is likely not to know - and it would cost the link.
+    """
+    monkeypatch.setattr(coordinator_module, "_REPORT_TIMEOUT", 0.05)
+    coordinator = GlowriumCoordinator(hass, "AA:BB:CC:DD:EE:FF", "Glowrium-G7")
+    client = MagicMock()
+    client.is_connected = True
+    client.read_gatt_char = AsyncMock()
+    _answers(coordinator, client, {KEY_POWER: True}, only=(KEY_POWER, KEY_BRIGHTNESS))
+
+    async with asyncio.timeout(1):
+        assert await coordinator._request_state(client) is True
+
+    assert coordinator.state[KEY_POWER] is True
+    client.read_gatt_char.assert_not_awaited()
 
 
 async def test_split_notification_updates_state(hass: HomeAssistant) -> None:
@@ -785,28 +974,26 @@ async def test_a_command_connect_is_primed_by_the_poll(hass: HomeAssistant) -> N
 
     A command connects without priming to stay inside its budget, so something
     has to go back for the rest. Asserting that the poll calls a method by name
-    would pass with that method emptied out; what matters is that the device is
-    read.
+    would pass with that method emptied out; what matters is that the lamp is
+    asked and its answer lands.
     """
     coordinator, client = _connected_coordinator(hass)
-    # A real lamp reports its activation flag too; without it every connect
-    # sits out the 3 s wait for 0x14.
-    client.read_gatt_char = AsyncMock(
-        return_value=bytearray(cbor.encode({KEY_POWER: True, KEY_ACTIVATED: True}))
-    )
+    asked = _answers(coordinator, client, {KEY_POWER: True, KEY_ACTIVATED: True})
+    client.read_gatt_char = AsyncMock(return_value=bytearray(b"brand:x;;"))
 
     # A link exists that nothing has primed - exactly what a command leaves.
     coordinator._async_poll_reconnect(None)
     await hass.async_block_till_done()
 
-    client.read_gatt_char.assert_awaited_with(NOTIFY_UUID)
+    asked.assert_awaited_with(NOTIFY_UUID, bytes(STATE_KEYS), response=True)
     assert coordinator.state[KEY_POWER] is True  # the properties actually landed
+    client.read_gatt_char.assert_awaited_once_with(INFO_UUID)  # and the model
 
-    # And it is not re-read on every tick from then on.
-    reads = client.read_gatt_char.await_count
+    # And it is not asked again on every tick from then on.
+    count = asked.await_count
     coordinator._async_poll_reconnect(None)
     await hass.async_block_till_done()
-    assert client.read_gatt_char.await_count == reads
+    assert asked.await_count == count
 
 
 async def test_a_device_reporting_unactivated_is_brought_up(
@@ -980,19 +1167,17 @@ async def test_a_background_connect_primes_once(
 ) -> None:
     """A connect that primes says so, so the poll does not do it again.
 
-    This drives the real _connect_locked: subscribe, read the device-info
-    string, prime the state, and mark the link primed. Without the mark the
-    poll re-interrogates the lamp every 30 s forever.
+    This drives the real _connect_locked: subscribe, ask for the state, mark
+    the link primed, and only then read the device-info string. Without the
+    mark the poll re-interrogates the lamp every 30 s forever.
     """
     coordinator, client = _connected_coordinator(hass)
     coordinator._client = None
     client.is_connected = True
     client.start_notify = AsyncMock()
+    _answers(coordinator, client, {KEY_POWER: True, KEY_ACTIVATED: True})
     client.read_gatt_char = AsyncMock(
-        side_effect=[
-            bytearray(b"brand:Glowrium;pkey:Glowrium-C051;version:4;;"),
-            bytearray(cbor.encode({KEY_POWER: True, KEY_ACTIVATED: True})),
-        ]
+        return_value=bytearray(b"brand:Glowrium;pkey:Glowrium-C051;version:4;;")
     )
     monkeypatch.setattr(
         coordinator_module, "establish_connection", AsyncMock(return_value=client)
@@ -1010,10 +1195,78 @@ async def test_a_background_connect_primes_once(
     assert coordinator.state[KEY_POWER] is True
     assert coordinator._primed_client is client
 
-    reads = client.read_gatt_char.await_count
-    coordinator._async_poll_reconnect(None)
+
+async def test_the_device_info_is_the_last_thing_read_and_read_once(
+    hass: HomeAssistant, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The one read left on a link that reports comes after everything else.
+
+    The device-info string is only to be had by a read, and on BlueZ that
+    read ends the link two seconds later. So it waits until the state has
+    arrived and whatever had to be written - here a stale clock - has been.
+    After that the model is known, and no later link is read at all.
+    """
+    coordinator, _ = _connected_coordinator(hass)
+    coordinator._client = None
+    coordinator._activation_checked = True
+    order: list[str] = []
+
+    def _lamp() -> MagicMock:
+        client = _fresh_client()
+        stale = bytes.fromhex("07e80101000000")  # 2024-01-01 00:00:00
+
+        async def _write(uuid: str, payload: bytes, **_kwargs: object) -> None:
+            if uuid != NOTIFY_UUID:
+                order.append("clock written")
+                return
+            order.append("state asked")
+            answer = {key: stale if key == KEY_TIME else 0 for key in bytes(payload)}
+            coordinator._on_notify(None, bytearray(cbor.encode(answer)))
+
+        async def _read(uuid: str) -> bytearray:
+            order.append("info read" if uuid == INFO_UUID else "state read")
+            return bytearray(b"brand:Glowrium;pkey:Glowrium-C051;version:4;;")
+
+        client.write_gatt_char = AsyncMock(side_effect=_write)
+        client.read_gatt_char = AsyncMock(side_effect=_read)
+        return client
+
+    first, second = _lamp(), _lamp()
+    _dialling(coordinator, monkeypatch, first, second)
+
+    await coordinator._connect_locked()
+    assert order == ["state asked", "clock written", "info read"]
+    assert coordinator.model_id == "Glowrium-C051"
+
+    coordinator._async_on_disconnect(first)  # the read cost the link
     await hass.async_block_till_done()
-    assert client.read_gatt_char.await_count == reads  # not primed twice
+    order.clear()
+    await coordinator._connect_locked()
+
+    assert "info read" not in order
+    assert "state read" not in order
+    second.read_gatt_char.assert_not_awaited()
+
+
+async def test_a_command_connect_reads_nothing(
+    hass: HomeAssistant, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A command's own connect makes no read at all, not even of the model.
+
+    It used to read the device-info string on its way to the write when the
+    model was not known yet. That is a read between a button and its lamp,
+    and on BlueZ a link with two seconds to live.
+    """
+    coordinator, _ = _connected_coordinator(hass)
+    coordinator._client = None
+    client = _fresh_client()
+    client.write_gatt_char = AsyncMock()
+    _dialling(coordinator, monkeypatch, client)
+
+    await coordinator.async_set_power(True)
+
+    client.read_gatt_char.assert_not_awaited()
+    client.write_gatt_char.assert_awaited_once()
 
 
 async def test_the_bring_up_is_attempted_once_per_session(
@@ -1621,8 +1874,8 @@ async def test_a_dead_link_never_counts_as_a_refusal(hass: HomeAssistant) -> Non
 
     A weak link fails the read and the request alike, and counting that muted
     the request on a perfectly good lamp that merely sat far from the adapter -
-    seen on a real G7 forty seconds after start-up. A refusal is when the read
-    worked and the request did not: the link was demonstrably alive in between.
+    seen on a real G7 forty seconds after start-up. A refusal is an error that
+    says so; a link that is gone says "not connected" to everything.
     """
     coordinator = GlowriumCoordinator(hass, "AA:BB:CC:DD:EE:FF", "Glowrium-G7")
     client = MagicMock()
@@ -1643,8 +1896,8 @@ async def test_a_model_that_keeps_refusing_is_left_alone_for_the_session(
     """A second run of refusals after the cooldown ends the asking for good.
 
     The cooldown exists to give a first run the benefit of the doubt. A model
-    that refuses again once it expires is refusing, not unlucky - and each
-    round costs it a dropped link, which is what #5 set out to stop.
+    that refuses again once it expires is refusing, not unlucky, and asking it
+    again gets nothing.
     """
     monkeypatch.setattr(coordinator_module, "_STATE_REQUEST_COOLDOWN", 0.05)
     coordinator = GlowriumCoordinator(hass, "AA:BB:CC:DD:EE:FF", "Glowrium-G8")
@@ -1673,6 +1926,7 @@ async def test_a_link_that_dies_after_the_read_is_not_a_refusal(
     Seen on a real G7 in 0.2.0: the read answered - the low property block
     arrived and six entities came alive - and the request then failed with
     "Not connected" three times running, because the link dropped in between.
+    (It dropped because of the read, as it turned out: see _request_state.)
     Treating a successful read as proof the device is present muted the request
     on a perfectly good lamp, so the indicator, lighting mode, ramp and DST
     never arrived while commands kept working. Whether the device refused is
@@ -1738,45 +1992,25 @@ async def test_only_an_application_level_refusal_silences_the_request(
 
 
 async def test_the_request_is_repeated_on_every_connect(hass: HomeAssistant) -> None:
-    """Coverage is judged by this connect's read, not by what we already knew.
+    """Whether to ask is not judged by what the mirror already holds.
 
-    Measured on real hardware: the connect-time read never carries the
-    indicator, lighting mode, ramp or DST, so once a request has filled those
-    in, a check against the accumulated mirror is satisfied for ever and the
-    request is never sent again. Anything the user then changes from the vendor
-    app while Home Assistant is disconnected stays invisible until a restart -
-    which is the opposite of what a reconnect is for.
+    The mirror accumulates. Once a request has filled it in, a check against
+    it is satisfied for ever and the lamp is never asked again - so anything
+    changed from the vendor app while Home Assistant was disconnected stays
+    invisible until a restart, which is the opposite of what a reconnect is
+    for.
     """
     coordinator, client = _connected_coordinator(hass)
-    low_keys_only = cbor.encode({KEY_POWER: True, KEY_BRIGHTNESS: 50})
-    client.read_gatt_char = AsyncMock(return_value=bytearray(low_keys_only))
-    client.write_gatt_char = AsyncMock()
+    asked = _answers(coordinator, client)
+    client.read_gatt_char = AsyncMock()
 
     await coordinator._request_state(client)
-    assert client.write_gatt_char.await_count == 1
-
-    # Pretend the request was answered: every key is now known.
-    coordinator.state.update(dict.fromkeys(STATE_KEYS, 0))
+    assert asked.await_count == 1
+    assert all(key in coordinator.state for key in STATE_KEYS)  # all known now
 
     await coordinator._request_state(client)
-    assert client.write_gatt_char.await_count == 2, (
-        "a later connect must ask again - the read still lacks four keys"
-    )
-
-
-async def test_a_read_that_covers_everything_still_skips_the_request(
-    hass: HomeAssistant,
-) -> None:
-    """A model whose read does carry every key is not asked needlessly."""
-    coordinator, client = _connected_coordinator(hass)
-    everything = cbor.encode(dict.fromkeys(STATE_KEYS, 0))
-    client.read_gatt_char = AsyncMock(return_value=bytearray(everything))
-    client.write_gatt_char = AsyncMock()
-
-    await coordinator._request_state(client)
-    await coordinator._request_state(client)
-
-    client.write_gatt_char.assert_not_awaited()
+    assert asked.await_count == 2, "a later connect must ask again"
+    client.read_gatt_char.assert_not_awaited()
 
 
 async def test_a_stale_device_clock_is_corrected(hass: HomeAssistant) -> None:
@@ -1853,13 +2087,13 @@ async def test_both_priming_paths_check_the_clock(
 
         coordinator._async_sync_clock_if_needed = _note
         coordinator._request_state = AsyncMock(return_value=True)
+        client.read_gatt_char = AsyncMock(return_value=bytearray(b"brand:x;;"))
         coordinator._async_activate_if_needed = AsyncMock()
 
         if path == "_connect_locked":
             coordinator._client = None  # a real connect, not the early return
             client.is_connected = True
             client.start_notify = AsyncMock()
-            client.read_gatt_char = AsyncMock(return_value=bytearray(b"brand:x;;"))
             monkeypatch.setattr(
                 coordinator_module,
                 "establish_connection",
@@ -2656,11 +2890,11 @@ async def test_a_command_that_keeps_meeting_a_closed_bus_fails_readably(
 async def test_a_connect_whose_reads_meet_a_closed_bus_just_drops_the_link(
     hass: HomeAssistant, monkeypatch: pytest.MonkeyPatch, failure: Exception
 ) -> None:
-    """Every read and the state request, on a bus that closed: a dead link.
+    """The state request and the read, on a bus that closed: a dead link.
 
-    The connect path makes three calls after the subscription - the
-    device-info read, the state read and the batched request - and the link
-    can go under any of them. None of them may turn that into an exception
+    The connect path makes two calls after the subscription - the batched
+    request and, when that brings nothing, the state read - and the link can
+    go under either. Neither may turn that into an exception
     with a traceback: a link that answers nothing is dropped, and the poll
     builds another.
     """

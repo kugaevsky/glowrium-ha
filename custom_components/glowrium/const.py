@@ -58,8 +58,16 @@ ACTIVATE_MISC_VALUE: Final = 300
 KEY_TIME_SYNCED: Final = 0x31  # set to 1 together with the clock (0x05)
 
 # Properties requested from the device on connect (raw id bytes to NOTIFY_UUID).
-# Only ids the app itself requests are safe - others make the device disconnect.
+# The lamp answers with one notification carrying a map of exactly these.
+# Everything but the clock is what the vendor app asks for. The clock (0x05) was
+# added once it had been measured on a G7 (firmware 4, 2026-10-05): asked for
+# alone, with the power, and with all the rest, it was reported each time and
+# the link stayed up. Other ids have not been tried, and an early note here said
+# that ids the app does not request make the device disconnect - written before
+# it was known that a GATT read does (see coordinator._request_state), so it may
+# have blamed the wrong thing. Add one only after measuring it.
 STATE_KEYS: Final = (
+    KEY_TIME,
     KEY_POWER,
     KEY_BRIGHTNESS,
     KEY_CIRCADIAN,
