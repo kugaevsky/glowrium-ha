@@ -36,7 +36,7 @@ Home Assistant entities are stateless views over that coordinator.
 
 | File (`custom_components/glowrium/…`) | Responsibility |
 | --- | --- |
-| `__init__.py` | `async_setup_entry` / `async_unload_entry`; builds the coordinator, stores it in `entry.runtime_data`, forwards platforms |
+| `__init__.py` | `async_setup_entry` / `async_unload_entry`; builds the coordinator, stores it in `entry.runtime_data`, forwards platforms, and has the coordinator hang up when Home Assistant stops |
 | `config_flow.py` | Bluetooth auto-discovery + manual picker for `Glowrium-*` devices |
 | `coordinator.py` | BLE transport, reconnect, activation, state mirror, all command methods |
 | `cbor.py` | Minimal CBOR encoder/decoder (only the subset the device uses) — the *wire* format |
@@ -483,8 +483,37 @@ not hold yet is bleak's.
 
 A hang-up that fails, or runs into its ceiling, is logged at debug level and
 not retried: bleak leaves the bus open in that case, so each one is a
-connection lost for good. How often that happens on real hardware has not been
-measured; `Hanging up … failed` in the log is where to start counting.
+connection lost for good. On the real lamp none has been seen in some two
+hundred link drops; `Hanging up … failed` in the log is where to count.
+
+**Closing the bus under a call in flight looks like nothing bleak documents.**
+The hang-up from the disconnected callback closes the client's D-Bus connection
+at once. A GATT call still waiting for its reply on that connection then ends
+in `EOFError`, or `OSError` once the socket is gone, and bleak passes both on
+untouched. They mean what a `BleakError` means there — the link is gone — so
+every handler that deals with a lost link catches the same set,
+`_LINK_ERRORS`. Caught as nothing in particular, the error went straight out of
+a command, with no retry and no readable message.
+
+**A stopped coordinator holds no link and takes no new one.** Unload waits for
+the lock first and only then takes whatever client is held — and takes it even
+if that wait is cancelled — because a command still in flight can replace the
+link while unload waits. From the moment it stops, the coordinator refuses to
+dial, and a connect that was already on its way is hung up instead of kept:
+nobody would ever stop that coordinator a second time, and on a lamp whose link
+holds, a link kept there keeps the single slot from its successor for good.
+
+**Home Assistant stopping is not an unload.** It does not run an entry's unload
+callbacks on shutdown, so without a listener nothing hangs the lamp's link up
+but bleak, at the very end of a stop that runs to its end. A stop that is cut
+short — `docker restart` gives a container ten seconds — leaves BlueZ holding
+the link: the lamp reads as connected and answers nothing until the adapter is
+power-cycled. So the coordinator listens for `EVENT_HOMEASSISTANT_STOP` and
+asks BlueZ to drop the link the moment the stop is announced. It does not wait
+for the lock, and that hang-up gets `_STOP_TIMEOUT` rather than
+`_HANG_UP_TIMEOUT`: Home Assistant waits for what its stop listeners start, and
+the grace period is not the coordinator's to spend. Whether this prevents the
+phantom on a stop that is killed has not been measured.
 
 **A command connects without priming** (`_connect_locked(prime=False)`). It needs
 the link and its own write, nothing else — and priming costs a device-info read,
