@@ -107,6 +107,28 @@ _STOP_TIMEOUT = 3.0
 # has to stay below _COMMAND_TIMEOUT, or a link that will not confirm it has
 # closed leaves the retry no time to dial.
 _HANG_UP_TIMEOUT = 10.0
+# How many hang-ups in a row BlueZ may leave unanswered before it is taken for
+# what it is: a stack holding on to a link that no longer exists. Seen on a
+# real host (BlueZ 5.82, 2026-10-04): bluetoothd went on reporting the lamp
+# connected after the controller had lost the link, every dial "connected" at
+# once to nothing, and no Disconnect was answered again until the adapter was
+# power-cycled. One unanswered hang-up proves nothing - BlueZ can just be slow.
+_STACK_FAULT_AFTER = 3
+# ...and how far apart the background dials may then drift. Dialling a wedged
+# stack on every poll tick achieves nothing, and costs it a connect, a
+# disconnect it cannot honour and a line in its journal each time. The gap
+# doubles from the poll interval up to this. A command is never held back, and
+# the first answer from the lamp ends it.
+_STACK_FAULT_BACKOFF_MAX = 300.0
+# How long BlueZ gets to report a link dropped once it has called it "not
+# connected". Normally two to three seconds (see _REFUSAL_MARKERS). When the
+# report never comes, the client is held with is_connected True and nothing
+# dials again: on the real host that lasted five hours, until a command.
+_LOST_GRACE = 10.0
+# How long a held link may stay silent before it is asked whether it is still
+# there. The lamp only speaks when something changes, so silence is normal -
+# and it is also all a link gives off that died without BlueZ noticing.
+_PROBE_INTERVAL = 300.0
 # The batched state request is muted after this many consecutive failures. One
 # failure means nothing on a weak link - a dropped connection surfaces as the
 # same BleakError as an outright refusal - and giving up after one leaves every
@@ -169,6 +191,11 @@ def _close_bus(backend: Any, address: str) -> bool:
     client closed this way would leave those behind for as long as the stack
     stays silent.
 
+    A bus that is already down is left alone: dbus-fast's ``disconnect()``
+    shuts the socket down, and on one that is gone it logs a warning with a
+    traceback instead of raising - once per client, in the very state where the
+    log is being read.
+
     Returns False when there may be a connection and it could not be closed -
     bleak has moved what this reaches for, or the bus refused. The caller then
     keeps the client instead of forgetting it (see ``_async_disconnect``).
@@ -194,7 +221,8 @@ def _close_bus(backend: Any, address: str) -> bool:
         # Tidying, and not ours to rely on: the bus is closed either way.
         _LOGGER.debug("%s: tidying up behind a client failed: %r", address, err)
     try:
-        bus.disconnect()
+        if getattr(bus, "connected", True):
+            bus.disconnect()
     except Exception as err:
         _LOGGER.debug("%s: closing a client's bus failed: %r", address, err)
         return False
@@ -279,6 +307,15 @@ class GlowriumCoordinator:
         # Clients that would not hang up and whose bus could not be closed
         # either. While there is one, nothing is dialled (see _connect_locked).
         self._unreleased: set[Any] = set()
+        # Hang-ups in a row that BlueZ left unanswered (see _STACK_FAULT_AFTER),
+        # and the moment before which the poll does not dial because of them.
+        self._stuck_hang_ups = 0
+        self._dial_not_before = 0.0
+        # The client whose link BlueZ called "not connected" without reporting
+        # it dropped, and when (see _LOST_GRACE).
+        self._lost: tuple[Any, float] | None = None
+        # When the lamp last answered anything (see _PROBE_INTERVAL).
+        self._last_answer = monotonic()
         self._present = False
         self._reconnecting = False
         # Set by async_stop and never cleared: a stopped coordinator takes no
@@ -649,6 +686,9 @@ class GlowriumCoordinator:
                 await client.disconnect()
             hung_up = True
         except Exception as err:
+            if isinstance(err, TimeoutError):
+                # BlueZ said nothing at all. Any other failure is an answer.
+                self._note_stuck_hang_up()
             # Anything at all: besides its own errors, bleak passes on whatever
             # the bus raised and ends on an assertion. Nobody is waiting for
             # this, and there is nothing a caller could do about it.
@@ -661,6 +701,40 @@ class GlowriumCoordinator:
             else:
                 self._unreleased.add(client)
 
+    def _note_stuck_hang_up(self) -> None:
+        """Count a hang-up BlueZ did not answer; a run of them is the stack.
+
+        From ``_STACK_FAULT_AFTER`` on, the background dials back off: the
+        link they would get is the one BlueZ will not let go of, and it answers
+        nothing. Said once per episode, and loudly, because nothing the
+        integration can do ends it - somebody has to reset the adapter.
+        """
+        self._stuck_hang_ups += 1
+        over = self._stuck_hang_ups - _STACK_FAULT_AFTER
+        if over < 0:
+            return
+        gap = _RECONNECT_INTERVAL.total_seconds() * 2 ** (over + 1)
+        self._dial_not_before = monotonic() + min(gap, _STACK_FAULT_BACKOFF_MAX)
+        if over == 0:
+            _LOGGER.warning(
+                "%s: BlueZ has left %d requests in a row to disconnect the lamp "
+                "unanswered. That points at the host's Bluetooth stack holding on "
+                "to a link that no longer exists, not at the lamp; it clears when "
+                "the adapter is power-cycled (bluetoothctl power off, then power "
+                "on) or the bluetooth service is restarted. Until the lamp "
+                "answers again it is tried less often",
+                self.address,
+                self._stuck_hang_ups,
+            )
+
+    def _note_answer(self) -> None:
+        """Record that the lamp answered: the link is alive, the stack with it."""
+        self._last_answer = monotonic()
+        if self._stuck_hang_ups >= _STACK_FAULT_AFTER:
+            _LOGGER.info("%s: the Bluetooth stack answers again", self.address)
+        self._stuck_hang_ups = 0
+        self._dial_not_before = 0.0
+
     @callback
     def _async_on_advertisement(
         self,
@@ -671,7 +745,11 @@ class GlowriumCoordinator:
         self._present = True
         # Reconnect when the device reappears, but only one attempt at a time
         # (advertisements arrive ~every second; don't spawn a connect storm).
-        if not self._is_connected and not self._reconnecting:
+        if (
+            not self._is_connected
+            and not self._reconnecting
+            and monotonic() >= self._dial_not_before
+        ):
             self._reconnecting = True
             self._spawn(self._async_reconnect(), "reconnect")
         if not was_present:
@@ -692,14 +770,32 @@ class GlowriumCoordinator:
             # come round since, and until this goes through nothing dials.
             self._hang_up(client)
         if not self._is_connected:
-            if not self._reconnecting:
+            # Held back only while BlueZ will not hang up (_note_stuck_hang_up).
+            if not self._reconnecting and monotonic() >= self._dial_not_before:
                 self._reconnecting = True
                 self._spawn(self._async_reconnect(), "reconnect")
             return
+        lost, self._lost = self._lost, None
+        if lost is not None and lost[0] is self._client:
+            if monotonic() - lost[1] < _LOST_GRACE:
+                self._lost = lost
+            else:
+                # BlueZ said "not connected" and then never reported the link
+                # dropped. Waiting any longer is waiting for ever.
+                _LOGGER.debug(
+                    "%s: a link BlueZ called not connected was never reported "
+                    "dropped; dropping it",
+                    self.address,
+                )
+                self._hang_up(lost[0])
+                self._async_notify_listeners()
+                return
         # Connected, but by a command, which skips priming to stay fast. Fetch
         # the properties now, off the command's critical path.
         if self._client is not self._primed_client:
             self._spawn(self._async_prime(), "prime")
+        elif monotonic() - self._last_answer >= _PROBE_INTERVAL:
+            self._spawn(self._async_probe(), "probe")
 
     async def _async_prime(self) -> None:
         """Fetch device properties for a link that was established by a command."""
@@ -724,6 +820,35 @@ class GlowriumCoordinator:
             _LOGGER.debug("Priming state of %s failed: %s", self.address, err)
         else:
             self._async_notify_listeners()
+
+    async def _async_probe(self) -> None:
+        """Ask a link that has been silent whether it is still there.
+
+        A read, because it is the one request every model answers and its
+        answer is worth having anyway. A link that cannot be read is dropped,
+        and the poll rebuilds it.
+        """
+        try:
+            async with asyncio.timeout(_CONNECT_TIMEOUT), self._lock:
+                client = self._client
+                if client is None or (
+                    monotonic() - self._last_answer < _PROBE_INTERVAL
+                ):
+                    return
+                try:
+                    raw = bytes(await client.read_gatt_char(NOTIFY_UUID))
+                except _LINK_ERRORS as err:
+                    _LOGGER.debug(
+                        "%s: the held link no longer answers (%s), dropping",
+                        self.address,
+                        err,
+                    )
+                    self._hang_up(client)
+                    self._async_notify_listeners()
+                    return
+                self._ingest(raw)
+        except _LINK_ERRORS as err:
+            _LOGGER.debug("Probing the link to %s failed: %s", self.address, err)
 
     async def _async_reconnect(self) -> None:
         try:
@@ -920,6 +1045,9 @@ class GlowriumCoordinator:
                     self.address,
                     err,
                 )
+                # The link is going, and BlueZ normally says so within seconds.
+                # Noted in case it never does (see _LOST_GRACE).
+                self._lost = (client, monotonic())
                 return read_ok
             self._state_request_failures += 1
             if self._state_request_failures < _STATE_REQUEST_ATTEMPTS:
@@ -993,6 +1121,7 @@ class GlowriumCoordinator:
         Shared by the notify callback and the connect-time read so both handle
         a split map, the remembered ramp and listener notification identically.
         """
+        self._note_answer()  # whatever it says, the lamp said it
         try:
             decoded, short = cbor.decode_frame(data)
         except cbor.TrailingBytesError as err:
@@ -1070,6 +1199,7 @@ class GlowriumCoordinator:
         await self._client.write_gatt_char(
             WRITE_UUID, cbor.encode(payload), response=True
         )
+        self._note_answer()
         # Optimistic local echo; the device also notifies its new state.
         self.state.update(payload)
 
