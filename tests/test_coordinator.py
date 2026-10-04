@@ -1455,6 +1455,7 @@ def test_no_path_holds_the_lock_longer_than_a_command_will_wait() -> None:
     """
     connect = coordinator_module._CONNECT_TIMEOUT
     command = coordinator_module._COMMAND_TIMEOUT
+    hang_up = coordinator_module._HANG_UP_TIMEOUT
     poll = coordinator_module._RECONNECT_INTERVAL.total_seconds()
 
     assert connect < command, "a lock holder outlasting the waiter is an inversion"
@@ -1462,6 +1463,11 @@ def test_no_path_holds_the_lock_longer_than_a_command_will_wait() -> None:
     # Priming is spawned from the poll and takes the same lock, so it must be
     # finished before the next tick or the ticks pile up on top of each other.
     assert connect < poll
+    # A write retry waits for the hang-up of the client it gave up on, inside
+    # the command's budget and before it dials. A hang-up allowed as long as
+    # the command leaves the retry no time to happen in exactly the case it is
+    # for: a link that will not confirm it has closed.
+    assert hang_up < command
 
 
 async def test_stopping_hangs_up_once_not_twice(
@@ -2335,3 +2341,102 @@ async def test_a_connect_that_fails_half_way_hangs_up_outside_its_deadline(
     await hass.async_block_till_done()
     assert finished == [1]
     assert coordinator._client is None
+
+
+async def test_hanging_up_a_client_we_gave_up_on_leaves_the_one_we_hold(
+    hass: HomeAssistant, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The hang-up after the confirmation window must not drop a newer link.
+
+    A command that failed twice lets go of its client at once but hangs it up
+    only after the confirmation window, which is spent outside the lock. A
+    second command queued behind it takes the lock in that window and
+    establishes a link of its own. When the first command then hangs up the
+    client it gave up on, the coordinator must still hold the second one:
+    forgetting it would leak that client's D-Bus connection - the very thing
+    the hang-up exists to prevent - and leave the lamp's single slot taken by
+    nobody.
+    """
+    coordinator, first = _connected_coordinator(hass)
+    first.write_gatt_char = AsyncMock(side_effect=BleakError("Unlikely Error"))
+    second = _fresh_client()  # its write fails as well: the command fails
+    third = _fresh_client()
+    third.write_gatt_char = AsyncMock()  # the next command's link works
+    _dialling(coordinator, monkeypatch, second, third)
+    monkeypatch.setattr(coordinator_module, "_CONFIRM_TIMEOUT", 0.2)
+
+    failing = asyncio.create_task(coordinator.async_set_power(True))
+    await asyncio.sleep(0)  # it has failed twice and now waits for a report
+    assert coordinator._client is None  # let go of at once, not after the wait
+    second.disconnect.assert_not_awaited()
+
+    await coordinator.async_set_brightness(40)  # queued behind it; connects
+    assert coordinator._client is third
+
+    with pytest.raises(HomeAssistantError):
+        await failing
+    await hass.async_block_till_done()
+
+    second.disconnect.assert_awaited_once()  # the abandoned client is closed
+    assert coordinator._client is third  # ...and the live one is still ours
+    third.disconnect.assert_not_awaited()
+
+
+async def test_a_connect_does_not_wait_for_the_hang_up_it_started(
+    hass: HomeAssistant, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A link that answers nothing is hung up in the background.
+
+    The connect path runs under _CONNECT_TIMEOUT and holds the lock. Waiting
+    there for the hang-up would keep the lock for as long as BlueZ takes to
+    confirm, and let the connect's deadline cancel the disconnect part-way -
+    the leak again, by the route the fix closes for commands.
+    """
+    coordinator, _ = _connected_coordinator(hass)
+    coordinator._client = None
+    client = _fresh_client()
+    released = asyncio.Event()
+    finished: list[int] = []
+
+    async def _slow_hang_up() -> None:
+        await released.wait()
+        finished.append(1)
+
+    client.disconnect = AsyncMock(side_effect=_slow_hang_up)
+    _dialling(coordinator, monkeypatch, client)
+
+    async with asyncio.timeout(1):
+        await coordinator._connect_locked()  # returns with the hang-up pending
+
+    client.disconnect.assert_awaited_once()
+    assert finished == []
+    released.set()
+    await hass.async_block_till_done()
+    assert finished == [1]
+
+
+async def test_the_poll_does_not_wait_for_the_hang_up_it_started(
+    hass: HomeAssistant,
+) -> None:
+    """The same for priming, which the poll runs under the lock every tick."""
+    coordinator, client = _connected_coordinator(hass)
+    client.read_gatt_char = AsyncMock(side_effect=BleakError("Not connected"))
+    client.write_gatt_char = AsyncMock(side_effect=BleakError("Not connected"))
+    released = asyncio.Event()
+    finished: list[int] = []
+
+    async def _slow_hang_up() -> None:
+        await released.wait()
+        finished.append(1)
+
+    client.disconnect = AsyncMock(side_effect=_slow_hang_up)
+
+    async with asyncio.timeout(1):
+        await coordinator._async_prime()  # returns with the hang-up pending
+
+    client.disconnect.assert_awaited_once()
+    assert not coordinator._lock.locked()
+    assert finished == []
+    released.set()
+    await hass.async_block_till_done()
+    assert finished == [1]
