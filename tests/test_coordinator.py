@@ -2162,8 +2162,8 @@ async def test_a_hang_up_that_fails_or_hangs_troubles_nobody(
     bleak's disconnect passes on whatever the bus raised and ends on an
     assertion, and against a wedged BlueZ it can wait indefinitely. None of
     that may reach the path that gave the link up, or outlive the test - and
-    none of it may vanish either: the log line is the only trace a hang-up
-    that left its bus open will ever leave.
+    none of it may vanish either: the log line says why a bus had to be closed
+    by hand (tests/test_bus_lifetime.py is about the closing itself).
     """
     monkeypatch.setattr(coordinator_module, "_HANG_UP_TIMEOUT", 0.05)
     caplog.set_level(logging.DEBUG, logger=coordinator_module.__name__)

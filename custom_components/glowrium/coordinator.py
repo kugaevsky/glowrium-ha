@@ -153,6 +153,56 @@ _LINK_ERRORS = (BleakError, TimeoutError, EOFError, OSError)
 _REFUSAL_MARKERS = ("authorization", "authentication", "not permitted")
 
 
+def _close_bus(backend: Any, address: str) -> bool:
+    """See that no D-Bus connection is left open behind a client we let go of.
+
+    ``backend`` is what sits behind the client: for a local adapter, bleak's
+    BlueZ client, which opens a connection to the system bus in ``connect()``
+    and closes it on the last lines of a ``disconnect()`` that got that far.
+    One that did not - BlueZ never answered, answered with an error, or the
+    call was cancelled - leaves the connection open with nothing public to
+    close it by. So this reaches for the bus itself.
+
+    Before closing it, bleak is put in the state it puts itself in when BlueZ
+    reports a link gone, which is the report that did not come: its monitor
+    task released, its watcher removed, its services forgotten. Otherwise each
+    client closed this way would leave those behind for as long as the stack
+    stays silent.
+
+    Returns False when there may be a connection and it could not be closed -
+    bleak has moved what this reaches for, or the bus refused. The caller then
+    keeps the client instead of forgetting it (see ``_async_disconnect``).
+    """
+    if backend is None:
+        return False
+    if not hasattr(backend, "_bus"):
+        # A Bluetooth proxy's client has no bus of its own, and nothing to
+        # close. BlueZ's client without one is bleak rearranged.
+        return "bluezdbus" not in type(backend).__module__
+    # bleak's own attributes from here on: there is no public way to do this.
+    bus = backend._bus  # noqa: SLF001
+    if bus is None:
+        return True
+    try:
+        backend._is_connected = False  # noqa: SLF001
+        monitor = getattr(backend, "_disconnect_monitor_event", None)
+        if monitor is not None:
+            monitor.set()
+            backend._disconnect_monitor_event = None  # noqa: SLF001
+        backend._cleanup_all()  # noqa: SLF001
+    except Exception as err:
+        # Tidying, and not ours to rely on: the bus is closed either way.
+        _LOGGER.debug("%s: tidying up behind a client failed: %r", address, err)
+    try:
+        bus.disconnect()
+    except Exception as err:
+        _LOGGER.debug("%s: closing a client's bus failed: %r", address, err)
+        return False
+    backend._bus = None  # noqa: SLF001
+    _LOGGER.debug("%s: closed the bus a hang-up left open", address)
+    return True
+
+
 def _looks_like_a_refusal(err: Exception) -> bool:
     """Return True if ``err`` reads as the device declining, not as a lost link.
 
@@ -222,6 +272,13 @@ class GlowriumCoordinator:
         self._entry: ConfigEntry | None = None
         # Hang-ups in flight when there is no hass to keep them (see _hang_up).
         self._hang_ups: set[asyncio.Task[None]] = set()
+        # What sits behind each client, noted when the client is taken: by
+        # the time it has to be closed, Home Assistant's wrapper may have
+        # forgotten its backend (see _close_bus).
+        self._backends: dict[Any, Any] = {}
+        # Clients that would not hang up and whose bus could not be closed
+        # either. While there is one, nothing is dialled (see _connect_locked).
+        self._unreleased: set[Any] = set()
         self._present = False
         self._reconnecting = False
         # Set by async_stop and never cleared: a stopped coordinator takes no
@@ -568,17 +625,41 @@ class GlowriumCoordinator:
         return task
 
     async def _async_disconnect(self, client: BleakClientWithServiceCache) -> None:
-        """Disconnect ``client`` under a ceiling; a failure is only logged."""
+        """Disconnect ``client`` under a ceiling, and leave no bus open behind it.
+
+        Asking bleak to disconnect is the polite half, and it can fail: BlueZ
+        may never answer, may answer with an error, and the ceiling or a
+        cancellation may cut the call short. In each of those bleak has not
+        reached the lines that close the client's bus. So whatever came of the
+        call, the bus is closed here (see ``_close_bus``).
+
+        If that cannot be done either, the client is not forgotten: it stays in
+        ``_unreleased``, nothing is dialled over it, and the poll tries it
+        again. One connection is then held for as long as the stack stays
+        wedged - instead of one more every time the poll comes round.
+        """
         # Short once Home Assistant is stopping: it waits for this task.
         ceiling = _STOP_TIMEOUT if self._shutting_down else _HANG_UP_TIMEOUT
+        backend = self._backends.get(client)
+        if backend is None:
+            backend = getattr(client, "_backend", None)
+        hung_up = False
         try:
             async with asyncio.timeout(ceiling):
                 await client.disconnect()
+            hung_up = True
         except Exception as err:
             # Anything at all: besides its own errors, bleak passes on whatever
             # the bus raised and ends on an assertion. Nobody is waiting for
             # this, and there is nothing a caller could do about it.
             _LOGGER.debug("Hanging up %s failed: %r", self.address, err)
+        finally:
+            # On a cancellation too: it leaves the bus as open as a failure.
+            if _close_bus(backend, self.address) or hung_up:
+                self._backends.pop(client, None)
+                self._unreleased.discard(client)
+            else:
+                self._unreleased.add(client)
 
     @callback
     def _async_on_advertisement(
@@ -606,6 +687,10 @@ class GlowriumCoordinator:
 
     @callback
     def _async_poll_reconnect(self, _now: Any) -> None:
+        for client in tuple(self._unreleased):
+            # Still holding a bus nothing could close. The stack may have
+            # come round since, and until this goes through nothing dials.
+            self._hang_up(client)
         if not self._is_connected:
             if not self._reconnecting:
                 self._reconnecting = True
@@ -688,6 +773,13 @@ class GlowriumCoordinator:
             # Only a command gets here: one already in flight when the entry
             # was unloaded, or one sent after Home Assistant began to stop.
             raise BleakError(f"{self.address}: stopped, taking no new link")
+        if self._unreleased:
+            # Every dial opens a connection to the system bus, and the last
+            # one could be neither hung up nor closed (see _async_disconnect).
+            raise BleakError(
+                f"{self.address}: the previous link is still open and will "
+                "not close; not dialling over it"
+            )
         device = self._ble_device()
         if device is None:
             raise BleakError(f"{self.address} is not in range")
@@ -698,6 +790,7 @@ class GlowriumCoordinator:
             disconnected_callback=self._async_on_disconnect,
             max_attempts=_CONNECT_ATTEMPTS,
         )
+        self._backends[client] = getattr(client, "_backend", None)
         try:
             await client.start_notify(NOTIFY_UUID, self._on_notify)
             if self._stopped:
