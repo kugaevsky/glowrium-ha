@@ -2019,27 +2019,38 @@ async def test_a_failed_command_hangs_up_only_after_the_device_could_confirm(
     Hanging it up the moment the write fails would close the leak and quietly
     take that away: every command whose acknowledgement was lost would be
     reported as failed again.
+
+    So the lamp here does what that window exists for. It acts on the write,
+    the acknowledgement is lost, and its report arrives a moment after the
+    failure - on the link the write failed on, and only if that link is still
+    up: a client that has been hung up delivers nothing.
     """
     coordinator, first = _connected_coordinator(hass)
     first.write_gatt_char = AsyncMock(side_effect=BleakError("Unlikely Error"))
     second = _fresh_client()
-    second.write_gatt_char = AsyncMock(side_effect=BleakError("Unlikely Error"))
     _dialling(coordinator, monkeypatch, second)
-    hung_up_when_confirming: list[int] = []
+    still_up_when_reporting: list[bool] = []
 
-    async def _nothing_confirms(*_a: object) -> bool:
-        hung_up_when_confirming.append(second.disconnect.await_count)
-        return False
+    def _report_if_still_connected() -> None:
+        still_up = second.disconnect.await_count == 0
+        still_up_when_reporting.append(still_up)
+        if still_up:
+            notify = second.start_notify.await_args.args[1]
+            notify(None, bytearray(cbor.encode({KEY_POWER: True})))
 
-    coordinator._async_device_confirms = _nothing_confirms
+    async def _acted_on_but_unacknowledged(*_a: object, **_kw: object) -> None:
+        hass.loop.call_later(0.05, _report_if_still_connected)
+        raise BleakError("GATT Protocol Error: Unlikely Error")
 
-    with pytest.raises(HomeAssistantError):
-        await coordinator.async_set_power(True)
+    second.write_gatt_char = AsyncMock(side_effect=_acted_on_but_unacknowledged)
+
+    await coordinator.async_set_power(True)  # confirmed by the late report
     await hass.async_block_till_done()
 
-    assert hung_up_when_confirming == [0]  # still up while the device could answer
+    assert still_up_when_reporting == [True]  # up while the device could answer
+    assert coordinator.state[KEY_POWER] is True
     first.disconnect.assert_awaited_once()
-    second.disconnect.assert_awaited_once()
+    second.disconnect.assert_awaited_once()  # ...and hung up once it had
     assert coordinator._client is None
 
 
@@ -2142,21 +2153,30 @@ async def test_a_hang_up_outlives_the_deadline_of_whoever_asked_for_it(
 
 
 async def test_a_hang_up_that_fails_or_hangs_troubles_nobody(
-    hass: HomeAssistant, monkeypatch: pytest.MonkeyPatch
+    hass: HomeAssistant,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
 ) -> None:
     """Hanging up is cleanup: it is bounded, and its failures stay in the log.
 
     bleak's disconnect passes on whatever the bus raised and ends on an
     assertion, and against a wedged BlueZ it can wait indefinitely. None of
-    that may reach the path that gave the link up, or outlive the test.
+    that may reach the path that gave the link up, or outlive the test - and
+    none of it may vanish either: the log line is the only trace a hang-up
+    that left its bus open will ever leave.
     """
     monkeypatch.setattr(coordinator_module, "_HANG_UP_TIMEOUT", 0.05)
+    caplog.set_level(logging.DEBUG, logger=coordinator_module.__name__)
     for failure in (BleakError("gone"), OSError(9, "Bad file descriptor"), EOFError()):
         coordinator, client = _connected_coordinator(hass)
         client.disconnect = AsyncMock(side_effect=failure)
-        coordinator._async_on_disconnect(client)
-        await hass.async_block_till_done()
+        caplog.clear()
+
+        await coordinator._hang_up(client)  # the failure does not come out
+
+        client.disconnect.assert_awaited_once()
         assert coordinator._client is None
+        assert f"failed: {failure!r}" in caplog.text
 
     coordinator, client = _connected_coordinator(hass)
 
@@ -2164,9 +2184,11 @@ async def test_a_hang_up_that_fails_or_hangs_troubles_nobody(
         await asyncio.Event().wait()
 
     client.disconnect = AsyncMock(side_effect=_never)
+    caplog.clear()
     async with asyncio.timeout(1):
         await coordinator._hang_up(client)  # ends at the ceiling, not never
     assert coordinator._client is None
+    assert "failed: TimeoutError()" in caplog.text
 
 
 async def test_a_hang_up_is_not_tied_to_the_entry(hass: HomeAssistant) -> None:
