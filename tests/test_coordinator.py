@@ -2317,7 +2317,9 @@ async def test_a_connect_that_fails_half_way_hangs_up_outside_its_deadline(
 
     It was disconnected inline, inside the deadline of whatever was connecting.
     A deadline that ran out during that disconnect cancelled it part-way - the
-    bus left open, by the route the hang-up was written to close.
+    bus left open, by the route the hang-up was written to close. The connect
+    still waits for the hang-up, so that a retry does not dial over it; what
+    the deadline ends now is that wait.
     """
     coordinator, _ = _connected_coordinator(hass)
     coordinator._client = None
@@ -2334,9 +2336,10 @@ async def test_a_connect_that_fails_half_way_hangs_up_outside_its_deadline(
     client.disconnect = AsyncMock(side_effect=_slow_hang_up)
     _dialling(coordinator, monkeypatch, client)
 
-    with pytest.raises((BleakError, TimeoutError)):
+    with pytest.raises(TimeoutError):  # the deadline, while it waits
         await coordinator._async_ensure_connected()
 
+    assert finished == []
     released.set()
     await hass.async_block_till_done()
     assert finished == [1]
@@ -2433,6 +2436,85 @@ async def test_the_poll_does_not_wait_for_the_hang_up_it_started(
 
     async with asyncio.timeout(1):
         await coordinator._async_prime()  # returns with the hang-up pending
+
+    client.disconnect.assert_awaited_once()
+    assert not coordinator._lock.locked()
+    assert finished == []
+    released.set()
+    await hass.async_block_till_done()
+    assert finished == [1]
+
+
+async def test_a_retry_dials_only_after_a_half_made_connect_is_hung_up(
+    hass: HomeAssistant, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A subscription that fails is hung up before the command dials again.
+
+    The reason is the one a failed write has (see
+    test_a_write_retry_hangs_up_before_it_dials_again): the lamp has one slot,
+    and while BlueZ still shows the link as up a connect is handed that very
+    link - the one being closed. Hanging this client up in the background lost
+    the order: the retry dialled first, which on a link that reports itself
+    connected while answering nothing means a second attempt on the link the
+    first one had just failed on.
+    """
+    coordinator, _ = _connected_coordinator(hass)
+    coordinator._client = None
+    first = _fresh_client()
+    first.start_notify = AsyncMock(side_effect=BleakError("Not connected"))
+    second = _fresh_client()
+    second.write_gatt_char = AsyncMock()
+    clients = iter((first, second))
+    order: list[str] = []
+
+    async def _hang_up_slowly() -> None:
+        await asyncio.sleep(0.01)  # a real disconnect is not instant either
+        order.append("hung up")
+
+    async def _dial(*_a: object, **_kw: object) -> MagicMock:
+        order.append("dialled")
+        return next(clients)
+
+    first.disconnect = AsyncMock(side_effect=_hang_up_slowly)
+    _dialling(coordinator, monkeypatch).side_effect = _dial
+
+    await coordinator.async_set_power(True)
+
+    assert order == ["dialled", "hung up", "dialled"]
+    assert coordinator._client is second
+
+
+async def test_a_connect_cancelled_half_way_is_hung_up_but_not_waited_for(
+    hass: HomeAssistant, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A deadline that cancels the subscription still gets the client hung up.
+
+    And is not kept waiting for it. The connect holds the lock, and whoever set
+    the deadline has already stopped waiting: staying on here for as long as
+    BlueZ takes to close the link would hold the lock past the deadline for
+    nobody's benefit.
+    """
+    coordinator, _ = _connected_coordinator(hass)
+    coordinator._client = None
+    monkeypatch.setattr(coordinator_module, "_CONNECT_TIMEOUT", 0.05)
+    client = _fresh_client()
+    released = asyncio.Event()
+    finished: list[int] = []
+
+    async def _never(*_a: object) -> None:
+        await asyncio.Event().wait()
+
+    async def _slow_hang_up() -> None:
+        await released.wait()
+        finished.append(1)
+
+    client.start_notify = AsyncMock(side_effect=_never)
+    client.disconnect = AsyncMock(side_effect=_slow_hang_up)
+    _dialling(coordinator, monkeypatch, client)
+
+    async with asyncio.timeout(0.5):
+        with pytest.raises(TimeoutError):
+            await coordinator._async_ensure_connected()
 
     client.disconnect.assert_awaited_once()
     assert not coordinator._lock.locked()

@@ -618,13 +618,19 @@ class GlowriumCoordinator:
         )
         try:
             await client.start_notify(NOTIFY_UUID, self._on_notify)
-        except BaseException:
+        except BaseException as err:
             # Including cancellation by a deadline. Nothing references this
             # client yet, and bleak does not hang up on garbage collection, so
-            # walking away here would leave the lamp's only slot taken. Not
-            # waited for: the deadline that may have brought us here must not
-            # be the one the disconnect runs under.
-            self._hang_up(client)
+            # walking away here would leave the lamp's only slot taken.
+            hang_up = self._hang_up(client)
+            if isinstance(err, Exception):
+                # A failure rather than a cancellation, so the caller may dial
+                # again at once - and must not be handed the link that is
+                # being closed (see _async_write). Shielded: a deadline ends
+                # the wait, not the hang-up. A cancellation is not kept
+                # waiting at all: its deadline has already run out, and the
+                # lock is held here.
+                await asyncio.shield(hang_up)
             raise
         # Committed only once notifications are live: a client without them
         # reports as connected forever while no state ever arrives again.
