@@ -6,31 +6,87 @@ All notable changes to this project are documented here. The format is based on
 
 ## [Unreleased]
 
-Mostly one fix, and the most serious this integration has needed: left running,
-0.2.1 used up a limit it shares with everything else on the host. With it comes
-what the same investigation turned up about how a link is let go of — on a
-reload, when Home Assistant stops, and when the bus itself is the thing that
-failed — and three fixes that were waiting for a release: the lamp's clock, its
-daylight-saving offset, and settings changed from the vendor app.
+Two things this integration did to its own link, and what they did to the host.
+Since 0.2.0 it ended every link it made, two seconds after making it — a read
+on each connect, which BlueZ answers by taking the link down. And every link
+it let go of left a connection to the system bus behind, a limit it shares
+with everything else on the host: left running, 0.2.1 used it up. With the
+fixes for both comes what the same investigation turned up about how a link
+is let go of — on a reload, when Home Assistant stops, when the Bluetooth
+stack itself is the thing that failed — and three fixes that were waiting for
+a release: the lamp's clock, its daylight-saving offset, and settings changed
+from the vendor app.
 
 ### Fixed
 
-- **Home Assistant no longer runs the system bus out of connections.** bleak opens
-  a D-Bus connection of its own for every Bluetooth client and, once the client has
-  connected, closes it only when that client is told to disconnect — not when the
-  last reference to it is dropped, and not when the link goes down by itself. The
-  integration did both. A link that connected but answered nothing was forgotten,
-  so was the client behind a failed write, and a link the lamp dropped was only
-  noted; each left one connection open for as long as Home Assistant ran. With the
-  lamp at the edge of range that is one every thirty seconds, and the bus allows a
-  user 256 of them: about two and a half hours after a start, nothing running as
-  Home Assistant's user could open a new one. Every new Bluetooth connection needs
-  one, and where that user is root so do host tools such as `networkctl` and
-  `hostnamectl`. Every client the integration lets go of is now disconnected — in
-  the background, and outside the deadline of whatever gave it up, so neither a
-  command that runs out of time nor a reload can cut the hang-up short. A lamp in
-  comfortable range leaked as well, only slowly: once for each link the lamp
-  dropped by itself.
+- **The integration no longer ends its own link on every connect.** From 0.2.0
+  the lamp's state was read as soon as a link was up. Where Home Assistant
+  reaches the adapter through BlueZ, a read of this lamp ends the link: the
+  read succeeds, BlueZ closes the channel behind it — the very next call
+  answers `Not connected` — and two seconds later the lamp is disconnected.
+  Measured on a G7 from the host itself, between the integration's own poll
+  ticks: a link that was left alone, subscribed to, or asked for its state by
+  a write was still up when the test ended it, nine runs of nine; a link on
+  which one characteristic had been read — the 235-byte state, the 93-byte
+  device info, a single byte — was gone 2.0 s later, six runs of six. With a
+  read on every connect that was a link made and lost on every poll tick,
+  about a hundred an hour. It was taken for a lamp at the edge of range, and
+  it is what gave every other fault in this list its rate. The state is now
+  asked for by a write, which the lamp answers at once in a notification, and
+  a lamp that answers is not read at all. A lamp that will not report — a G8
+  refuses the request — is still read, as before; that could not be
+  re-measured without one. The device-info string, which only a read gives,
+  is read once per session and last, so the one link it costs has done its
+  work by then. Why BlueZ does this is not established; a read through macOS
+  does no such thing.
+- **Home Assistant no longer runs the system bus out of connections.** bleak
+  opens a D-Bus connection of its own for every Bluetooth client and closes it at
+  the end of a disconnect that BlueZ answers — not when the last reference to
+  the client is dropped, and not when the link goes down by itself. The
+  integration did both. A link that connected but answered nothing was
+  forgotten, so was the client behind a failed write, and a link that
+  dropped was only noted; each left one connection open for as long as Home
+  Assistant ran. At a link every thirty seconds, and with the bus allowing a
+  user 256 of them, nothing running as Home Assistant's user could open a new
+  one about two and a half hours after a start. Every new Bluetooth
+  connection needs one, and where that user is root so do host tools such as
+  `networkctl` and `hostnamectl`. Every client the integration lets go of is
+  now disconnected — in the background, and outside the deadline of whatever
+  gave it up — and its connection to the bus is closed whether or not that
+  disconnect went through: asking bleak to disconnect and the connection
+  being closed turned out to be two different things, four times over (never
+  asked; cut short by a deadline; never answered by BlueZ; answered with an
+  error). Closing it goes through bleak's private attributes, as nothing
+  public does it; if a bleak release moves them, the client is kept and
+  nothing more is dialled, so the cost is one connection and not one per
+  poll tick.
+- **A Bluetooth stack that holds on to a dead link no longer takes the bus
+  with it, and no longer goes unnoticed.** BlueZ before 5.84 can go on
+  reporting a device connected after the controller has lost the link: it
+  asks the kernel to disconnect, is told the link is already gone, and takes
+  that for a failure (`Failed to disconnect device: Disconnected (0x0e)` in
+  its journal). From then on every connect is handed that dead link at once,
+  every call on it answers `Not connected`, and no disconnect is ever
+  answered — until the adapter is power-cycled or the bluetooth service
+  restarted. This is the state a container restart was already known to
+  leave; it arose here with nothing restarted. The integration cannot end it,
+  and now does what it can: each client's bus is closed, so nothing is
+  leaked; after three disconnects in a row that BlueZ leaves unanswered the
+  background connects back off, doubling from thirty seconds to five
+  minutes; one warning says what the state is and what clears it, and a
+  second one says when the lamp answers again. A command is never held back.
+  Seen on the host: 55 unanswered disconnects with Home Assistant's
+  connections steady at two or three; then one warning and connects at 30,
+  90 and 150 seconds; the adapter power-cycled; the lamp back by itself four
+  and a half minutes later.
+- **A link that has died without the stack saying so is noticed.** In the same
+  incident the last thing before the fault was a request that failed with
+  `Not connected` — and BlueZ never reported the link dropped. The integration
+  went on believing it for five hours, until a command failed. A link on
+  which the state request fails is now given ten seconds to be reported
+  dropped and is then let go, and a held link that has been silent for five
+  minutes is asked for its state again: an idle lamp and a dead link look the
+  same until asked.
 - **Reloading the integration no longer leaks a connection on a slow link, or
   leaves an exception in the log on a dead one.** Unload disconnected under a
   three-second ceiling and walked away when it ran out, which left that
@@ -92,6 +148,12 @@ daylight-saving offset, and settings changed from the vendor app.
 
 ### Changed
 
+- **The lamp's state is asked for, not read, and its clock with it.** The
+  request now carries the clock (`0x05`) as well as what the vendor app asks
+  for; the lamp answers all of it in one notification. Entities fill in from
+  that answer.
+- **A link that has said nothing for five minutes is asked whether it is
+  still there.** One write, answered with the lamp's state.
 - **A command that has to retry now reconnects for real.** The retry used to dial
   while the client it had just given up on was still connected. It now waits for
   that link to be closed first, so a command that needs its second attempt takes

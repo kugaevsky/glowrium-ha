@@ -29,8 +29,11 @@ Home Assistant entities are stateless views over that coordinator.
 - **Entities:** `light`, `select`, `number`, `switch`, `button`, `time`,
   `sensor`, `binary_sensor` — each reads from `coordinator.state` and calls a
   `coordinator.async_set_*` method to write.
-- **No polling.** `iot_class` is `local_push`: the lamp pushes state via notify,
-  and entities re-render from a coordinator listener callback.
+- **No polling for state.** `iot_class` is `local_push`: the lamp pushes state
+  via notify, and entities re-render from a coordinator listener callback. The
+  coordinator's 30-second tick is for the link, not the state: it rebuilds one
+  that was lost, and asks one that has been silent for five minutes whether it
+  is still there (see [Reconnect](#reconnect)).
 
 ### File map
 
@@ -101,59 +104,95 @@ All control happens over one vendor service, `facebd00-7261-6262-6974-696f74626c
 | Characteristic | Const | Direction | Purpose |
 | --- | --- | --- | --- |
 | `facebd01-…` | `WRITE_UUID` | Write | **Commands.** Body is a CBOR map `{int key: value}`. One map may set several keys at once (e.g. power + brightness, or the whole bring-up clock). |
-| `facebd02-…` | `NOTIFY_UUID` | Read + Notify + Write | **State.** The lamp pushes CBOR maps of changed properties as they change, and one *read* of the same characteristic returns its whole property map — which is how state is primed on connect (see below). |
-| `facebd80-…` | `INFO_UUID` | Read | **Device info** string, read once per connection and parsed into `DeviceInfo`. |
+| `facebd02-…` | `NOTIFY_UUID` | Read + Notify + Write | **State.** The lamp pushes CBOR maps of changed properties as they change, and *writing* a list of property ids to the same characteristic makes it report those — which is how state is primed on connect. It can be read as well; see below for why it is not. |
+| `facebd80-…` | `INFO_UUID` | Read | **Device info** string, read once per session — after everything else on that link — and parsed into `DeviceInfo`. |
 | `facebd03-…` | `UNUSED_CHANNEL_UUID` | Write + Notify | **Unused.** Shaped like a request/response or OTA channel; refuses a read with app-error `0x1e`. Nobody has written to it — doing so blind could change a setting with no way to read it back. The vendor app does not touch it. |
 | `facebd81-…` | `UNUSED_VERSION_UUID` | Read | **Unused.** Returns a single byte `0x02` on both a G7 and a G8. Possibly a protocol version — but the G8 reports `version:2` in its device-info string and the G7 reports `version:4`, and both answer `0x02`, so it is not simply that. |
 
 ### Priming state on connect
 
-`NOTIFY_UUID` is readable, so right after subscribing to notifications the
-coordinator **reads** it (`_request_state` in `coordinator.py`) and merges
-whatever comes back. It then *writes* the raw bytes of `STATE_KEYS` (a tuple of
-property ids) to the same characteristic — asking the lamp to report them —
-unless **that read** carried every key already.
+Right after subscribing to notifications the coordinator **writes** the raw
+bytes of `STATE_KEYS` (a tuple of property ids) to `NOTIFY_UUID`
+(`_request_state` in `coordinator.py`). The lamp answers with a notification
+carrying a map of exactly those ids — on a G7 one 72-byte frame, which arrives
+before the write call has returned. That is the whole of priming on a lamp
+that answers: nothing is read.
 
-That last distinction matters. Judging coverage by the accumulated state mirror
-instead means a key seen once looks covered for the rest of the session, so the
-request stops going out and a reconnect can no longer notice that a setting was
-changed from the vendor app while Home Assistant was away.
+> ⚠️ **On BlueZ, a GATT read of this lamp ends the link.** `NOTIFY_UUID` is
+> readable, and from 0.2.0 it was read first, on every connect. Measured on a
+> G7 (firmware 4) from a Linux host with BlueZ 5.82, outside the integration
+> and between its poll ticks, on 2026-10-05:
+>
+> | After connecting | Runs | Link |
+> | --- | --- | --- |
+> | nothing | 1 | still up when the test ended it |
+> | subscribe to notifications | 1 | still up |
+> | subscribe, then write the state request | 7 | still up, state reported at once |
+> | read `facebd02` (235 bytes) | 3 | gone 2.02–2.04 s later |
+> | read `facebd80` (93 bytes) | 1 | gone 2.02 s later |
+> | read `facebd81` (1 byte) | 2 | gone 2.02 s later |
+>
+> The read itself succeeds. BlueZ takes the ATT channel down right after it —
+> the very next call answers `Not connected` — and two seconds later, which is
+> BlueZ's own disconnect timer, reports the device disconnected. With a read
+> on every connect that was a link made and lost on every poll tick, about a
+> hundred an hour, and it was taken for a lamp at the edge of range. **Why**
+> BlueZ does it is not established (a `btmon` capture would show it); a read
+> through macOS does no such thing, which is why `tools/bench.py` on a laptop
+> never showed it.
+
+**What the answer covers.** `STATE_KEYS` is what the vendor app asks for, plus
+the clock (`0x05`), which the app does not request and the lamp reports all
+the same: asked for alone, with the power, and with everything else, it was
+answered each time and the link stayed up. Other ids have not been tried. An
+earlier note here said that asking for an id the app does not request makes
+the lamp drop the link; that was written before it was known that a read
+does, and may have blamed the wrong thing. Add an id only after measuring it.
+
+**The answer is waited for, briefly.** `_REPORT_TIMEOUT` (3 s) is for a model
+that spreads its map over several notifications (see below): the keys of
+every notification since the request are collected, and priming is done when
+they cover `STATE_KEYS`. A lamp that answers in part has still answered. Only
+what arrives *after* the request counts — the lamp reports on its own whenever
+something changes, and a complete map from a moment earlier proves nothing.
+
+**Reading is what is left for a lamp that will not report.** A G8
+(`Glowrium-C064`) answers the request with ATT `Insufficient authorization`;
+another may acknowledge it and say nothing. Then the characteristic is read —
+at the price of the link on BlueZ, which for such a lamp is the price of
+having a state at all. A lamp that has refused once is read *first* from
+then on, as every lamp was before, and asked again afterwards: it was
+reported of the G8 that the refused request takes the link with it, and
+after that there would be nothing left to read. (Whether that was the
+request or the read before it is no longer certain. It cannot be checked
+without a G8.)
 
 > ⚠️ **The read does not return the whole property map.** Measured directly on a
-> G7 at RSSI −40 and reported for a G8 in issue #3: the read returns 236 bytes
-> headed `0xb4` — a complete, twenty-pair map — carrying keys `0x00`–`0x15` and
-> nothing above. The indicator (`0x17`), lighting mode (`0x2b`), ramp (`0x2f`)
-> and DST (`0x35`) are absent from it on both models and arrive only through the
-> `STATE_KEYS` request. The frame is not truncated; it simply stops there.
-> Skipping the request after a successful read leaves those four entities
-> `unknown` for the whole session — which is what happened, and is what
-> `tools/bench.py` reports on any lamp you can get close to. The indicator
-> (`0x17`), lighting mode (`0x2b`), ramp (`0x2f`) and DST (`0x35`) are **not** in
-> it and arrive solely through the `STATE_KEYS` request. Skipping the request
-> after a successful read leaves those four entities `unknown` for the whole
-> session.
+> G7 at RSSI −40 and reported for a G8 in issue #3: it returns a complete,
+> twenty-pair map headed `0xb4`, carrying keys `0x00`–`0x15` and nothing above.
+> The indicator (`0x17`), lighting mode (`0x2b`), ramp (`0x2f`) and DST
+> (`0x35`) are absent from it on both models and arrive only through the
+> `STATE_KEYS` request. So a lamp that is read keeps being asked as well.
 
-Reading first is still worth it: it fills most of the map in one cheap round
-trip, and it is sturdier than the request-and-notify path, which is subject to
-the map being split across notifications (see below). The request-write is also
-unreliable on some models — a G8 (`Glowrium-C064`) answers it with ATT
-`Insufficient authorization`, a not-connected error, or a timeout depending on
-route and timing, and drops the GATT link while doing so.
+A refusal is **non-fatal**, and it is told by what the error says — an
+authorization or permission error — not by anything having worked before
+it: a link that is gone answers `Not connected` to everything, and counting
+that muted the request on a perfectly good G7 forty seconds after start-up.
+After `_STATE_REQUEST_ATTEMPTS` (3) refusals in a row the coordinator warns
+once and pauses the request for `_STATE_REQUEST_COOLDOWN` (10 minutes); a
+model that refuses again once that expires is not asked again this session.
 
-> ⚠️ **Only request ids the vendor app itself requests.** Asking the G7 for an id
-> it does not expose makes it drop the GATT link. `STATE_KEYS` is exactly the set
-> observed in the app's captures. A model that refuses the request is handled as
-> **non-fatal** — but only a device that *answered* can be said to have refused.
-> A request that fails while the read just succeeded is a refusal: the link was
-> demonstrably alive in between. A request that fails alongside the read is a
-> bad link, and is not counted at all; counting it muted the request on a
-> perfectly good G7 forty seconds after start-up, costing it every property the
-> read does not carry. After `_STATE_REQUEST_ATTEMPTS` (3) refusals the
-> coordinator warns once and pauses for `_STATE_REQUEST_COOLDOWN` (10 minutes);
-> a model that refuses again once that expires is not asked again this session.
-> The cooldown is the benefit of the doubt, and the second run withdraws it —
-> each round costs a refusing model a dropped link, which is what asking
-> sparingly is for.
+Whether to ask is never judged by the state mirror. The mirror accumulates,
+so a key seen once would look covered for the rest of the session, and a
+reconnect could no longer notice that a setting was changed from the vendor
+app while Home Assistant was away.
+
+**The device-info string is the one read left, and it comes last.** It is
+only to be had by a read (`facebd80`), so it is done once per session, after
+the state has arrived and whatever had to be written — the bring-up, a stale
+clock — has been. On BlueZ that link is then spent, and the poll makes
+another thirty seconds later, on which nothing is read at all. A command's
+own connect reads nothing, not even this.
 
 ### Device-info string (`facebd80`)
 
@@ -401,6 +440,9 @@ Two independent triggers, both funnelling into a single guarded reconnect task
 2. **Periodic poll** — `async_track_time_interval` every `_RECONNECT_INTERVAL`
    (30 s) reconnects after any drop, independent of advertisement throttling.
 
+Both stand back while the Bluetooth stack will not hang up (see *A stack that
+will not hang up is a state* below). A command never does.
+
 Establishing a connection (`_async_ensure_connected`, serialized by an
 `asyncio.Lock`) uses `bleak_retry_connector.establish_connection`, subscribes to
 notifications, reads device-info once, primes state by reading `facebd02` and
@@ -435,19 +477,49 @@ holds the lock across connect-and-write, so a command cannot race the periodic
 GATT churn; if the write still fails mid-command, the coordinator hangs up,
 reconnects once and retries before surfacing the error.
 
-**Every client the coordinator lets go of is hung up, and by one method.**
-bleak's BlueZ backend opens a D-Bus connection of its own for each client. A
-connect that fails closes it; once a client has connected, only `disconnect()`
-does — not dropping the reference, and not the link going down by itself. The
-system bus allows one user 256 connections, and a client that is merely
-forgotten keeps its one for the life of the process. 0.2.1 forgot one for every
-link the lamp dropped, which at the edge of range is one per poll tick: Home
-Assistant's user ran out about two and a half hours after each start, and from
-then on nothing running as that user could open a connection to the bus,
-Bluetooth included. So nothing clears `_client` without going through
-`_hang_up`, which disconnects the client under a ceiling of its own
-(`_HANG_UP_TIMEOUT`, 10 s). That includes a client whose link is already gone:
-bleak has no device left to disconnect then, and the call only closes the bus.
+**Every client the coordinator lets go of is hung up by one method, and its
+bus is closed whatever comes of that.** bleak's BlueZ backend opens a D-Bus
+connection of its own for each client. A connect that fails closes it; once a
+client has connected, bleak closes it on the last lines of a `disconnect()`
+that got that far, and nowhere else — not when the reference is dropped, and
+not when the link goes down by itself. The system bus allows one user 256
+connections, and a client left with its one keeps it for the life of the
+process. So nothing clears `_client` without going through `_hang_up`, which
+disconnects the client under a ceiling of its own (`_HANG_UP_TIMEOUT`, 10 s).
+That includes a client whose link is already gone: bleak has no device left
+to disconnect then, and the call only closes the bus.
+
+Calling `disconnect()` is not the same as the bus being closed, and that
+difference has been the same leak four times over:
+
+| `disconnect()` … | What happened |
+| --- | --- |
+| was never called | 0.2.1 forgot the client behind every dropped link: bus exhausted about two and a half hours after each start |
+| was cut short by a caller's deadline | unload under its three-second ceiling: one connection per reload |
+| was never answered by BlueZ | 2026-10-04: bluetoothd held a link that no longer existed (below) — two connections a minute, the bus refused Home Assistant at 256 |
+| was answered with an error | has not happened; bleak raises one line before it closes the bus |
+
+So the hang-up does not take bleak's word for it. After `disconnect()` —
+returned, raised, timed out or cancelled — `_close_bus` looks at the bus
+behind the client and closes it if it is still open. There is no public way
+to do that, so it goes through bleak's private attributes, and leaves bleak
+as bleak leaves itself when BlueZ reports a link gone: monitor task released,
+watcher removed, services forgotten. What is behind a client is noted when
+the client is taken, because Home Assistant's wrapper forgets its backend
+when it gives a link up. A backend with no bus of its own — a Bluetooth
+proxy's — has nothing to close.
+
+If bleak has moved what this reaches for, or the bus will not close, the
+client is **kept** (`_unreleased`): nothing is dialled over it, by the poll
+or by a command, and the poll tries its hang-up again. One connection is
+then held for as long as that lasts, instead of one more per poll tick.
+`tests/test_bus_lifetime.py` counts open connections rather than calls, and
+runs the same against bleak's own BlueZ client with a stub bus, so that a
+bleak release which renames these attributes fails in the suite and not on
+somebody's host. Two limits are known: a client kept this way is not handed
+on when the entry is reloaded (the coordinator that replaces it will dial),
+and the hang-up that parks it finishes after the connect that gave it up has
+released the lock, so one more dial can get in first.
 
 **A hang-up is the one piece of background work not tied to the config entry.**
 Everything else dies with the entry, because a connect that outlives its
@@ -481,14 +553,51 @@ lamp as `Failed to cancel connection ... Bad file descriptor` on every such
 drop. A client the coordinator already let go of has been hung up; one it does
 not hold yet is bleak's.
 
-A hang-up that fails, or runs into its ceiling, is logged at debug level and
-not retried: bleak leaves the bus open in that case, so each one is a
-connection lost for good. On the real lamp none has been seen in some two
-hundred link drops; `Hanging up … failed` in the log is where to count.
+**A stack that will not hang up is a state, not an event.** Seen on the real
+host, with BlueZ 5.82: bluetoothd went on reporting the lamp connected after
+the controller had lost the link (`hcitool con` listed no link to it while
+`Device1.Connected` read true). Every dial was then handed that dead link at
+once, every GATT call answered `Not connected`, and no `Disconnect` was
+answered — the journal has `Failed to disconnect device: Disconnected (0x0e)`
+once per attempt. The kernel is telling bluetoothd that the link is already
+gone, and 5.82 treats that answer as a failure and keeps its state; 5.84
+treats it as the disconnection it is. Nothing a client does ends it on
+5.82. The adapter has to be power-cycled, or bluetoothd restarted.
+
+A run of hang-ups that BlueZ leaves **unanswered** is therefore counted, and
+from the third in a row (`_STACK_FAULT_AFTER`) it is a fault: the background
+dials — poll and advertisement alike — back off, doubling from the poll
+interval to five minutes (`_STACK_FAULT_BACKOFF_MAX`), and a warning says
+once what it is and what clears it. Only silence counts: a hang-up answered
+with an error is an answer, one that goes through breaks the run, and a
+proxy's client is not BlueZ's to answer for. A command is never held back.
+The first thing the lamp says — a notification, an acknowledged write —
+ends the episode at once, and that is logged at the level it was announced
+at. Seen on the host: three unanswered hang-ups, one warning, dials at
+30 s, 90 s, 150 s; the adapter power-cycled; the lamp back by itself four
+and a half minutes later.
+
+**`is_connected` is a claim; an answer is evidence.** In that same incident
+the last exchange before the fault was a request that failed with `Not
+connected` — and then BlueZ never reported the link dropped. The client
+went on reading as connected, so nothing dialled again: five hours, until a
+command failed. Two checks close that:
+
+- a link on which the state request failed without being a refusal is
+  given `_LOST_GRACE` (10 s) to be reported dropped, and is then let go by
+  the poll — unless the lamp has said something since, which settles it
+  the other way;
+- a held link that has been silent for `_PROBE_INTERVAL` (5 minutes) is
+  asked for its state again (`_async_probe`). The lamp only speaks when
+  something changes, so a dead link and an idle one look the same until
+  asked; the answer refreshes the mirror for free. A link that does not
+  answer, or keeps the question waiting until the deadline, is dropped.
+  Asked, not read — a read would end the very link it was checking.
 
 **Closing the bus under a call in flight looks like nothing bleak documents.**
 The hang-up from the disconnected callback closes the client's D-Bus connection
-at once. A GATT call still waiting for its reply on that connection then ends
+at once, and so does a bus closed by hand after a hang-up that failed. A GATT
+call still waiting for its reply on that connection then ends
 in `EOFError`, or `OSError` once the socket is gone, and bleak passes both on
 untouched. They mean what a `BleakError` means there — the link is gone — so
 every handler that deals with a lost link catches the same set,
@@ -520,9 +629,10 @@ coordinator's to spend. Whether this prevents the phantom on a stop that is
 killed has not been measured.
 
 **A command connects without priming** (`_connect_locked(prime=False)`). It needs
-the link and its own write, nothing else — and priming costs a device-info read,
-a state read, the batched request and up to 3 s waiting for the activation flag,
-all before the write is attempted and all inside the command budget. On a lamp
+the link and its own write, nothing else — and priming costs the state request,
+the wait for its answer, up to 3 s waiting for the activation flag and, the
+first time, the device-info read, all before the write is attempted and all
+inside the command budget. On a lamp
 where the connect alone is marginal, that is what turns a working command into a
 reported failure. The reconnect poll notices a link nothing has primed
 (`_primed_client`) and fetches the properties afterwards, off the command's

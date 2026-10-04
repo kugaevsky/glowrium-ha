@@ -164,9 +164,9 @@ device already paired via the app stays activated across restarts.
 ## How it works
 
 Control uses a custom GATT service (`facebd00-…`, "rabbit iot ble"): commands are
-CBOR maps written to `facebd01`, state is read from `facebd02` once on connect
-and then from its CBOR notifications, and a readable `facebd80` string exposes
-model and firmware. The
+CBOR maps written to `facebd01`, state arrives as CBOR notifications on
+`facebd02` — asked for once on connect, then pushed by the lamp as it changes —
+and a readable `facebd80` string exposes model and firmware. The
 device computes its own circadian sunrise/sunset curve from the coordinates it
 stores, which is why **Sync location** simply writes your Home Assistant home
 coordinates and lets the lamp do the astronomy.
