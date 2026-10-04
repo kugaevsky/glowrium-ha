@@ -2602,3 +2602,112 @@ async def test_a_reconnect_started_while_starting_belongs_to_the_entry(
         assert any("reconnect" in name for name in handed_over)
     finally:
         await coordinator.async_stop()
+
+
+# What a call receives when its client's bus is closed underneath it. Run against
+# dbus-fast with a bus that is shut while a call is waiting for its reply: the
+# call ends in EOFError, and with the socket gone, in "Bad file descriptor".
+# Neither is a BleakError, and bleak passes both on as they are.
+_BUS_CLOSED = (EOFError(), OSError(9, "Bad file descriptor"))
+
+
+@pytest.mark.parametrize("failure", _BUS_CLOSED, ids=["eof", "bad-fd"])
+async def test_a_write_on_a_bus_closed_under_it_is_retried_like_a_lost_link(
+    hass: HomeAssistant, monkeypatch: pytest.MonkeyPatch, failure: Exception
+) -> None:
+    """The bus closing under a write is the link going, and is handled as that.
+
+    When the lamp drops the link, the disconnected callback hangs the client
+    up at once, which closes its D-Bus connection. A write still waiting for
+    its reply on that connection does not get the BleakError a lost link
+    usually produces: it gets whatever the bus raised. Caught as nothing in
+    particular, that went straight out of the command - no retry, and a bare
+    EOFError where the user should read "cannot connect".
+    """
+    coordinator, first = _connected_coordinator(hass)
+    first.write_gatt_char = AsyncMock(side_effect=failure)
+    second = _fresh_client()
+    second.write_gatt_char = AsyncMock()
+    _dialling(coordinator, monkeypatch, second)
+
+    await coordinator.async_set_power(True)  # the retry, on a fresh link, works
+
+    first.disconnect.assert_awaited_once()
+    assert coordinator._client is second
+
+
+@pytest.mark.parametrize("failure", _BUS_CLOSED, ids=["eof", "bad-fd"])
+async def test_a_command_that_keeps_meeting_a_closed_bus_fails_readably(
+    hass: HomeAssistant, monkeypatch: pytest.MonkeyPatch, failure: Exception
+) -> None:
+    """...and when the retry meets the same, the user is told in their words."""
+    coordinator, first = _connected_coordinator(hass)
+    first.write_gatt_char = AsyncMock(side_effect=failure)
+    second = _fresh_client()
+    second.write_gatt_char = AsyncMock(side_effect=failure)
+    _dialling(coordinator, monkeypatch, second)
+    monkeypatch.setattr(coordinator_module, "_CONFIRM_TIMEOUT", 0.01)
+
+    with pytest.raises(HomeAssistantError):
+        await coordinator.async_set_power(True)
+
+
+@pytest.mark.parametrize("failure", _BUS_CLOSED, ids=["eof", "bad-fd"])
+async def test_a_connect_whose_reads_meet_a_closed_bus_just_drops_the_link(
+    hass: HomeAssistant, monkeypatch: pytest.MonkeyPatch, failure: Exception
+) -> None:
+    """Every read and the state request, on a bus that closed: a dead link.
+
+    The connect path makes three calls after the subscription - the
+    device-info read, the state read and the batched request - and the link
+    can go under any of them. None of them may turn that into an exception
+    with a traceback: a link that answers nothing is dropped, and the poll
+    builds another.
+    """
+    coordinator, _ = _connected_coordinator(hass)
+    coordinator._client = None
+    client = _fresh_client()
+    client.read_gatt_char = AsyncMock(side_effect=failure)
+    client.write_gatt_char = AsyncMock(side_effect=failure)
+    _dialling(coordinator, monkeypatch, client)
+
+    await coordinator._connect_locked()
+    await hass.async_block_till_done()
+
+    assert coordinator._client is None
+    client.disconnect.assert_awaited_once()
+
+
+@pytest.mark.parametrize("failure", _BUS_CLOSED, ids=["eof", "bad-fd"])
+async def test_background_connects_that_meet_a_closed_bus_only_log_it(
+    hass: HomeAssistant, monkeypatch: pytest.MonkeyPatch, failure: Exception
+) -> None:
+    """Neither background connect lets it out.
+
+    These run as tasks nobody awaits, so what escapes one is not handled by
+    anybody: it ends up in the log as an exception with a traceback, on every
+    poll tick for as long as the bus stays the way it is.
+    """
+    coordinator, _ = _connected_coordinator(hass)
+    coordinator._client = None
+    _dialling(coordinator, monkeypatch).side_effect = failure
+
+    await coordinator._async_initial_connect()
+    await coordinator._async_reconnect()
+
+
+@pytest.mark.parametrize("failure", _BUS_CLOSED, ids=["eof", "bad-fd"])
+async def test_priming_that_meets_a_closed_bus_only_logs_it(
+    hass: HomeAssistant, failure: Exception
+) -> None:
+    """The same for the priming the poll does on a link a command made.
+
+    Here the link goes after the read has answered, under the bring-up write.
+    """
+    coordinator, client = _connected_coordinator(hass)
+    client.read_gatt_char = AsyncMock(return_value=cbor.encode({KEY_ACTIVATED: False}))
+    client.write_gatt_char = AsyncMock(side_effect=failure)
+
+    await coordinator._async_prime()
+
+    assert coordinator._primed_client is not client

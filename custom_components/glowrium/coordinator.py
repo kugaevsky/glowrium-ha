@@ -130,6 +130,15 @@ _STATE_REQUEST_ATTEMPTS = 3
 # purely from a bad link, which permanently cost it four properties until Home
 # Assistant was restarted. Muting expires so that heals itself.
 _STATE_REQUEST_COOLDOWN = 600.0
+# What a lost link looks like from here. Besides its own errors and timeouts,
+# bleak passes on whatever the bus raised. When the lamp drops the link the
+# disconnected callback hangs the client up at once, which closes its D-Bus
+# connection, and a call still waiting for its reply on that connection gets
+# EOFError - or, with the socket gone, "Bad file descriptor" - rather than a
+# BleakError. To the coordinator all of these say the same thing: this link is
+# gone. (TimeoutError is an OSError and is named only so that it can be read.)
+_LINK_ERRORS = (BleakError, TimeoutError, EOFError, OSError)
+
 # Only an error that looks like the device answering "no" counts as a refusal.
 # Two cheaper tests were tried on real hardware and both were wrong: a
 # successful read does not prove the device is still there (the link drops
@@ -412,7 +421,7 @@ class GlowriumCoordinator:
         """Connect once at start-up, off the setup path."""
         try:
             await self._async_ensure_connected()
-        except (BleakError, TimeoutError) as err:
+        except _LINK_ERRORS as err:
             _LOGGER.debug("Initial connect to %s failed: %s", self.address, err)
 
     async def async_stop(self) -> None:
@@ -563,7 +572,7 @@ class GlowriumCoordinator:
                 await self._async_activate_if_needed()
                 await self._async_sync_clock_if_needed()
                 self._primed_client = client
-        except (BleakError, TimeoutError) as err:
+        except _LINK_ERRORS as err:
             _LOGGER.debug("Priming state of %s failed: %s", self.address, err)
         else:
             self._async_notify_listeners()
@@ -571,7 +580,7 @@ class GlowriumCoordinator:
     async def _async_reconnect(self) -> None:
         try:
             await self._async_ensure_connected()
-        except (BleakError, TimeoutError) as err:
+        except _LINK_ERRORS as err:
             _LOGGER.debug("Reconnect to %s failed: %s", self.address, err)
         finally:
             self._reconnecting = False
@@ -649,7 +658,7 @@ class GlowriumCoordinator:
             try:
                 raw = await client.read_gatt_char(INFO_UUID)
                 self.device_info = _parse_device_info(bytes(raw))
-            except (BleakError, TimeoutError) as err:
+            except _LINK_ERRORS as err:
                 _LOGGER.debug("Device-info read from %s failed: %s", self.address, err)
         if not prime:
             return
@@ -722,7 +731,7 @@ class GlowriumCoordinator:
         carried: frozenset[int] = frozenset()
         try:
             raw = bytes(await client.read_gatt_char(NOTIFY_UUID))
-        except (BleakError, TimeoutError) as err:
+        except _LINK_ERRORS as err:
             _LOGGER.debug("%s state read failed: %s", self.address, err)
         else:
             read_ok = True
@@ -739,7 +748,7 @@ class GlowriumCoordinator:
             return read_ok
         try:
             await client.write_gatt_char(NOTIFY_UUID, bytes(STATE_KEYS), response=True)
-        except (BleakError, TimeoutError) as err:
+        except _LINK_ERRORS as err:
             if not _looks_like_a_refusal(err):
                 _LOGGER.debug(
                     "%s state request failed, but not by refusing: %s",
@@ -922,7 +931,7 @@ class GlowriumCoordinator:
                         await self._connect_locked(prime=False)
                         await self._write_raw(payload)
                         break
-                    except (BleakError, TimeoutError) as err:
+                    except _LINK_ERRORS as err:
                         client, self._client = self._client, None
                         if attempt == _WRITE_ATTEMPTS:
                             failed = client
@@ -939,7 +948,7 @@ class GlowriumCoordinator:
                             # link being closed. Shielded, so the command's
                             # deadline ends the wait and not the hang-up.
                             await asyncio.shield(self._hang_up(client))
-        except (BleakError, TimeoutError) as err:
+        except _LINK_ERRORS as err:
             try:
                 if (
                     self._writes_sent > writes_before
