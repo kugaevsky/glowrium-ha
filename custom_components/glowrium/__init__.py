@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from homeassistant.config_entries import ConfigEntry
-from homeassistant.const import CONF_ADDRESS, Platform
+from homeassistant.const import CONF_ADDRESS, EVENT_HOMEASSISTANT_STOP, Platform
 from homeassistant.core import HomeAssistant
 
 from .coordinator import GlowriumCoordinator
@@ -37,6 +37,13 @@ async def async_setup_entry(hass: HomeAssistant, entry: GlowriumConfigEntry) -> 
     # leave the coordinator's bluetooth callbacks and reconnect poll running
     # with no owner - one more of them on every retry.
     entry.async_on_unload(coordinator.async_stop)
+    # Home Assistant stopping is not an unload: it does not run the callback
+    # above, so the lamp's link would be left to whatever the process manages
+    # on its way out. Listened for explicitly, and the listener is dropped
+    # with the entry.
+    entry.async_on_unload(
+        hass.bus.async_listen_once(EVENT_HOMEASSISTANT_STOP, coordinator.async_shutdown)
+    )
     await coordinator.async_start(entry)
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
     return True

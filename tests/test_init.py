@@ -1,10 +1,10 @@
 """Tests for setting up and tearing down the Glowrium config entry."""
 
 import asyncio
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 from homeassistant.config_entries import ConfigEntryState
-from homeassistant.const import CONF_ADDRESS
+from homeassistant.const import CONF_ADDRESS, EVENT_HOMEASSISTANT_STOP
 from homeassistant.core import HomeAssistant, State
 from pytest_homeassistant_custom_component.common import (
     MockConfigEntry,
@@ -315,3 +315,28 @@ async def test_a_report_from_the_lamp_overrides_what_was_restored(
     await hass.async_block_till_done()
 
     assert hass.states.get("switch.glowrium_g7_1234_indicator_light").state == "off"
+
+
+async def test_stopping_home_assistant_hangs_up_the_lamp(hass: HomeAssistant) -> None:
+    """Home Assistant stopping is not an unload, and has to be listened for.
+
+    On shutdown Home Assistant does not unload its config entries - it only
+    cancels a pending setup retry - so the callback that stops the coordinator
+    on unload never runs. Nothing then hangs the lamp's link up but the Python
+    process on its way out, at the very end of a clean stop. A stop that is cut
+    short - a container is given ten seconds - never gets that far, and BlueZ
+    keeps the link: seen on the real host as a lamp that reads "Connected: yes"
+    and answers "Not connected" to everything until the adapter is power-cycled.
+    """
+    entry = await _setup_without_bluetooth(hass)
+    coordinator = entry.runtime_data
+    client = MagicMock()
+    client.is_connected = True
+    client.disconnect = AsyncMock()
+    coordinator._client = client
+
+    hass.bus.async_fire(EVENT_HOMEASSISTANT_STOP)
+    await hass.async_block_till_done()
+
+    client.disconnect.assert_awaited_once()
+    assert coordinator._client is None

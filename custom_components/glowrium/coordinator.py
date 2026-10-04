@@ -15,7 +15,7 @@ from bleak.exc import BleakError
 from bleak_retry_connector import BleakClientWithServiceCache, establish_connection
 from homeassistant.components import bluetooth
 from homeassistant.config_entries import ConfigEntry
-from homeassistant.core import HomeAssistant, callback
+from homeassistant.core import Event, HomeAssistant, callback
 from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers.event import async_track_time_interval
 from homeassistant.util import dt as dt_util
@@ -427,11 +427,12 @@ class GlowriumCoordinator:
         except _LINK_ERRORS as err:
             _LOGGER.debug("Initial connect to %s failed: %s", self.address, err)
 
-    async def async_stop(self) -> None:
-        """Cancel watching and disconnect."""
-        # Before anything is awaited. A command may be in flight and outlast
-        # this; from here on it is refused a new link, so that what is let go
-        # of below is the last one this coordinator will ever hold.
+    @callback
+    def _async_stop_watching(self) -> None:
+        """Stop reacting to the lamp, and take no new link from here on."""
+        # A command may be in flight and outlast this; from here on it is
+        # refused a new link, so that what the caller lets go of next is the
+        # last one this coordinator will ever hold.
         self._stopped = True
         if self._cancel_bluetooth is not None:
             self._cancel_bluetooth()
@@ -442,6 +443,34 @@ class GlowriumCoordinator:
         if self._cancel_poll is not None:
             self._cancel_poll()
             self._cancel_poll = None
+
+    @callback
+    def async_shutdown(self, _event: Event | None = None) -> None:
+        """Hang up as Home Assistant stops: at once, and without waiting.
+
+        Home Assistant does not unload its config entries when it stops, so
+        async_stop never runs then, and nothing hangs the link up but bleak on
+        the way out of a stop that runs to its end. One that is cut short - a
+        container is given ten seconds - leaves BlueZ holding a link to a
+        lamp with a single slot, which reads as connected and answers
+        nothing until the adapter is power-cycled.
+
+        So this asks BlueZ to drop the link the moment the stop is announced.
+        It does not wait for the lock, and the hang-up gets the short ceiling:
+        Home Assistant waits for whatever its stop listeners start, and
+        spending the grace period on a link that will not confirm it has
+        closed would cost the rest of the shutdown. The bus is not worth
+        waiting for either - the process is leaving.
+        """
+        self._async_stop_watching()
+        client, self._client = self._client, None
+        if client is not None:
+            self._hang_up(client, ceiling=_STOP_TIMEOUT)
+
+    async def async_stop(self) -> None:
+        """Cancel watching and disconnect."""
+        # Before anything is awaited.
+        self._async_stop_watching()
         # The lock and the hang-up are separate problems, so they get separate
         # deadlines. Waiting for the lock is best-effort: a connect in flight
         # holds it for longer than anyone should wait on unload, and that is
@@ -482,7 +511,9 @@ class GlowriumCoordinator:
                 self._lock.release()
 
     @callback
-    def _hang_up(self, client: BleakClientWithServiceCache) -> asyncio.Task[None]:
+    def _hang_up(
+        self, client: BleakClientWithServiceCache, *, ceiling: float | None = None
+    ) -> asyncio.Task[None]:
         """Let go of ``client`` and disconnect it in the background.
 
         The two belong together. bleak opens a D-Bus connection of its own for
@@ -507,7 +538,7 @@ class GlowriumCoordinator:
         """
         if client is self._client:
             self._client = None
-        coro = self._async_disconnect(client)
+        coro = self._async_disconnect(client, ceiling)
         name = f"glowrium hang up {self.address}"
         if self.hass is not None:
             return self.hass.async_create_task(coro, name)
@@ -518,10 +549,14 @@ class GlowriumCoordinator:
         task.add_done_callback(self._hang_ups.discard)
         return task
 
-    async def _async_disconnect(self, client: BleakClientWithServiceCache) -> None:
+    async def _async_disconnect(
+        self, client: BleakClientWithServiceCache, ceiling: float | None = None
+    ) -> None:
         """Disconnect ``client`` under a ceiling; a failure is only logged."""
         try:
-            async with asyncio.timeout(_HANG_UP_TIMEOUT):
+            async with asyncio.timeout(
+                _HANG_UP_TIMEOUT if ceiling is None else ceiling
+            ):
                 await client.disconnect()
         except Exception as err:
             # Anything at all: besides its own errors, bleak passes on whatever

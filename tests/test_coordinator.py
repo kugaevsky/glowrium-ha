@@ -2793,3 +2793,63 @@ async def test_a_stopped_coordinator_does_not_dial(
 
     dial.assert_not_awaited()
     assert coordinator._client is None
+
+
+async def test_shutting_down_does_not_hold_home_assistant_up(
+    hass: HomeAssistant, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """On shutdown the hang-up is fired at once, and given a short ceiling.
+
+    Home Assistant waits for whatever its stop listeners start, and a
+    container is killed ten seconds after it is told to stop. What matters
+    then is that BlueZ is asked to drop the link straight away - not that the
+    lock is free, and not that a link which will not confirm it has closed is
+    waited on for the ten seconds a hang-up is normally allowed: that would
+    spend the whole grace period, and the rest of Home Assistant's shutdown
+    with it. The bus is not worth waiting for either; the process is leaving.
+    """
+    coordinator, client = _connected_coordinator(hass)
+    monkeypatch.setattr(coordinator_module, "_STOP_TIMEOUT", 0.05)
+
+    async def _never() -> None:
+        await asyncio.Event().wait()
+
+    client.disconnect = AsyncMock(side_effect=_never)
+
+    await coordinator._lock.acquire()  # a command in flight: not waited for
+    try:
+        coordinator.async_shutdown()
+
+        assert coordinator._client is None
+        client.disconnect.assert_awaited_once()  # asked to drop it, already
+        async with asyncio.timeout(1):  # nowhere near _HANG_UP_TIMEOUT
+            await hass.async_block_till_done()
+    finally:
+        coordinator._lock.release()
+
+
+async def test_shutting_down_stops_watching_and_takes_no_new_link(
+    hass: HomeAssistant, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A coordinator shut down with Home Assistant is as finished as one unloaded.
+
+    Left watching, it would answer the next advertisement by dialling the lamp
+    again - while Home Assistant is on its way out, and after the one hang-up
+    it will get.
+    """
+    coordinator, _ = _connected_coordinator(hass)
+    cancels = {name: MagicMock() for name in ("bluetooth", "unavailable", "poll")}
+    coordinator._cancel_bluetooth = cancels["bluetooth"]
+    coordinator._cancel_unavailable = cancels["unavailable"]
+    coordinator._cancel_poll = cancels["poll"]
+    dial = _dialling(coordinator, monkeypatch, _fresh_client(), _fresh_client())
+    monkeypatch.setattr(coordinator_module, "_CONFIRM_TIMEOUT", 0.01)
+
+    coordinator.async_shutdown()
+    await hass.async_block_till_done()
+
+    for name, cancel in cancels.items():
+        assert cancel.call_count == 1, f"{name} watcher was left running"
+    with pytest.raises(HomeAssistantError):
+        await coordinator.async_set_power(True)
+    dial.assert_not_awaited()
