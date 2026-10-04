@@ -464,6 +464,13 @@ class GlowriumCoordinator:
         """
         self._async_stop_watching()
         client, self._client = self._client, None
+        # Said either way: nothing else will tell, afterwards, whether a link
+        # was held at this moment and let go of.
+        _LOGGER.debug(
+            "%s: Home Assistant is stopping: %s",
+            self.address,
+            "no link held" if client is None else "hanging up",
+        )
         if client is not None:
             self._hang_up(client, ceiling=_STOP_TIMEOUT)
 

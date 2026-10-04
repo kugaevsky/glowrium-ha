@@ -2853,3 +2853,27 @@ async def test_shutting_down_stops_watching_and_takes_no_new_link(
     with pytest.raises(HomeAssistantError):
         await coordinator.async_set_power(True)
     dial.assert_not_awaited()
+
+
+async def test_shutting_down_says_so_in_the_log(
+    hass: HomeAssistant, caplog: pytest.LogCaptureFixture
+) -> None:
+    """The one line that shows, afterwards, that the stop was answered.
+
+    Home Assistant is on its way out when this runs, so nothing else will say
+    whether the coordinator held a link at that moment and let go of it. On a
+    host where the phantom link has been seen, that is the first question.
+    """
+    caplog.set_level(logging.DEBUG, logger=coordinator_module.__name__)
+    coordinator, _ = _connected_coordinator(hass)
+
+    coordinator.async_shutdown()
+    await hass.async_block_till_done()
+    assert "Home Assistant is stopping: hanging up" in caplog.text
+
+    caplog.clear()
+    idle, _ = _connected_coordinator(hass)
+    idle._client = None
+
+    idle.async_shutdown()
+    assert "Home Assistant is stopping: no link held" in caplog.text
