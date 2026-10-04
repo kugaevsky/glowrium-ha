@@ -93,13 +93,16 @@ _CONNECT_TIMEOUT = 10.0
 # notification arrived 22-32 ms BEFORE the error was raised, so this is grace
 # for a slower link rather than a wait anyone should routinely pay.
 _CONFIRM_TIMEOUT = 2.0
-# Ceiling on the disconnect during unload, so reloading the integration does
-# not wait out whatever connect currently holds the lock.
+# Ceiling on what unload waits for - the lock, then the hang-up - so reloading
+# the integration does not wait out whatever connect currently holds the lock,
+# or a link that is slow to close. It bounds the wait, not the hang-up.
 _STOP_TIMEOUT = 3.0
 # Ceiling on hanging up a link the coordinator has given up on (see _hang_up).
-# It runs in the background, so nothing waits this out except a write retry,
-# which has its own deadline. It matches how long bleak itself waits for BlueZ
-# to confirm a disconnect.
+# It runs in the background, so nothing waits this out except a write retry
+# and an unload, each under a deadline of its own. It matches how long bleak
+# itself waits for BlueZ to confirm a disconnect, and it has to stay below
+# _COMMAND_TIMEOUT, or a link that will not confirm it has closed leaves the
+# retry no time to dial.
 _HANG_UP_TIMEOUT = 10.0
 # The batched state request is muted after this many consecutive failures. One
 # failure means nothing on a weak link - a dropped connection surfaces as the
@@ -202,7 +205,8 @@ class GlowriumCoordinator:
         # than on hass so it is cancelled when the entry unloads: a task on
         # hass is only awaited at shutdown, and one that outlives its
         # coordinator finishes connecting and claims the lamp's single slot
-        # for an owner that no longer exists.
+        # for an owner that no longer exists. The one exception is a hang-up,
+        # which has to outlive the entry - see _hang_up.
         self._entry: ConfigEntry | None = None
         # Hang-ups in flight when there is no hass to keep them (see _hang_up).
         self._hang_ups: set[asyncio.Task[None]] = set()
@@ -455,8 +459,9 @@ class GlowriumCoordinator:
         """Let go of ``client`` and disconnect it in the background.
 
         The two belong together. bleak opens a D-Bus connection of its own for
-        every client and closes it in ``disconnect()`` and nowhere else - not
-        when the reference is dropped, and not when the link itself goes down.
+        every client. A connect that fails closes it; once a client has
+        connected, it is closed in ``disconnect()`` and nowhere else - not when
+        the reference is dropped, and not when the link itself goes down.
         A client that is merely forgotten keeps that connection for the life
         of the process, and the system bus allows one user 256 of them. On a
         lamp at the edge of range, where a link is made and lost on every poll

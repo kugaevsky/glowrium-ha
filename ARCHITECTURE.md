@@ -426,8 +426,55 @@ comes round again in 30 s anyway.
 
 **Commands are serialized on the same lock** and retried once: `_async_write`
 holds the lock across connect-and-write, so a command cannot race the periodic
-GATT churn; if the write still fails mid-command, the coordinator reconnects once
-and retries before surfacing the error.
+GATT churn; if the write still fails mid-command, the coordinator hangs up,
+reconnects once and retries before surfacing the error.
+
+**Every client the coordinator lets go of is hung up, and by one method.**
+bleak's BlueZ backend opens a D-Bus connection of its own for each client. A
+connect that fails closes it; once a client has connected, only `disconnect()`
+does — not dropping the reference, and not the link going down by itself. The
+system bus allows one user 256 connections, and a client that is merely
+forgotten keeps its one for the life of the process. 0.2.1 forgot one for every
+link the lamp dropped, which at the edge of range is one per poll tick: Home
+Assistant's user ran out about two and a half hours after each start, and from
+then on nothing running as that user could open a connection to the bus,
+Bluetooth included. So nothing clears `_client` without going through
+`_hang_up`, which disconnects the client under a ceiling of its own
+(`_HANG_UP_TIMEOUT`, 10 s). That includes a client whose link is already gone:
+bleak has no device left to disconnect then, and the call only closes the bus.
+
+**A hang-up is the one piece of background work not tied to the config entry.**
+Everything else dies with the entry, because a connect that outlives its
+coordinator claims the lamp's single slot for nobody. A hang-up is the
+opposite: cancelled part-way, it has asked BlueZ to drop the link and left the
+bus open, which is the leak again. So it runs as a task on `hass` — or, in
+`tools/bench.py`, where there is no `hass`, as a task the coordinator keeps
+itself — and the deadline of whoever gave the client up ends at most their
+*wait* for it, never the hang-up. Unload waits up to `_STOP_TIMEOUT` (3 s); the
+connect and priming paths do not wait at all.
+
+**Where order matters, the hang-up is waited for.** A write that failed lets go
+of its client at once, and the retry dials only after that client's hang-up has
+finished: the lamp has one slot, and a connect made while the old link is still
+closing either fails or is handed the very link being closed. The wait is
+inside the command's budget, which is why `_HANG_UP_TIMEOUT` has to stay below
+`_COMMAND_TIMEOUT` — otherwise a link that will not confirm it has closed leaves
+the retry no time to happen. The client behind the *last* failed write is hung
+up only after the confirmation window described below, because its
+notifications are the channel that confirmation listens on.
+
+**The disconnected callback hangs up only the client the coordinator holds.**
+bleak reports a link lost in the middle of a connect to that same callback,
+while `establish_connection` is still at work on the client, and disconnecting
+it from there closes the bus underneath bleak's own clean-up — seen on a real
+lamp as `Failed to cancel connection ... Bad file descriptor` on every such
+drop. A client the coordinator already let go of has been hung up; one it does
+not hold yet is bleak's.
+
+A hang-up that fails, or runs into its ceiling, is logged at debug level and
+not retried: bleak leaves the bus open in that case, so each one is a
+connection lost for good. How often that happens on real hardware has not been
+measured; `Hanging up … failed` in the log is where to start counting.
 
 **A command connects without priming** (`_connect_locked(prime=False)`). It needs
 the link and its own write, nothing else — and priming costs a device-info read,
