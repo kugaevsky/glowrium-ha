@@ -2249,3 +2249,89 @@ async def test_home_assistant_waits_for_a_hang_up_in_flight(
     await hass.async_block_till_done()
 
     assert finished == [1]
+
+
+async def test_stopping_does_not_cut_the_hang_up_short(
+    hass: HomeAssistant, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Unload stops waiting at its ceiling; the disconnect itself carries on.
+
+    Stopping disconnected under its own ceiling of three seconds, and on the
+    real integration that ceiling has fired (see
+    test_stopping_hangs_up_once_not_twice). Run against bleak 3.0.2 with a bus
+    that never confirms: a disconnect cancelled at that ceiling has asked BlueZ
+    to drop the link and returns with the client's D-Bus connection still open.
+    That is the leak this fix is about, taken on every reload that meets a slow
+    link - and a reload is what one reaches for when Bluetooth misbehaves.
+    """
+    coordinator, client = _connected_coordinator(hass)
+    monkeypatch.setattr(coordinator_module, "_STOP_TIMEOUT", 0.05)
+    released = asyncio.Event()
+    finished: list[int] = []
+
+    async def _slow_hang_up() -> None:
+        await released.wait()
+        finished.append(1)
+
+    client.disconnect = AsyncMock(side_effect=_slow_hang_up)
+
+    async with asyncio.timeout(0.4):  # the unload itself is still bounded
+        await coordinator.async_stop()
+
+    assert finished == []
+    released.set()
+    await hass.async_block_till_done()
+    assert finished == [1]  # the disconnect ran to the end, after the unload
+
+
+async def test_stopping_is_not_broken_by_what_the_bus_raises(
+    hass: HomeAssistant,
+) -> None:
+    """A dead bus must not turn an unload into an error.
+
+    With the bus's quota spent, bleak's calls end in EOFError and "Bad file
+    descriptor" - neither a BleakError. Stopping caught only BleakError and
+    TimeoutError, so in exactly the state where reloading the integration is
+    the remedy, the unload raised instead.
+    """
+    for failure in (OSError(9, "Bad file descriptor"), EOFError()):
+        coordinator, client = _connected_coordinator(hass)
+        client.disconnect = AsyncMock(side_effect=failure)
+
+        await coordinator.async_stop()
+
+        client.disconnect.assert_awaited_once()
+        assert coordinator._client is None
+
+
+async def test_a_connect_that_fails_half_way_hangs_up_outside_its_deadline(
+    hass: HomeAssistant, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The client of a failed subscription is not disconnected on borrowed time.
+
+    It was disconnected inline, inside the deadline of whatever was connecting.
+    A deadline that ran out during that disconnect cancelled it part-way - the
+    bus left open, by the route the hang-up was written to close.
+    """
+    coordinator, _ = _connected_coordinator(hass)
+    coordinator._client = None
+    monkeypatch.setattr(coordinator_module, "_CONNECT_TIMEOUT", 0.05)
+    client = _fresh_client()
+    client.start_notify = AsyncMock(side_effect=BleakError("subscribe failed"))
+    released = asyncio.Event()
+    finished: list[int] = []
+
+    async def _slow_hang_up() -> None:
+        await released.wait()
+        finished.append(1)
+
+    client.disconnect = AsyncMock(side_effect=_slow_hang_up)
+    _dialling(coordinator, monkeypatch, client)
+
+    with pytest.raises((BleakError, TimeoutError)):
+        await coordinator._async_ensure_connected()
+
+    released.set()
+    await hass.async_block_till_done()
+    assert finished == [1]
+    assert coordinator._client is None

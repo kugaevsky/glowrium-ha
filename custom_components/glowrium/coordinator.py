@@ -427,21 +427,25 @@ class GlowriumCoordinator:
         # getting it is no reason to skip the disconnect, since the watchers
         # are cancelled and this coordinator is finished either way.
         #
-        # The link itself must be closed exactly once and under its own
-        # ceiling: bleak does not hang up on garbage collection, and this lamp
-        # has one connection slot, so an abandoned link keeps its successor out
-        # until the device's own churn drops it. Trying twice just spends the
-        # ceiling twice against a link that is already gone.
+        # The link itself must be closed exactly once: bleak does not hang up
+        # on garbage collection, and this lamp has one connection slot, so an
+        # abandoned link keeps its successor out until the device's own churn
+        # drops it. Trying twice just spends the ceiling twice against a link
+        # that is already gone.
+        #
+        # The ceiling is on how long unload waits, not on the hang-up, which is
+        # why it is shielded: a disconnect cancelled here has asked BlueZ to
+        # drop the link and left the client's D-Bus connection open (see
+        # _hang_up), once for every reload that meets a slow link.
         held = False
         with contextlib.suppress(TimeoutError):
             async with asyncio.timeout(_STOP_TIMEOUT):
                 await self._lock.acquire()
                 held = True
         try:
-            async with asyncio.timeout(_STOP_TIMEOUT):
-                await client.disconnect()
-        except (BleakError, TimeoutError) as err:
-            _LOGGER.debug("Disconnect of %s failed: %s", self.address, err)
+            with contextlib.suppress(TimeoutError):
+                async with asyncio.timeout(_STOP_TIMEOUT):
+                    await asyncio.shield(self._hang_up(client))
         finally:
             if held:
                 self._lock.release()
@@ -612,9 +616,10 @@ class GlowriumCoordinator:
         except BaseException:
             # Including cancellation by a deadline. Nothing references this
             # client yet, and bleak does not hang up on garbage collection, so
-            # walking away here would leave the lamp's only slot taken.
-            with contextlib.suppress(Exception):
-                await client.disconnect()
+            # walking away here would leave the lamp's only slot taken. Not
+            # waited for: the deadline that may have brought us here must not
+            # be the one the disconnect runs under.
+            self._hang_up(client)
             raise
         # Committed only once notifications are live: a client without them
         # reports as connected forever while no state ever arrives again.
