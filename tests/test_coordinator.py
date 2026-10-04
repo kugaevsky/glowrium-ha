@@ -56,6 +56,10 @@ def _connected_coordinator(
     client.write_gatt_char = AsyncMock()
     client.disconnect = AsyncMock()
     coordinator._client = client
+    # Out of range unless a test dials (_dialling). Left to Home Assistant, the
+    # answer depends on whether some earlier test module happened to set up its
+    # Bluetooth manager: with one, "not in range"; without, a RuntimeError.
+    coordinator._ble_device = lambda: None
     return coordinator, client
 
 
