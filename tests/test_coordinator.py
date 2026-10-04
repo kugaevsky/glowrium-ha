@@ -2711,3 +2711,85 @@ async def test_priming_that_meets_a_closed_bus_only_logs_it(
     await coordinator._async_prime()
 
     assert coordinator._primed_client is not client
+
+
+async def test_stopping_lets_go_of_a_link_made_while_it_was_stopping(
+    hass: HomeAssistant, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A command in flight must not leave a stopped coordinator holding a link.
+
+    Stopping took whatever client it held at that instant and was done. A
+    command still running - its write had failed and its retry was dialling -
+    then finished its connect and committed the new link to a coordinator
+    that no longer watches anything and that nobody will stop again. On a
+    lamp whose link holds, that keeps the single slot for good: the
+    coordinator a reload puts in its place cannot connect.
+    """
+    coordinator, first = _connected_coordinator(hass)
+    first.write_gatt_char = AsyncMock(side_effect=BleakError("dropped"))
+    second = _fresh_client()
+    second.write_gatt_char = AsyncMock()
+    monkeypatch.setattr(coordinator_module, "_CONFIRM_TIMEOUT", 0.01)
+    answered = asyncio.Event()
+
+    async def _dial_slowly(*_a: object, **_kw: object) -> MagicMock:
+        await answered.wait()
+        return second
+
+    _dialling(coordinator, monkeypatch).side_effect = _dial_slowly
+
+    command = asyncio.create_task(coordinator.async_set_power(True))
+    await asyncio.sleep(0)  # its write has failed; the retry is dialling
+    stopping = asyncio.create_task(coordinator.async_stop())
+    await asyncio.sleep(0)
+    answered.set()  # ...and the lamp picks up, after the stop began
+
+    with pytest.raises(HomeAssistantError):
+        await command  # the coordinator was stopped under it
+    await stopping
+    await hass.async_block_till_done()
+
+    assert coordinator._client is None
+    second.disconnect.assert_awaited_once()
+
+
+async def test_stopping_that_is_cancelled_still_lets_go_of_the_link(
+    hass: HomeAssistant,
+) -> None:
+    """Cancelled while it waits for the lock, stopping still hangs up.
+
+    It took the client first and waited afterwards, so a cancellation in that
+    wait dropped the only reference to a connected client - the leak, and the
+    lamp's slot held by nobody.
+    """
+    coordinator, client = _connected_coordinator(hass)
+
+    await coordinator._lock.acquire()  # a command in flight
+    try:
+        stopping = asyncio.create_task(coordinator.async_stop())
+        await asyncio.sleep(0)
+        stopping.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await stopping
+    finally:
+        coordinator._lock.release()
+    await hass.async_block_till_done()
+
+    assert coordinator._client is None
+    client.disconnect.assert_awaited_once()
+
+
+async def test_a_stopped_coordinator_does_not_dial(
+    hass: HomeAssistant, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Once stopped, the coordinator takes no new link at all."""
+    coordinator, _ = _connected_coordinator(hass)
+    dial = _dialling(coordinator, monkeypatch, _fresh_client(), _fresh_client())
+    monkeypatch.setattr(coordinator_module, "_CONFIRM_TIMEOUT", 0.01)
+
+    await coordinator.async_stop()
+    with pytest.raises(HomeAssistantError):
+        await coordinator.async_set_power(True)
+
+    dial.assert_not_awaited()
+    assert coordinator._client is None

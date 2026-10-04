@@ -222,6 +222,9 @@ class GlowriumCoordinator:
         self._hang_ups: set[asyncio.Task[None]] = set()
         self._present = False
         self._reconnecting = False
+        # Set by async_stop and never cleared: a stopped coordinator takes no
+        # new link (see _connect_locked). Nothing would ever let go of it.
+        self._stopped = False
         self._activation_checked = False
         # The batched state request is muted until this time after a run of
         # failures, rather than for the session - see _request_state.
@@ -426,6 +429,10 @@ class GlowriumCoordinator:
 
     async def async_stop(self) -> None:
         """Cancel watching and disconnect."""
+        # Before anything is awaited. A command may be in flight and outlast
+        # this; from here on it is refused a new link, so that what is let go
+        # of below is the last one this coordinator will ever hold.
+        self._stopped = True
         if self._cancel_bluetooth is not None:
             self._cancel_bluetooth()
             self._cancel_bluetooth = None
@@ -435,9 +442,6 @@ class GlowriumCoordinator:
         if self._cancel_poll is not None:
             self._cancel_poll()
             self._cancel_poll = None
-        client, self._client = self._client, None
-        if client is None:
-            return
         # The lock and the hang-up are separate problems, so they get separate
         # deadlines. Waiting for the lock is best-effort: a connect in flight
         # holds it for longer than anyone should wait on unload, and that is
@@ -457,14 +461,22 @@ class GlowriumCoordinator:
         # drop the link and left the client's D-Bus connection open (see
         # _hang_up), once for every reload that meets a slow link.
         held = False
-        with contextlib.suppress(TimeoutError):
-            async with asyncio.timeout(_STOP_TIMEOUT):
-                await self._lock.acquire()
-                held = True
         try:
             with contextlib.suppress(TimeoutError):
                 async with asyncio.timeout(_STOP_TIMEOUT):
-                    await asyncio.shield(self._hang_up(client))
+                    await self._lock.acquire()
+                    held = True
+        finally:
+            # Taken only now, and taken even if the wait was cancelled: taking
+            # it first and waiting afterwards meant a cancellation in between
+            # dropped the only reference to a connected client.
+            client, self._client = self._client, None
+            hang_up = None if client is None else self._hang_up(client)
+        try:
+            if hang_up is not None:
+                with contextlib.suppress(TimeoutError):
+                    async with asyncio.timeout(_STOP_TIMEOUT):
+                        await asyncio.shield(hang_up)
         finally:
             if held:
                 self._lock.release()
@@ -621,6 +633,9 @@ class GlowriumCoordinator:
         """
         if self._is_connected:
             return
+        if self._stopped:
+            # Only a command that was already in flight gets here.
+            raise BleakError(f"{self.address}: stopped, taking no new link")
         device = self._ble_device()
         if device is None:
             raise BleakError(f"{self.address} is not in range")
@@ -633,6 +648,11 @@ class GlowriumCoordinator:
         )
         try:
             await client.start_notify(NOTIFY_UUID, self._on_notify)
+            if self._stopped:
+                # Stopped while this connect was on its way. Keeping the
+                # link would hand it to a coordinator nobody will stop
+                # again, and the lamp has one slot.
+                raise BleakError(f"{self.address}: stopped while connecting")  # noqa: TRY301
         except BaseException as err:
             # Including cancellation by a deadline. Nothing references this
             # client yet, and bleak does not hang up on garbage collection, so
