@@ -2782,14 +2782,22 @@ async def test_stopping_that_is_cancelled_still_lets_go_of_the_link(
 async def test_a_stopped_coordinator_does_not_dial(
     hass: HomeAssistant, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Once stopped, the coordinator takes no new link at all."""
+    """Once stopped, the coordinator takes no new link at all.
+
+    And says so at once. The deadline around the command is what tells a
+    refusal from a command that never got the lock: stopping takes the lock,
+    and one that failed to give it back would end the same way fifteen seconds
+    later, for a different reason.
+    """
     coordinator, _ = _connected_coordinator(hass)
     dial = _dialling(coordinator, monkeypatch, _fresh_client(), _fresh_client())
     monkeypatch.setattr(coordinator_module, "_CONFIRM_TIMEOUT", 0.01)
 
     await coordinator.async_stop()
-    with pytest.raises(HomeAssistantError):
-        await coordinator.async_set_power(True)
+    assert not coordinator._lock.locked()
+    async with asyncio.timeout(1):
+        with pytest.raises(HomeAssistantError):
+            await coordinator.async_set_power(True)
 
     dial.assert_not_awaited()
     assert coordinator._client is None
@@ -2877,3 +2885,125 @@ async def test_shutting_down_says_so_in_the_log(
 
     idle.async_shutdown()
     assert "Home Assistant is stopping: no link held" in caplog.text
+
+
+async def test_stopping_with_no_link_does_not_wait_for_a_busy_lock(
+    hass: HomeAssistant,
+) -> None:
+    """With nothing held, unload has nothing to wait for.
+
+    A command that is still dialling holds the lock and holds no link. Once
+    the coordinator is stopped that command is refused the link it is dialling
+    for, so nothing can turn up while unload waits - and waiting anyway put
+    back the reload that takes seconds for no reason, which a ceiling on that
+    wait had been introduced to remove.
+    """
+    coordinator, _ = _connected_coordinator(hass)
+    coordinator._client = None
+
+    await coordinator._lock.acquire()  # a command, dialling
+    try:
+        async with asyncio.timeout(0.5):  # _STOP_TIMEOUT is three seconds
+            await coordinator.async_stop()
+    finally:
+        coordinator._lock.release()
+
+
+async def test_a_hang_up_started_after_the_stop_began_is_as_short(
+    hass: HomeAssistant, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Every hang-up Home Assistant will wait for gets the short ceiling.
+
+    Not only the one for the link held when the stop was announced. A connect
+    cancelled by the stop, or a command finishing after it, lets go of a
+    client later - and Home Assistant waits for whatever starts after it began
+    to stop. Left under the usual ten seconds, one link that will not confirm
+    it has closed spends the whole grace period a container is given.
+    """
+    coordinator, _ = _connected_coordinator(hass)
+    coordinator._client = None
+    monkeypatch.setattr(coordinator_module, "_STOP_TIMEOUT", 0.05)
+    late = _fresh_client()
+
+    async def _never() -> None:
+        await asyncio.Event().wait()
+
+    late.disconnect = AsyncMock(side_effect=_never)
+
+    coordinator.async_shutdown()
+    coordinator._hang_up(late)  # let go of after the stop began
+
+    async with asyncio.timeout(1):  # nowhere near _HANG_UP_TIMEOUT
+        await hass.async_block_till_done()
+    late.disconnect.assert_awaited_once()
+
+
+async def test_stopping_gives_the_lock_back_however_it_ends(
+    hass: HomeAssistant,
+) -> None:
+    """Cancelled while it waits for the hang-up, stopping still releases the lock.
+
+    It takes the lock so that the hang-up does not race a write in flight. A
+    lock kept by a coordinator that has stopped would hold up nothing that
+    matters - but one kept by a stop that was cancelled and may be tried again
+    would hold up that.
+    """
+    coordinator, client = _connected_coordinator(hass)
+    released = asyncio.Event()
+    finished: list[int] = []
+
+    async def _slow_hang_up() -> None:
+        await released.wait()
+        finished.append(1)
+
+    client.disconnect = AsyncMock(side_effect=_slow_hang_up)
+
+    stopping = asyncio.create_task(coordinator.async_stop())
+    await asyncio.sleep(0)  # it holds the lock and waits for the hang-up
+    assert coordinator._lock.locked()
+    stopping.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await stopping
+
+    assert not coordinator._lock.locked()
+    released.set()
+    await hass.async_block_till_done()
+    assert finished == [1]  # and the hang-up was not cancelled with it
+
+
+async def test_a_link_subscribed_while_the_coordinator_stopped_is_not_kept(
+    hass: HomeAssistant, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The check for a stop comes after the subscription, not before it.
+
+    The subscription is the last thing a connect waits for before it commits
+    the link. A stop that comes and goes during that wait finds nothing held
+    and returns; checked any earlier, the connect would then commit its link
+    to a coordinator that has already been stopped.
+    """
+    coordinator, _ = _connected_coordinator(hass)
+    coordinator._client = None
+    client = _fresh_client()
+    subscribed = asyncio.Event()
+
+    async def _subscribe_slowly(*_a: object) -> None:
+        await subscribed.wait()
+
+    client.start_notify = AsyncMock(side_effect=_subscribe_slowly)
+    _dialling(coordinator, monkeypatch, client)
+
+    async def _connect() -> None:
+        async with coordinator._lock:
+            await coordinator._connect_locked()
+
+    connecting = asyncio.create_task(_connect())
+    await asyncio.sleep(0)  # dialled, and now waiting to be subscribed
+    await coordinator.async_stop()  # nothing held: over at once
+    subscribed.set()
+
+    with pytest.raises(BleakError):
+        await connecting
+    await hass.async_block_till_done()
+
+    assert coordinator._client is None
+    client.disconnect.assert_awaited_once()

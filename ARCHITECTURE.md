@@ -495,13 +495,15 @@ every handler that deals with a lost link catches the same set,
 `_LINK_ERRORS`. Caught as nothing in particular, the error went straight out of
 a command, with no retry and no readable message.
 
-**A stopped coordinator holds no link and takes no new one.** Unload waits for
-the lock first and only then takes whatever client is held — and takes it even
-if that wait is cancelled — because a command still in flight can replace the
-link while unload waits. From the moment it stops, the coordinator refuses to
-dial, and a connect that was already on its way is hung up instead of kept:
-nobody would ever stop that coordinator a second time, and on a lamp whose link
-holds, a link kept there keeps the single slot from its successor for good.
+**A stopped coordinator holds no link and takes no new one.** From the moment
+it stops, the coordinator refuses to dial, and a connect that was already on
+its way is hung up instead of kept — checked after the subscription, the last
+thing a connect waits for before it commits the link. Nobody would ever stop
+that coordinator a second time, and on a lamp whose link holds, a link kept
+there keeps the single slot from its successor for good. Unload itself, with a
+link held, waits for the lock first and only then takes the client — and takes
+it even if that wait is cancelled; with nothing held it has nothing to wait
+for, and returns at once.
 
 **Home Assistant stopping is not an unload.** It does not run an entry's unload
 callbacks on shutdown, so without a listener nothing hangs the lamp's link up
@@ -510,10 +512,12 @@ short — `docker restart` gives a container ten seconds — leaves BlueZ holdin
 the link: the lamp reads as connected and answers nothing until the adapter is
 power-cycled. So the coordinator listens for `EVENT_HOMEASSISTANT_STOP` and
 asks BlueZ to drop the link the moment the stop is announced. It does not wait
-for the lock, and that hang-up gets `_STOP_TIMEOUT` rather than
-`_HANG_UP_TIMEOUT`: Home Assistant waits for what its stop listeners start, and
-the grace period is not the coordinator's to spend. Whether this prevents the
-phantom on a stop that is killed has not been measured.
+for the lock, and from then on every hang-up gets `_STOP_TIMEOUT` rather than
+`_HANG_UP_TIMEOUT` — that one, and any a connect cancelled by the stop or a
+command finishing after it starts later. Home Assistant waits for whatever
+starts once it has begun to stop, and the grace period is not the
+coordinator's to spend. Whether this prevents the phantom on a stop that is
+killed has not been measured.
 
 **A command connects without priming** (`_connect_locked(prime=False)`). It needs
 the link and its own write, nothing else — and priming costs a device-info read,

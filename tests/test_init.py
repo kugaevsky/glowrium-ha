@@ -340,3 +340,33 @@ async def test_stopping_home_assistant_hangs_up_the_lamp(hass: HomeAssistant) ->
 
     client.disconnect.assert_awaited_once()
     assert coordinator._client is None
+
+
+async def test_the_stop_listener_goes_with_the_entry(hass: HomeAssistant) -> None:
+    """An entry that has been unloaded no longer answers Home Assistant stopping.
+
+    The listener is registered on the bus, not on the entry, so it has to be
+    taken off by hand. Left there, every reload would add one more, each
+    holding on to a coordinator that was stopped long ago.
+    """
+    entry = _entry()
+    entry.add_to_hass(hass)
+    with (
+        patch(
+            "custom_components.glowrium.coordinator.GlowriumCoordinator.async_start",
+            new_callable=AsyncMock,
+        ),
+        patch(
+            "custom_components.glowrium.coordinator.GlowriumCoordinator.async_shutdown",
+            autospec=True,
+        ) as shutdown,
+    ):
+        assert await hass.config_entries.async_setup(entry.entry_id)
+        await hass.async_block_till_done()
+        assert await hass.config_entries.async_unload(entry.entry_id)
+        await hass.async_block_till_done()
+
+        hass.bus.async_fire(EVENT_HOMEASSISTANT_STOP)
+        await hass.async_block_till_done()
+
+    shutdown.assert_not_called()

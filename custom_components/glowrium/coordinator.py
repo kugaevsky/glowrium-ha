@@ -95,15 +95,17 @@ _CONNECT_TIMEOUT = 10.0
 _CONFIRM_TIMEOUT = 2.0
 # Ceiling on each thing unload waits for - the lock, then the hang-up - so
 # reloading the integration does not wait out whatever connect currently holds
-# the lock, or a link that is slow to close. It bounds the waits, not the
-# hang-up.
+# the lock, or a link that is slow to close. There it bounds the waits, not the
+# hang-up. It is also the ceiling on a hang-up itself once Home Assistant is
+# stopping (see async_shutdown).
 _STOP_TIMEOUT = 3.0
 # Ceiling on hanging up a link the coordinator has given up on (see _hang_up).
 # It runs in the background, so nothing waits this out except a write retry
-# and an unload, each under a deadline of its own. It matches how long bleak
-# itself waits for BlueZ to confirm a disconnect, and it has to stay below
-# _COMMAND_TIMEOUT, or a link that will not confirm it has closed leaves the
-# retry no time to dial.
+# and an unload, each under a deadline of its own - and Home Assistant when it
+# is stopping, which is why a hang-up then gets _STOP_TIMEOUT instead. It
+# matches how long bleak itself waits for BlueZ to confirm a disconnect, and it
+# has to stay below _COMMAND_TIMEOUT, or a link that will not confirm it has
+# closed leaves the retry no time to dial.
 _HANG_UP_TIMEOUT = 10.0
 # The batched state request is muted after this many consecutive failures. One
 # failure means nothing on a weak link - a dropped connection surfaces as the
@@ -225,6 +227,8 @@ class GlowriumCoordinator:
         # Set by async_stop and never cleared: a stopped coordinator takes no
         # new link (see _connect_locked). Nothing would ever let go of it.
         self._stopped = False
+        # Set when Home Assistant itself is stopping (see async_shutdown).
+        self._shutting_down = False
         self._activation_checked = False
         # The batched state request is muted until this time after a run of
         # failures, rather than for the session - see _request_state.
@@ -456,12 +460,15 @@ class GlowriumCoordinator:
         nothing until the adapter is power-cycled.
 
         So this asks BlueZ to drop the link the moment the stop is announced.
-        It does not wait for the lock, and the hang-up gets the short ceiling:
-        Home Assistant waits for whatever its stop listeners start, and
+        It does not wait for the lock, and from here on every hang-up gets
+        the short ceiling - this one, and any that a connect cancelled by
+        the stop or a command finishing after it starts later. Home
+        Assistant waits for whatever starts once it has begun to stop, and
         spending the grace period on a link that will not confirm it has
         closed would cost the rest of the shutdown. The bus is not worth
         waiting for either - the process is leaving.
         """
+        self._shutting_down = True
         self._async_stop_watching()
         client, self._client = self._client, None
         # Said either way: nothing else will tell, afterwards, whether a link
@@ -472,12 +479,18 @@ class GlowriumCoordinator:
             "no link held" if client is None else "hanging up",
         )
         if client is not None:
-            self._hang_up(client, ceiling=_STOP_TIMEOUT)
+            self._hang_up(client)
 
     async def async_stop(self) -> None:
         """Cancel watching and disconnect."""
         # Before anything is awaited.
         self._async_stop_watching()
+        if self._client is None:
+            # Nothing is held, and from here on nothing can be: a command still
+            # dialling is refused the link it is dialling for. So there is
+            # nothing to wait for, not even the lock that command holds -
+            # waiting for it is what made a reload take seconds for nothing.
+            return
         # The lock and the hang-up are separate problems, so they get separate
         # deadlines. Waiting for the lock is best-effort: a connect in flight
         # holds it for longer than anyone should wait on unload, and that is
@@ -518,9 +531,7 @@ class GlowriumCoordinator:
                 self._lock.release()
 
     @callback
-    def _hang_up(
-        self, client: BleakClientWithServiceCache, *, ceiling: float | None = None
-    ) -> asyncio.Task[None]:
+    def _hang_up(self, client: BleakClientWithServiceCache) -> asyncio.Task[None]:
         """Let go of ``client`` and disconnect it in the background.
 
         The two belong together. bleak opens a D-Bus connection of its own for
@@ -545,7 +556,7 @@ class GlowriumCoordinator:
         """
         if client is self._client:
             self._client = None
-        coro = self._async_disconnect(client, ceiling)
+        coro = self._async_disconnect(client)
         name = f"glowrium hang up {self.address}"
         if self.hass is not None:
             return self.hass.async_create_task(coro, name)
@@ -556,14 +567,12 @@ class GlowriumCoordinator:
         task.add_done_callback(self._hang_ups.discard)
         return task
 
-    async def _async_disconnect(
-        self, client: BleakClientWithServiceCache, ceiling: float | None = None
-    ) -> None:
+    async def _async_disconnect(self, client: BleakClientWithServiceCache) -> None:
         """Disconnect ``client`` under a ceiling; a failure is only logged."""
+        # Short once Home Assistant is stopping: it waits for this task.
+        ceiling = _STOP_TIMEOUT if self._shutting_down else _HANG_UP_TIMEOUT
         try:
-            async with asyncio.timeout(
-                _HANG_UP_TIMEOUT if ceiling is None else ceiling
-            ):
+            async with asyncio.timeout(ceiling):
                 await client.disconnect()
         except Exception as err:
             # Anything at all: besides its own errors, bleak passes on whatever
@@ -676,7 +685,8 @@ class GlowriumCoordinator:
         if self._is_connected:
             return
         if self._stopped:
-            # Only a command that was already in flight gets here.
+            # Only a command gets here: one already in flight when the entry
+            # was unloaded, or one sent after Home Assistant began to stop.
             raise BleakError(f"{self.address}: stopped, taking no new link")
         device = self._ble_device()
         if device is None:
