@@ -372,6 +372,12 @@ class GlowriumCoordinator:
         rather than the GATT link. Tying the task to ``entry`` means it is
         cancelled on unload, so a half-finished connect cannot outlive us.
         """
+        # Before anything is registered. Home Assistant replays the last
+        # advertisement from inside async_register_callback when it already
+        # knows the device - every reload, for a lamp that advertises all the
+        # time - and the reconnect that callback starts needs the entry to be
+        # put on. Without it the task lands on hass and outlives the unload.
+        self._entry = entry
         self._cancel_bluetooth = bluetooth.async_register_callback(
             self.hass,
             self._async_on_advertisement,
@@ -385,7 +391,6 @@ class GlowriumCoordinator:
         self._present = bluetooth.async_address_present(
             self.hass, self.address, connectable=True
         )
-        self._entry = entry
         self._spawn(self._async_initial_connect(), "initial connect")
         # Advertisement callbacks are throttled, so also poll: reconnect within
         # _RECONNECT_INTERVAL after any drop, regardless of advertisement timing.

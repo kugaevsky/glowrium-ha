@@ -2522,3 +2522,58 @@ async def test_a_connect_cancelled_half_way_is_hung_up_but_not_waited_for(
     released.set()
     await hass.async_block_till_done()
     assert finished == [1]
+
+
+async def test_a_reconnect_started_while_starting_belongs_to_the_entry(
+    hass: HomeAssistant, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The advertisement Home Assistant replays on registration is not an orphan.
+
+    When it already knows the device, Home Assistant calls the advertisement
+    callback at once, from inside async_register_callback - and a lamp that
+    advertises continuously is always already known, so that is every reload.
+    The coordinator took it for the lamp reappearing and started a reconnect
+    before it had been handed its entry. With no entry to put it on, the task
+    went to hass, where an unload does not reach it.
+
+    Seen on the real integration after two reloads in a row: "Reconnect to ...
+    failed" logged ten seconds after the coordinator that started it had been
+    unloaded, while its successor's own connects were answered "In Progress".
+    On a lamp whose link holds, a connect that outlives its coordinator keeps
+    the single slot for nobody.
+    """
+    coordinator, _ = _connected_coordinator(hass)
+    coordinator._client = None
+
+    def _out_of_range() -> None:
+        return None
+
+    coordinator._ble_device = _out_of_range
+
+    def _register(_hass: object, callback: object, *_a: object) -> object:
+        callback(MagicMock(), MagicMock())  # the replayed advertisement
+        return lambda: None
+
+    fake = MagicMock()
+    fake.async_register_callback.side_effect = _register
+    fake.async_track_unavailable.return_value = lambda: None
+    fake.async_address_present.return_value = True
+    monkeypatch.setattr(coordinator_module, "bluetooth", fake)
+
+    handed_over: list[str] = []
+
+    def _background(_hass: object, coro: object, name: str) -> object:
+        coro.close()  # the test does not run it, but must not leak it
+        handed_over.append(name)
+        return MagicMock()
+
+    entry = MagicMock()
+    entry.async_create_background_task = _background
+
+    await coordinator.async_start(entry)
+    try:
+        await hass.async_block_till_done()
+        assert len(handed_over) == 2
+        assert any("reconnect" in name for name in handed_over)
+    finally:
+        await coordinator.async_stop()
