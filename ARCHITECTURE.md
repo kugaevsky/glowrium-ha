@@ -419,9 +419,15 @@ in progress" for as long as the connect took — and a reload landing inside tha
 window cancelled the setup and left the entry in `setup_error`. Availability
 follows advertisement presence, so an advertising lamp comes up **available with
 its entities `unknown`** until the first state arrives; that blip is the cost of
-not blocking setup. It caps `establish_connection` at `_CONNECT_ATTEMPTS` (2) rather than
-the library default of 4: against an unreachable device each attempt can burn a
-20 s bleak timeout plus a backoff, all while the lock is held — and the poll above
+not blocking setup. The coordinator takes its entry *before* it registers for
+advertisements: Home Assistant replays the last advertisement from inside that
+registration when it already knows the device — every reload, for a lamp that
+advertises all the time — and the reconnect the replay starts needs an entry to
+be put on, or it lands on `hass` and outlives the unload.
+
+A connect caps `establish_connection` at `_CONNECT_ATTEMPTS` (2) rather than the
+library default of 4: against an unreachable device each attempt can burn a 20 s
+bleak timeout plus a backoff, all while the lock is held — and the poll above
 comes round again in 30 s anyway.
 
 **Commands are serialized on the same lock** and retried once: `_async_write`
@@ -450,18 +456,22 @@ opposite: cancelled part-way, it has asked BlueZ to drop the link and left the
 bus open, which is the leak again. So it runs as a task on `hass` — or, in
 `tools/bench.py`, where there is no `hass`, as a task the coordinator keeps
 itself — and the deadline of whoever gave the client up ends at most their
-*wait* for it, never the hang-up. Unload waits up to `_STOP_TIMEOUT` (3 s); the
-connect and priming paths do not wait at all.
+*wait* for it, never the hang-up. Unload waits up to `_STOP_TIMEOUT` (3 s) for
+the lock and as long again for the hang-up; a link that answers nothing is
+hung up without being waited for at all.
 
 **Where order matters, the hang-up is waited for.** A write that failed lets go
 of its client at once, and the retry dials only after that client's hang-up has
 finished: the lamp has one slot, and a connect made while the old link is still
-closing either fails or is handed the very link being closed. The wait is
-inside the command's budget, which is why `_HANG_UP_TIMEOUT` has to stay below
-`_COMMAND_TIMEOUT` — otherwise a link that will not confirm it has closed leaves
-the retry no time to happen. The client behind the *last* failed write is hung
-up only after the confirmation window described below, because its
-notifications are the channel that confirmation listens on.
+closing either fails or is handed the very link being closed. The same holds
+for a connect whose subscription failed: its client is hung up before the error
+reaches a caller that may dial again. (A connect *cancelled* at that point is
+not kept waiting — its deadline has already run out, and it holds the lock.)
+The wait is inside the command's budget, which is why `_HANG_UP_TIMEOUT` has to
+stay below `_COMMAND_TIMEOUT` — otherwise a link that will not confirm it has
+closed leaves the retry no time to happen. The client behind the *last* failed
+write is hung up only after the confirmation window described below, because
+its notifications are the channel that confirmation listens on.
 
 **The disconnected callback hangs up only the client the coordinator holds.**
 bleak reports a link lost in the middle of a connect to that same callback,

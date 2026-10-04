@@ -93,9 +93,10 @@ _CONNECT_TIMEOUT = 10.0
 # notification arrived 22-32 ms BEFORE the error was raised, so this is grace
 # for a slower link rather than a wait anyone should routinely pay.
 _CONFIRM_TIMEOUT = 2.0
-# Ceiling on what unload waits for - the lock, then the hang-up - so reloading
-# the integration does not wait out whatever connect currently holds the lock,
-# or a link that is slow to close. It bounds the wait, not the hang-up.
+# Ceiling on each thing unload waits for - the lock, then the hang-up - so
+# reloading the integration does not wait out whatever connect currently holds
+# the lock, or a link that is slow to close. It bounds the waits, not the
+# hang-up.
 _STOP_TIMEOUT = 3.0
 # Ceiling on hanging up a link the coordinator has given up on (see _hang_up).
 # It runs in the background, so nothing waits this out except a write retry

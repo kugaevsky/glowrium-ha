@@ -2239,8 +2239,9 @@ async def test_home_assistant_waits_for_a_hang_up_in_flight(
     """With Home Assistant behind it, the hang-up is hass's task to see through.
 
     The standalone path above keeps its own task; this is the other side of
-    that choice. A hang-up hass does not know about is one it will not wait for
-    when it stops, and stopping is when the last link is given up.
+    that choice. A task hass does not track is one async_block_till_done walks
+    straight past, and that call is how Home Assistant - and every test here -
+    lets pending work settle before it looks at the result.
     """
     coordinator, client = _connected_coordinator(hass)
     finished: list[int] = []
@@ -2293,12 +2294,14 @@ async def test_stopping_does_not_cut_the_hang_up_short(
 async def test_stopping_is_not_broken_by_what_the_bus_raises(
     hass: HomeAssistant,
 ) -> None:
-    """A dead bus must not turn an unload into an error.
+    """A dead bus must not make stopping raise.
 
     With the bus's quota spent, bleak's calls end in EOFError and "Bad file
     descriptor" - neither a BleakError. Stopping caught only BleakError and
-    TimeoutError, so in exactly the state where reloading the integration is
-    the remedy, the unload raised instead.
+    TimeoutError and let these through. Home Assistant runs the unload callback
+    as a task and does not pass its exception on, so the reload still went
+    through - with an unretrieved exception left in the log, in exactly the
+    state where reloading is the remedy and the log is what gets read.
     """
     for failure in (OSError(9, "Bad file descriptor"), EOFError()):
         coordinator, client = _connected_coordinator(hass)
