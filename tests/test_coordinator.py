@@ -2181,3 +2181,71 @@ async def test_a_hang_up_is_not_tied_to_the_entry(hass: HomeAssistant) -> None:
 
     entry.async_create_background_task.assert_not_called()
     client.disconnect.assert_awaited_once()
+
+
+async def test_hanging_up_does_not_need_home_assistant() -> None:
+    """The bench drives this coordinator with no Home Assistant behind it.
+
+    tools/bench.py builds the real coordinator with ``hass=None`` and takes the
+    paths the integration takes. With the hang-up scheduled on hass, every one
+    that lets go of a client - a link the lamp drops, a connect that answers
+    nothing, a write that needs its retry - ended there in "'NoneType' object
+    has no attribute 'async_create_task'", with the client still connected.
+    Found by walking those three paths on a coordinator built the way the bench
+    builds it; 0.2.1 took all three.
+    """
+    coordinator = GlowriumCoordinator(None, "AA:BB:CC:DD:EE:FF", "bench")
+    client = _fresh_client()
+    coordinator._client = client
+
+    coordinator._async_on_disconnect(client)  # the lamp drops the link
+    await asyncio.sleep(0)  # nothing to block on without hass; one turn does it
+
+    assert coordinator._client is None
+    client.disconnect.assert_awaited_once()
+
+
+async def test_a_retry_hangs_up_without_home_assistant(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The same for the path that waits for the hang-up before it dials again.
+
+    This is the one the bench exists to exercise: a command on a link that
+    drops under it.
+    """
+    coordinator = GlowriumCoordinator(None, "AA:BB:CC:DD:EE:FF", "bench")
+    first = _fresh_client()
+    first.write_gatt_char = AsyncMock(side_effect=BleakError("dropped"))
+    coordinator._client = first
+    second = _fresh_client()
+    second.write_gatt_char = AsyncMock()
+    _dialling(coordinator, monkeypatch, second)
+
+    await coordinator.async_set_power(True)
+
+    first.disconnect.assert_awaited_once()
+    assert coordinator._client is second
+
+
+async def test_home_assistant_waits_for_a_hang_up_in_flight(
+    hass: HomeAssistant,
+) -> None:
+    """With Home Assistant behind it, the hang-up is hass's task to see through.
+
+    The standalone path above keeps its own task; this is the other side of
+    that choice. A hang-up hass does not know about is one it will not wait for
+    when it stops, and stopping is when the last link is given up.
+    """
+    coordinator, client = _connected_coordinator(hass)
+    finished: list[int] = []
+
+    async def _takes_a_moment() -> None:
+        await asyncio.sleep(0.05)
+        finished.append(1)
+
+    client.disconnect = AsyncMock(side_effect=_takes_a_moment)
+
+    coordinator._hang_up(client)
+    await hass.async_block_till_done()
+
+    assert finished == [1]

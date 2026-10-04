@@ -204,6 +204,8 @@ class GlowriumCoordinator:
         # coordinator finishes connecting and claims the lamp's single slot
         # for an owner that no longer exists.
         self._entry: ConfigEntry | None = None
+        # Hang-ups in flight when there is no hass to keep them (see _hang_up).
+        self._hang_ups: set[asyncio.Task[None]] = set()
         self._present = False
         self._reconnecting = False
         self._activation_checked = False
@@ -469,9 +471,16 @@ class GlowriumCoordinator:
         """
         if client is self._client:
             self._client = None
-        return self.hass.async_create_task(
-            self._async_disconnect(client), f"glowrium hang up {self.address}"
-        )
+        coro = self._async_disconnect(client)
+        name = f"glowrium hang up {self.address}"
+        if self.hass is not None:
+            return self.hass.async_create_task(coro, name)
+        # Standalone, with no Home Assistant behind it (tools/bench.py). Nothing
+        # keeps the task for us there, and the loop itself holds it only weakly.
+        task = asyncio.get_running_loop().create_task(coro, name=name)
+        self._hang_ups.add(task)
+        task.add_done_callback(self._hang_ups.discard)
+        return task
 
     async def _async_disconnect(self, client: BleakClientWithServiceCache) -> None:
         """Disconnect ``client`` under a ceiling; a failure is only logged."""
