@@ -1053,10 +1053,12 @@ async def test_the_hang_up_of_the_unload_itself_raises_no_repair(
     assert "BlueZ has left" not in caplog.text
 
 
+@pytest.mark.parametrize("announced_before_it_stopped", [False, True])
 async def test_a_stopped_coordinator_ends_no_episode_and_takes_down_no_repair(
     hass: HomeAssistant,
     monkeypatch: pytest.MonkeyPatch,
     caplog: pytest.LogCaptureFixture,
+    announced_before_it_stopped: bool,
 ) -> None:
     """An episode is ended by the coordinator that announced it, and by no other.
 
@@ -1065,7 +1067,8 @@ async def test_a_stopped_coordinator_ends_no_episode_and_takes_down_no_repair(
     in while it is hung up, a write that was in flight. That is not the end
     of an episode nobody announced. And the repair filed under the entry's
     id by now belongs to the coordinator that took over after a reload: it
-    is not this one's to take down.
+    is not this one's to take down. Nor is it if this coordinator did
+    announce an episode while it was watching: stopping closed it.
     """
     coordinator, host, clock, _dialled = _on_a_clock(hass, monkeypatch)
     entry = SimpleNamespace(
@@ -1075,10 +1078,14 @@ async def test_a_stopped_coordinator_ends_no_episode_and_takes_down_no_repair(
         ),
     )
     coordinator._entry = entry
-    await _ticks(coordinator, hass, clock, 2)
-    client = await host.dial()
-    coordinator._client = client
-    coordinator._backends[client] = client._backend
+    if announced_before_it_stopped:
+        await _ticks(coordinator, hass, clock, 3)
+        assert _stack_issue(hass) is not None
+    else:
+        await _ticks(coordinator, hass, clock, 2)
+        client = await host.dial()
+        coordinator._client = client
+        coordinator._backends[client] = client._backend
     await coordinator.async_stop()
     await asyncio.sleep(0.1)
     await hass.async_block_till_done()

@@ -917,6 +917,16 @@ _CURVE = bytes(range(0x40, 0x5C))  # 28 bytes of sunrise and sunset times
             id="a coordinate kept as a shorter float",
         ),
         pytest.param(
+            "a1" + "0bf9" + "5c17",
+            "a1" + "0bf9" + "xx" * 2,
+            id="a coordinate kept as the shortest float there is",
+        ),
+        pytest.param(
+            "a2" + "1834590100" + "5a" * 256 + "06f5",
+            "a2" + "1834590100" + "xx" * 256 + "06f5",
+            id="times that take two bytes to say how long they are",
+        ),
+        pytest.param(
             "a206f5" + "0bfb" + _LONGITUDE_HEX[:6],
             "a206f5" + "0bfb" + "xx" * 3,
             id="a coordinate the frame ends inside",
