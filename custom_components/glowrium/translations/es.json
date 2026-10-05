@@ -98,5 +98,11 @@
     "schedule_not_read": {
       "message": "Aún no se puede cambiar: {name} no ha informado de su programación actual. Aparecerá cuando la lámpara se conecte."
     }
+  },
+  "issues": {
+    "bluetooth_stack_stuck": {
+      "title": "La pila Bluetooth del host retiene una conexión que ya no existe",
+      "description": "Home Assistant pidió a la pila Bluetooth de este host que se desconectara de {name} {count} veces seguidas y no obtuvo respuesta. Eso indica que la pila retiene una conexión que ya no existe: no es un problema de la lámpara, y reiniciar Home Assistant no lo resuelve.\n\nApaga y vuelve a encender el adaptador Bluetooth del host (`bluetoothctl power off` y después `bluetoothctl power on`) o reinicia su servicio bluetooth. Hasta entonces se intentará contactar con la lámpara con menos frecuencia. Este aviso desaparecerá por sí solo en cuanto la lámpara vuelva a responder."
+    }
   }
 }

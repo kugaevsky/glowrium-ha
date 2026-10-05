@@ -98,5 +98,11 @@
     "schedule_not_read": {
       "message": "Modification impossible pour l'instant : {name} n'a pas encore signalé sa programmation actuelle. Elle apparaîtra une fois la lampe connectée."
     }
+  },
+  "issues": {
+    "bluetooth_stack_stuck": {
+      "title": "La pile Bluetooth de l'hôte retient une connexion qui n'existe plus",
+      "description": "Home Assistant a demandé {count} fois de suite à la pile Bluetooth de cet hôte de se déconnecter de {name}, sans obtenir de réponse. Cela indique que la pile retient une connexion qui n'existe plus : la lampe n'est pas en cause, et redémarrer Home Assistant n'y change rien.\n\nÉteignez puis rallumez l'adaptateur Bluetooth de l'hôte (`bluetoothctl power off`, puis `bluetoothctl power on`) ou redémarrez son service bluetooth. D'ici là, la lampe est sollicitée moins souvent. Ce message disparaîtra de lui-même dès que la lampe répondra à nouveau."
+    }
   }
 }

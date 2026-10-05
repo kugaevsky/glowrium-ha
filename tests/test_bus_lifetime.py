@@ -25,10 +25,16 @@ from bleak.backends.bluezdbus.client import BleakClientBlueZDBus
 from bleak.exc import BleakError
 from dbus_fast import MessageType
 from homeassistant.core import HomeAssistant
+from homeassistant.helpers import issue_registry as ir
 import pytest
 
 from custom_components.glowrium import cbor, coordinator as coordinator_module
-from custom_components.glowrium.const import KEY_ACTIVATED, KEY_POWER, NOTIFY_UUID
+from custom_components.glowrium.const import (
+    DOMAIN,
+    KEY_ACTIVATED,
+    KEY_POWER,
+    NOTIFY_UUID,
+)
 from custom_components.glowrium.coordinator import GlowriumCoordinator
 
 _NOT_CONNECTED = "[org.bluez.Error.Failed] Not connected"
@@ -805,6 +811,94 @@ async def test_a_fault_ends_with_the_lamp_and_not_with_a_hang_up(
     said = [r.getMessage() for r in caplog.records if r.levelname == "WARNING"]
     assert len(said) == 2
     assert "answers again" in said[1]
+
+
+def _stack_issue(hass: HomeAssistant) -> ir.IssueEntry | None:
+    """Return the repair raised for the wedged stack, if one stands."""
+    return ir.async_get(hass).async_get_issue(
+        DOMAIN, "bluetooth_stack_stuck_AA:BB:CC:DD:EE:FF"
+    )
+
+
+async def test_a_wedged_stack_is_put_in_front_of_the_user(
+    hass: HomeAssistant, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The fault is raised as a repair, not left for whoever reads the log.
+
+    Nothing the integration does ends it; somebody has to reset the adapter.
+    A warning in the log says so to the person who goes looking. A repair
+    says it on the dashboard, names the lamp, and carries what to do - and
+    it is raised when the warning is, not before: two unanswered hang-ups
+    are a slow stack, not a wedged one.
+    """
+    coordinator, _host, clock, _dialled = _on_a_clock(hass, monkeypatch)
+
+    await _ticks(coordinator, hass, clock, 2)
+    assert _stack_issue(hass) is None
+
+    await _ticks(coordinator, hass, clock, 1)
+    issue = _stack_issue(hass)
+    assert issue is not None
+    assert issue.severity is ir.IssueSeverity.WARNING
+    assert issue.is_fixable is False
+    assert issue.is_persistent is False  # the next start finds out for itself
+    assert issue.translation_key == "bluetooth_stack_stuck"
+    assert issue.translation_placeholders == {"name": "Glowrium-G7", "count": "3"}
+    assert issue.learn_more_url.endswith("#troubleshooting")
+
+
+async def test_the_repair_goes_when_the_lamp_answers_again(
+    hass: HomeAssistant, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A repair left standing after the fault is over would be a false alarm.
+
+    It is taken down by the same thing that ends the episode: the lamp saying
+    something. BlueZ answering disconnects again is not that.
+    """
+    coordinator, host, clock, dialled = _on_a_clock(hass, monkeypatch)
+    coordinator._activation_checked = True
+    await _ticks(coordinator, hass, clock, 3)
+    assert _stack_issue(hass) is not None
+
+    host.released.set()  # hang-ups go through now; the lamp still answers nothing
+    await _ticks(coordinator, hass, clock, 6)
+    assert _stack_issue(hass) is not None
+
+    async def _healthy(*_args: object, **_kwargs: object) -> _WedgedClient:
+        dialled.append(clock.now)
+        client = await host.dial()
+        _lamp(coordinator, client)
+        client.read_gatt_char = AsyncMock(return_value=bytearray(b"brand:x;;"))
+        return client
+
+    monkeypatch.setattr(coordinator_module, "establish_connection", _healthy)
+    await _ticks(coordinator, hass, clock, 12)
+
+    assert _stack_issue(hass) is None
+
+
+async def test_the_repair_goes_with_the_entry(
+    hass: HomeAssistant, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An integration that has been unloaded is not watching the stack any more."""
+    coordinator, _host, clock, _dialled = _on_a_clock(hass, monkeypatch)
+    await _ticks(coordinator, hass, clock, 3)
+    assert _stack_issue(hass) is not None
+
+    await coordinator.async_stop()
+
+    assert _stack_issue(hass) is None
+
+
+async def test_a_wedged_stack_is_survived_without_home_assistant() -> None:
+    """The bench has no dashboard to raise a repair on, and counts all the same."""
+    coordinator = GlowriumCoordinator(None, "AA:BB:CC:DD:EE:FF", "bench")
+
+    for _ in range(coordinator_module._STACK_FAULT_AFTER):
+        coordinator._note_stuck_hang_up()
+    coordinator._note_answer()
+
+    assert coordinator._stuck_hang_ups == 0
 
 
 async def test_a_command_is_not_held_back_by_the_backoff(

@@ -98,5 +98,11 @@
     "schedule_not_read": {
       "message": "Cannot change this yet: {name} has not reported its current schedule. It should populate once the lamp is connected."
     }
+  },
+  "issues": {
+    "bluetooth_stack_stuck": {
+      "title": "The host's Bluetooth stack is holding on to a dead link",
+      "description": "Home Assistant asked the Bluetooth stack on this host to disconnect {name} {count} times in a row and was never answered. That points at the stack holding on to a link that no longer exists - not at the lamp, and not at anything a restart of Home Assistant clears.\n\nPower-cycle the Bluetooth adapter on the host (`bluetoothctl power off`, then `bluetoothctl power on`) or restart its bluetooth service. Until then the lamp is tried less often. This goes away by itself as soon as the lamp answers again."
+    }
   }
 }

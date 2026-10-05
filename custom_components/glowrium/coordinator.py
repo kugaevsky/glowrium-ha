@@ -19,7 +19,7 @@ from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import CONF_MODEL_ID
 from homeassistant.core import Event, HomeAssistant, callback
 from homeassistant.exceptions import HomeAssistantError
-from homeassistant.helpers import device_registry as dr
+from homeassistant.helpers import device_registry as dr, issue_registry as ir
 from homeassistant.helpers.event import async_track_time_interval
 from homeassistant.helpers.typing import UNDEFINED
 from homeassistant.util import dt as dt_util
@@ -124,6 +124,8 @@ _STACK_FAULT_AFTER = 3
 # doubles from the poll interval up to this. A command is never held back, and
 # the first answer from the lamp ends it.
 _STACK_FAULT_BACKOFF_MAX = 300.0
+# Where the repair raised for that fault sends the reader for what to do.
+_TROUBLESHOOTING_URL = "https://github.com/kugaevsky/glowrium-ha#troubleshooting"
 # How long BlueZ gets to report a link dropped once it has called it "not
 # connected". Normally two to three seconds (see _REFUSAL_MARKERS). When the
 # report never comes, the client is held with is_connected True and nothing
@@ -656,6 +658,9 @@ class GlowriumCoordinator:
         if self._cancel_poll is not None:
             self._cancel_poll()
             self._cancel_poll = None
+        # A coordinator that has stopped watching cannot say when the stack
+        # lets go, so it does not leave the claim standing that it has not.
+        self._async_clear_stack_issue()
 
     @callback
     def async_shutdown(self, _event: Event | None = None) -> None:
@@ -841,6 +846,7 @@ class GlowriumCoordinator:
         gap = _RECONNECT_INTERVAL.total_seconds() * 2 ** min(over + 1, 16)
         self._dial_not_before = monotonic() + min(gap, _STACK_FAULT_BACKOFF_MAX)
         if over == 0:
+            self._async_raise_stack_issue()
             _LOGGER.warning(
                 "%s: BlueZ has left %d requests in a row to disconnect the lamp "
                 "unanswered. That points at the host's Bluetooth stack holding on "
@@ -852,6 +858,43 @@ class GlowriumCoordinator:
                 self._stuck_hang_ups,
             )
 
+    @property
+    def _stack_issue_id(self) -> str:
+        return f"bluetooth_stack_stuck_{self.address}"
+
+    @callback
+    def _async_raise_stack_issue(self) -> None:
+        """Put the wedged stack in front of the user, as a repair.
+
+        The log line is for whoever goes looking. This is for everyone else:
+        it names the lamp, says that it is the host's stack and not the lamp,
+        and carries the one thing that ends it. Not kept across a restart -
+        the next start finds out for itself whether the stack still holds on.
+        """
+        if self.hass is None:  # the bench has no dashboard to raise it on
+            return
+        ir.async_create_issue(
+            self.hass,
+            DOMAIN,
+            self._stack_issue_id,
+            is_fixable=False,
+            is_persistent=False,
+            severity=ir.IssueSeverity.WARNING,
+            learn_more_url=_TROUBLESHOOTING_URL,
+            translation_key="bluetooth_stack_stuck",
+            translation_placeholders={
+                "name": self.name,
+                "count": str(self._stuck_hang_ups),
+            },
+        )
+
+    @callback
+    def _async_clear_stack_issue(self) -> None:
+        """Take the repair down: the lamp answered, or nobody is watching."""
+        if self.hass is None:
+            return
+        ir.async_delete_issue(self.hass, DOMAIN, self._stack_issue_id)
+
     def _note_answer(self) -> None:
         """Record that the lamp answered: the link is alive, the stack with it."""
         self._last_answer = monotonic()
@@ -862,6 +905,7 @@ class GlowriumCoordinator:
                 "%s: the lamp answers again; the Bluetooth stack has let go",
                 self.address,
             )
+            self._async_clear_stack_issue()
         self._stuck_hang_ups = 0
         self._dial_not_before = 0.0
         self._lost = None  # whatever BlueZ called it, it is answering

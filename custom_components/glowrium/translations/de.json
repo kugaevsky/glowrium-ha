@@ -98,5 +98,11 @@
     "schedule_not_read": {
       "message": "Änderung noch nicht möglich: {name} hat seinen aktuellen Zeitplan noch nicht gemeldet. Er erscheint, sobald die Lampe verbunden ist."
     }
+  },
+  "issues": {
+    "bluetooth_stack_stuck": {
+      "title": "Der Bluetooth-Stack des Hosts hält eine tote Verbindung fest",
+      "description": "Home Assistant hat den Bluetooth-Stack dieses Hosts {count}-mal in Folge aufgefordert, die Verbindung zu {name} zu trennen, und keine Antwort erhalten. Das deutet darauf hin, dass der Stack an einer Verbindung festhält, die es nicht mehr gibt - es liegt nicht an der Lampe, und ein Neustart von Home Assistant behebt es nicht.\n\nSchalte den Bluetooth-Adapter des Hosts aus und wieder ein (`bluetoothctl power off`, dann `bluetoothctl power on`) oder starte dessen Bluetooth-Dienst neu. Bis dahin wird die Lampe seltener angesprochen. Diese Meldung verschwindet von selbst, sobald die Lampe wieder antwortet."
+    }
   }
 }
