@@ -1065,6 +1065,7 @@ async def test_what_was_read_ahead_of_an_unreadable_item_is_kept_and_said_loudly
         assert _PARTLY_READABLE.hex() in said
         assert "coordinates" in said
         assert "Undecodable frame" not in caplog.text
+        assert "split across frames" not in caplog.text  # it was not: it is whole
 
         caplog.clear()
         coordinator._ingest(_PARTLY_READABLE)

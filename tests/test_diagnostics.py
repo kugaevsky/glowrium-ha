@@ -5,14 +5,13 @@ that could go into it is chosen by the lamp. Most of these tests are about
 what must not come out of it, whatever the lamp reports.
 """
 
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 import json
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 from homeassistant.const import CONF_ADDRESS, CONF_MODEL_ID
 from homeassistant.core import HomeAssistant
-from homeassistant.util import dt as dt_util
 import pytest
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
@@ -41,8 +40,10 @@ TITLE = "Glowrium-G7_DDEEFF"
 LATITUDE, LONGITUDE = 12.3456, 65.4321
 SERIAL = "CST-0001"
 # The host's clock when the lamp reported, with the lamp's a minute behind
-# it; and the host's clock five minutes later, when the file is made.
-HEARD_AT = datetime(2026, 10, 5, 8, 16, 30, tzinfo=dt_util.UTC)
+# it; and the host's clock five minutes later, when the file is made. Not in
+# UTC: the lamp keeps local wall-clock time, and it is the host's local time
+# that it is set against.
+HEARD_AT = datetime(2026, 10, 5, 8, 16, 30, tzinfo=timezone(timedelta(hours=3)))
 HOST_NOW = HEARD_AT + timedelta(minutes=5)
 CLOCK = bytes.fromhex("07ea0a05080f1e")  # 2026-10-05 08:15:30
 CLOCK_RIGHT = bytes.fromhex("07ea0a0508101e")  # 2026-10-05 08:16:30
@@ -381,6 +382,7 @@ async def test_the_fields_of_the_device_info_string_are_only_counted(
         (KEY_RAMP, bytes.fromhex("0e1000")),
         (KEY_DST, True),
         (KEY_DST, bytes.fromhex("0200000e10")),
+        (KEY_DST, bytes.fromhex("0100000e1000")),  # in place, and one byte more
         (KEY_DST, bytes.fromhex("01ddeeff10")),
         (KEY_INDICATOR, [True]),
         (KEY_ACTIVATED, None),
@@ -422,6 +424,14 @@ async def test_a_known_property_is_read_out_only_when_it_is_what_its_name_means(
         (
             KEY_TIME,
             bytes.fromhex("07e80101000000"),  # set in 2024 and never again
+            {
+                "ahead_of_this_host_by_seconds": "more than a year off",
+                "as_of_seconds_ago": 300,
+            },
+        ),
+        (
+            KEY_TIME,
+            bytes.fromhex("07ec0101000000"),  # as far ahead as that one is behind
             {
                 "ahead_of_this_host_by_seconds": "more than a year off",
                 "as_of_seconds_ago": 300,
@@ -608,80 +618,124 @@ class _Behind:
     """What sits behind a client. Its class name is what the file shows."""
 
 
-async def test_the_download_says_where_the_link_stands(
-    hass: HomeAssistant, monkeypatch: pytest.MonkeyPatch
+_NOW = 5000.0  # the coordinator's monotonic clock, held still
+_LINK_AT_REST = {
+    "available": False,
+    "advertising": False,
+    "connected": False,
+    "primed": False,
+    "client": None,
+    "reports": 1,
+    "writes_sent": 0,
+    "seconds_since_last_answer": 0,
+    "state_request_refusals": 0,
+    "state_request_paused": False,
+    "unanswered_hang_ups": 0,
+    "dials_held_back": False,
+    "clients_that_would_not_close": 0,
+}
+
+
+def _hold(coordinator: Any, *, connected: bool = True, primed: bool = False) -> None:
+    """Give the coordinator a client, with something known behind it."""
+    client = MagicMock(is_connected=connected)
+    coordinator._client = client
+    coordinator._backends[client] = _Behind()
+    if primed:
+        coordinator._primed_client = client
+
+
+@pytest.mark.parametrize(
+    ("arrange", "differs"),
+    [
+        pytest.param(lambda _: None, {}, id="at rest"),
+        pytest.param(
+            lambda c: setattr(c, "_present", True),
+            {"advertising": True, "available": True},
+            id="heard advertising",
+        ),
+        pytest.param(
+            _hold,
+            {"connected": True, "available": True, "client": "_Behind"},
+            id="a link nobody has primed",
+        ),
+        pytest.param(
+            lambda c: _hold(c, primed=True),
+            {"connected": True, "available": True, "client": "_Behind", "primed": True},
+            id="a primed link",
+        ),
+        pytest.param(
+            lambda c: _hold(c, connected=False),
+            {"client": "_Behind"},
+            id="a client that says it is not connected",
+        ),
+        pytest.param(_report, {"reports": 2}, id="a second report"),
+        pytest.param(
+            lambda c: setattr(c, "_writes_sent", 3), {"writes_sent": 3}, id="writes"
+        ),
+        pytest.param(
+            lambda c: setattr(c, "_last_answer", _NOW - 42),
+            {"seconds_since_last_answer": 42},
+            id="silence",
+        ),
+        pytest.param(
+            lambda c: setattr(c, "_state_request_failures", 1),
+            {"state_request_refusals": 1},
+            id="a refusal",
+        ),
+        pytest.param(
+            lambda c: setattr(c, "_state_request_muted_until", _NOW + 60),
+            {"state_request_paused": True},
+            id="the state request paused",
+        ),
+        pytest.param(
+            lambda c: setattr(c, "_state_request_given_up", True),
+            {"state_request_paused": True},
+            id="the state request given up",
+        ),
+        pytest.param(
+            lambda c: setattr(c, "_stuck_hang_ups", 2),
+            {"unanswered_hang_ups": 2},
+            id="hang-ups left unanswered",
+        ),
+        pytest.param(
+            lambda c: setattr(c, "_dial_not_before", _NOW + 60),
+            {"dials_held_back": True},
+            id="dials held back",
+        ),
+        pytest.param(
+            lambda c: c._unreleased.add(object()),
+            {"clients_that_would_not_close": 1},
+            id="a client that would not close",
+        ),
+    ],
+)
+async def test_each_field_of_the_link_section_follows_its_own_source(
+    hass: HomeAssistant,
+    monkeypatch: pytest.MonkeyPatch,
+    arrange: Any,
+    differs: dict[str, Any],
 ) -> None:
     """The link is described in full, and by nothing the lamp chose.
 
-    A link is held here, and most of what can go wrong with one has. Every
-    field is a count or a flag the integration keeps, and the whole section
-    is held to this list: the coordinator describes itself for the file, so
-    a field added there arrives here, and has to be looked at. The client is
-    named by its class - which says whether BlueZ or a proxy is behind the
-    link - and not printed, since a client prints with the address in it.
+    Every field is a count or a flag the integration keeps. The section is
+    passed through whole from the coordinator's own description, so it is
+    held here to an exact list - a field added there arrives here, and has to
+    be looked at - and each field is moved on its own: two states that
+    differ in everything at once cannot tell a field from a copy of its
+    neighbour. The client is named by its class, which says whether BlueZ or
+    a proxy is behind the link, and is not printed: a client prints with the
+    address in it.
     """
     entry = await _a_lamp_that_has_reported(hass)
     coordinator = entry.runtime_data
-    monkeypatch.setattr(coordinator_module, "monotonic", lambda: 5000.0)
-    client = MagicMock(is_connected=True)
-    coordinator._client = coordinator._primed_client = client
-    coordinator._backends[client] = _Behind()
-    _report(coordinator)  # a second report; an answer also resets what follows
-    coordinator._writes_sent = 3
-    coordinator._last_answer = 5000.0 - 42
-    coordinator._state_request_failures = 1
-    coordinator._state_request_muted_until = 5000.0 + 60
-    coordinator._stuck_hang_ups = 2
-    coordinator._dial_not_before = 5000.0 + 60
-    coordinator._unreleased.add(object())
+    monkeypatch.setattr(coordinator_module, "monotonic", lambda: _NOW)
+    coordinator._last_answer = _NOW
+    arrange(coordinator)
 
     data = await _downloaded(hass, entry)
     coordinator._client = None  # nothing real to hang up when the test ends
     coordinator._unreleased.clear()
 
-    assert data["link"] == {
-        "available": True,
-        "advertising": False,
-        "connected": True,
-        "primed": True,
-        "client": "_Behind",
-        "reports": 2,
-        "writes_sent": 3,
-        "seconds_since_last_answer": 42,
-        "state_request_refusals": 1,
-        "state_request_paused": True,
-        "unanswered_hang_ups": 2,
-        "dials_held_back": True,
-        "clients_that_would_not_close": 1,
-    }
+    assert data["link"] == _LINK_AT_REST | differs
     _nothing_private_in(data)
-
-
-async def test_a_lamp_that_is_heard_and_not_connected_is_described_as_that(
-    hass: HomeAssistant, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """The same section with no link held and nothing gone wrong."""
-    entry = await _a_lamp_that_has_reported(hass)
-    coordinator = entry.runtime_data
-    coordinator._present = True
-    monkeypatch.setattr(
-        coordinator_module, "monotonic", lambda: coordinator._last_answer
-    )
-
-    data = await _downloaded(hass, entry)
-
-    assert data["link"] == {
-        "available": True,
-        "advertising": True,
-        "connected": False,
-        "primed": False,
-        "client": None,
-        "reports": 1,
-        "writes_sent": 0,
-        "seconds_since_last_answer": 0,
-        "state_request_refusals": 0,
-        "state_request_paused": False,
-        "unanswered_hang_ups": 0,
-        "dials_held_back": False,
-        "clients_that_would_not_close": 0,
-    }
