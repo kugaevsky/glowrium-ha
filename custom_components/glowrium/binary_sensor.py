@@ -11,6 +11,10 @@ from . import GlowriumConfigEntry
 from .coordinator import GlowriumCoordinator
 from .entity import GlowriumEntity
 
+# Nothing here is polled and nothing takes a command: state is pushed by the
+# coordinator.
+PARALLEL_UPDATES = 0
+
 
 async def async_setup_entry(
     hass: HomeAssistant,

@@ -1,6 +1,7 @@
 """Tests for setting up and tearing down the Glowrium config entry."""
 
 import asyncio
+import importlib
 from unittest.mock import AsyncMock, MagicMock, patch
 
 from bleak.exc import BleakError
@@ -15,7 +16,7 @@ from pytest_homeassistant_custom_component.common import (
     mock_restore_cache,
 )
 
-from custom_components.glowrium import cbor, models
+from custom_components.glowrium import PLATFORMS, cbor, models
 from custom_components.glowrium.const import (
     DOMAIN,
     KEY_BRIGHTNESS,
@@ -645,3 +646,16 @@ async def test_a_preset_remembered_by_its_old_name_is_still_recognised(
 
     state = hass.states.get("select.glowrium_g7_1234_lighting_mode")
     assert state.state == "enhanced_two_phase"
+
+
+@pytest.mark.parametrize("platform", PLATFORMS, ids=str)
+def test_every_platform_says_how_many_calls_it_takes_at_once(platform: str) -> None:
+    """Each platform states its limit on parallel calls instead of inheriting one.
+
+    None is needed: the coordinator puts every command through one lock, and
+    nothing here is polled. Saying so is what keeps Home Assistant's default
+    for the platform from deciding it.
+    """
+    module = importlib.import_module(f"custom_components.glowrium.{platform}")
+
+    assert module.PARALLEL_UPDATES == 0

@@ -13,6 +13,10 @@ from .const import KEY_BRIGHTNESS, KEY_POWER
 from .coordinator import GlowriumCoordinator
 from .entity import GlowriumEntity
 
+# Every command goes through the coordinator's one lock, so there is nothing
+# left for Home Assistant to queue here, and no entity is polled.
+PARALLEL_UPDATES = 0
+
 
 async def async_setup_entry(
     hass: HomeAssistant,
