@@ -837,3 +837,45 @@ async def test_an_entity_built_after_the_lamp_was_read_describes_it_in_full(
         "4",
         "CST-0001",
     )
+
+
+async def test_what_the_lamp_left_out_this_time_is_left_as_it_was(
+    hass: HomeAssistant,
+) -> None:
+    """A device-info string without a field says nothing about that field.
+
+    The registry is told what was read. A firmware the lamp did not mention
+    this time is not thereby unknown, and the one on record stays.
+    """
+    entry = _entry()
+    entry.add_to_hass(hass)
+    dr.async_get(hass).async_get_or_create(
+        config_entry_id=entry.entry_id,
+        connections={(dr.CONNECTION_BLUETOOTH, ADDRESS)},
+        sw_version="4",
+        serial_number="CST-0001",
+    )
+    await _setup_without_bluetooth(hass, entry)
+
+    await entry.runtime_data._async_read_device_info(
+        _naming_itself(b"pkey:Glowrium-C051;;")
+    )
+
+    assert _described(_device(hass)) == (
+        "Glowrium G7",
+        "Glowrium-C051",
+        "4",
+        "CST-0001",
+    )
+
+
+async def test_a_remembered_mode_the_lamp_does_not_have_is_not_shown(
+    hass: HomeAssistant,
+) -> None:
+    """A value kept from an earlier run is shown only if it is still an option."""
+    mock_restore_cache(
+        hass, (State("select.glowrium_g7_1234_lighting_mode", "moonlight"),)
+    )
+    await _setup_without_bluetooth(hass)
+
+    assert hass.states.get("select.glowrium_g7_1234_lighting_mode").state == "unknown"

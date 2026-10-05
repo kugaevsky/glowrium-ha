@@ -241,6 +241,25 @@ def test_a_map_cut_short_inside_a_value_drops_that_pair_whole() -> None:
     assert value == {0x06: True}
 
 
+def test_a_value_cut_off_by_the_end_of_the_buffer_is_a_pair_that_did_not_arrive() -> (
+    None
+):
+    """Running out in the middle of a value is still running out.
+
+    A frame can end inside a byte string as easily as between two pairs. The
+    pairs before it arrived whole, and are kept.
+    """
+    # {6: True, 0x11: <eleven bytes promised, two delivered>
+    value, short = cbor.decode_frame(bytes.fromhex("a206f5114b0102"))
+    assert short is True
+    assert value == {0x06: True}
+
+    # The same inside a length that was itself cut off.
+    value, short = cbor.decode_frame(bytes.fromhex("a206f51159"))
+    assert short is True
+    assert value == {0x06: True}
+
+
 def test_nothing_but_a_valueerror_leaves_the_frame_decoder() -> None:
     """Whatever arrives, the decoder either decodes it or raises ValueError.
 
