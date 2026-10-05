@@ -20,9 +20,11 @@ class GlowriumConfigFlow(ConfigFlow, domain=DOMAIN):
 
     VERSION = 1
 
+    # Set by async_step_bluetooth, which is the only way into the confirm step.
+    _discovery_info: BluetoothServiceInfoBleak
+
     def __init__(self) -> None:
         """Initialize the flow."""
-        self._discovery_info: BluetoothServiceInfoBleak | None = None
         self._discovered_devices: dict[str, str] = {}
 
     async def async_step_bluetooth(
@@ -38,7 +40,6 @@ class GlowriumConfigFlow(ConfigFlow, domain=DOMAIN):
         self, user_input: dict[str, Any] | None = None
     ) -> ConfigFlowResult:
         """Confirm a device discovered by Bluetooth."""
-        assert self._discovery_info is not None
         title = self._discovery_info.name or self._discovery_info.address
         if user_input is not None:
             return self.async_create_entry(

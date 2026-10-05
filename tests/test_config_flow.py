@@ -5,10 +5,11 @@ from unittest.mock import patch
 from bleak.backends.device import BLEDevice
 from bleak.backends.scanner import AdvertisementData
 from homeassistant.components.bluetooth import BluetoothServiceInfoBleak
-from homeassistant.config_entries import SOURCE_USER
+from homeassistant.config_entries import SOURCE_BLUETOOTH, SOURCE_USER
 from homeassistant.const import CONF_ADDRESS
 from homeassistant.core import HomeAssistant
 from homeassistant.data_entry_flow import FlowResultType
+from pytest_homeassistant_custom_component.common import MockConfigEntry
 
 from custom_components.glowrium.const import DOMAIN
 
@@ -16,11 +17,13 @@ GLOWRIUM_ADDRESS = "AA:BB:CC:DD:EE:FF"
 GLOWRIUM_NAME = "Glowrium-G7_1234"
 
 
-def _service_info() -> BluetoothServiceInfoBleak:
+def _service_info(
+    address: str = GLOWRIUM_ADDRESS, name: str | None = GLOWRIUM_NAME
+) -> BluetoothServiceInfoBleak:
     """Fabricate a discovered-device record without a real Bluetooth stack."""
-    device = BLEDevice(GLOWRIUM_ADDRESS, GLOWRIUM_NAME, details=None)
+    device = BLEDevice(address, name, details=None)
     advertisement = AdvertisementData(
-        local_name=GLOWRIUM_NAME,
+        local_name=name,
         manufacturer_data={},
         service_data={},
         service_uuids=[],
@@ -74,3 +77,151 @@ async def test_user_flow_creates_entry(hass: HomeAssistant) -> None:
     assert result["data"] == {CONF_ADDRESS: GLOWRIUM_ADDRESS}
     assert result["result"].unique_id == GLOWRIUM_ADDRESS
     assert len(mock_setup_entry.mock_calls) == 1
+
+
+def _configured(hass: HomeAssistant) -> MockConfigEntry:
+    """Put an entry for the lamp in place, as if it had been set up before."""
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        title=GLOWRIUM_NAME,
+        unique_id=GLOWRIUM_ADDRESS,
+        data={CONF_ADDRESS: GLOWRIUM_ADDRESS},
+    )
+    entry.add_to_hass(hass)
+    return entry
+
+
+async def test_a_discovered_lamp_is_confirmed_and_set_up(hass: HomeAssistant) -> None:
+    """Discovery is the way most lamps arrive, and it was not tested at all.
+
+    Home Assistant hands over the advertisement, the user is shown the lamp by
+    name and asked to confirm, and the entry is keyed by the lamp's address.
+    """
+    with patch(
+        "custom_components.glowrium.async_setup_entry", return_value=True
+    ) as mock_setup_entry:
+        result = await hass.config_entries.flow.async_init(
+            DOMAIN, context={"source": SOURCE_BLUETOOTH}, data=_service_info()
+        )
+        assert result["type"] is FlowResultType.FORM
+        assert result["step_id"] == "bluetooth_confirm"
+        assert result["description_placeholders"] == {"name": GLOWRIUM_NAME}
+        # The name is what tells two discovered lamps apart in the list.
+        progress = hass.config_entries.flow.async_progress_by_handler(DOMAIN)
+        assert progress[0]["context"]["title_placeholders"] == {"name": GLOWRIUM_NAME}
+
+        result = await hass.config_entries.flow.async_configure(
+            result["flow_id"], user_input={}
+        )
+        await hass.async_block_till_done()
+
+    assert result["type"] is FlowResultType.CREATE_ENTRY
+    assert result["title"] == GLOWRIUM_NAME
+    assert result["data"] == {CONF_ADDRESS: GLOWRIUM_ADDRESS}
+    assert result["result"].unique_id == GLOWRIUM_ADDRESS
+    assert len(mock_setup_entry.mock_calls) == 1
+
+
+async def test_a_lamp_that_advertises_no_name_is_shown_by_its_address(
+    hass: HomeAssistant,
+) -> None:
+    """The entry needs a title even when the advertisement carries none."""
+    with patch("custom_components.glowrium.async_setup_entry", return_value=True):
+        result = await hass.config_entries.flow.async_init(
+            DOMAIN,
+            context={"source": SOURCE_BLUETOOTH},
+            data=_service_info(name=None),
+        )
+        assert result["description_placeholders"] == {"name": GLOWRIUM_ADDRESS}
+        result = await hass.config_entries.flow.async_configure(
+            result["flow_id"], user_input={}
+        )
+        await hass.async_block_till_done()
+
+    assert result["type"] is FlowResultType.CREATE_ENTRY
+    assert result["title"] == GLOWRIUM_ADDRESS
+
+
+async def test_a_lamp_already_set_up_is_not_discovered_again(
+    hass: HomeAssistant,
+) -> None:
+    """The lamp advertises all the time; one entry per address is the limit."""
+    _configured(hass)
+
+    result = await hass.config_entries.flow.async_init(
+        DOMAIN, context={"source": SOURCE_BLUETOOTH}, data=_service_info()
+    )
+
+    assert result["type"] is FlowResultType.ABORT
+    assert result["reason"] == "already_configured"
+
+
+async def test_the_list_offers_only_lamps_that_are_not_set_up(
+    hass: HomeAssistant,
+) -> None:
+    """Picking by hand lists Glowrium lamps, and only the ones still free.
+
+    Whatever else is advertising nearby is not offered, nor is a device with
+    no name, nor the lamp that already has an entry.
+    """
+    _configured(hass)
+    other = "11:22:33:44:55:66"
+    with patch(
+        "custom_components.glowrium.config_flow.async_discovered_service_info",
+        return_value=[
+            _service_info(),  # already set up
+            _service_info(other, "Glowrium-G8_5678"),
+            _service_info("22:22:22:22:22:22", "Some other lamp"),
+            _service_info("33:33:33:33:33:33", None),
+        ],
+    ):
+        result = await hass.config_entries.flow.async_init(
+            DOMAIN, context={"source": SOURCE_USER}
+        )
+
+    assert result["type"] is FlowResultType.FORM
+    offered = result["data_schema"].schema[CONF_ADDRESS].container
+    assert offered == {other: f"Glowrium-G8_5678 ({other})"}
+
+
+async def test_nothing_is_offered_when_the_only_lamp_is_set_up(
+    hass: HomeAssistant,
+) -> None:
+    """With every lamp in range already configured there is nothing to pick."""
+    _configured(hass)
+    with patch(
+        "custom_components.glowrium.config_flow.async_discovered_service_info",
+        return_value=[_service_info()],
+    ):
+        result = await hass.config_entries.flow.async_init(
+            DOMAIN, context={"source": SOURCE_USER}
+        )
+
+    assert result["type"] is FlowResultType.ABORT
+    assert result["reason"] == "no_devices_found"
+
+
+async def test_a_lamp_set_up_while_the_list_was_open_is_not_added_twice(
+    hass: HomeAssistant,
+) -> None:
+    """The check for a duplicate is made when the choice is submitted.
+
+    The list is built when the form opens. Discovery can set the same lamp up
+    in the meantime, and the entry is keyed by address either way.
+    """
+    with patch(
+        "custom_components.glowrium.config_flow.async_discovered_service_info",
+        return_value=[_service_info()],
+    ):
+        result = await hass.config_entries.flow.async_init(
+            DOMAIN, context={"source": SOURCE_USER}
+        )
+    assert result["type"] is FlowResultType.FORM
+
+    _configured(hass)
+    result = await hass.config_entries.flow.async_configure(
+        result["flow_id"], user_input={CONF_ADDRESS: GLOWRIUM_ADDRESS}
+    )
+
+    assert result["type"] is FlowResultType.ABORT
+    assert result["reason"] == "already_configured"
