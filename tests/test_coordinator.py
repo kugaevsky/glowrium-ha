@@ -872,6 +872,9 @@ async def test_trailing_bytes_are_reported_as_themselves(
         assert len(warnings) == 1
         assert "4 trailing bytes" in warnings[0].getMessage()
         assert frame.hex() in warnings[0].getMessage()
+        # It asks for the frame to be posted, and a frame can hold the home's
+        # coordinates: the request has to say so where it is made.
+        assert "coordinates" in warnings[0].getMessage()
         assert "Undecodable frame" not in caplog.text
 
         # A second such frame must not warn again - notifications are constant.

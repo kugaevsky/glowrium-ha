@@ -142,23 +142,22 @@ _PROBE_INTERVAL = 300.0
 # model that splits its map across notifications, and with the dial before it
 # has to fit inside _CONNECT_TIMEOUT.
 _REPORT_TIMEOUT = 3.0
-# The batched state request is muted after this many consecutive failures. One
-# failure means nothing on a weak link - a dropped connection surfaces as the
-# same BleakError as an outright refusal - and giving up after one leaves every
-# property outside the connect-time read unread.
 # How far the device clock may drift before it is worth a write. The lamp only
 # ever had its clock set during first-time bring-up, so one set up months ago
 # runs its schedule and its circadian curve off that date - a reporter's was six
-# months out, with nothing to show it because the clock is not an entity. Being
-# able to READ the clock is what makes correcting it cheap: rather than writing
-# on every connect, which on a lamp that reconnects itself every half hour is a
-# write an hour for nothing, it is written only when it is actually wrong. A
-# minute is far below anything the schedule resolves and far above normal drift
-# between connects.
+# months out, with nothing to show it because the clock is not an entity. The
+# lamp reports its clock with the rest of its state, which is what makes
+# correcting it cheap: rather than on every connect, it is written only when it
+# is actually wrong. A minute is far below anything the schedule resolves and
+# far above normal drift between connects.
 _CLOCK_TOLERANCE = 60.0
 # 0x05 is year_BE(2), month, day, hour, minute, second.
 _CLOCK_LENGTH = 7
 
+# The batched state request is muted after this many consecutive refusals. One
+# failure means nothing on a weak link - a dropped connection surfaces as the
+# same BleakError as an outright refusal - and giving up after one leaves a
+# lamp that has to be read without every property a read does not carry.
 _STATE_REQUEST_ATTEMPTS = 3
 # ...and muted only for this long, not for the session. A model that genuinely
 # refuses the request must not have its link torn down on every connect, but a
@@ -183,7 +182,7 @@ _LINK_ERRORS = (BleakError, TimeoutError, EOFError, OSError)
 # G7 it still read True at the moment a write failed with "not connected", with
 # the disconnect callback arriving two seconds later. So the test is inverted:
 # recognise a refusal, treat everything else as the link. Muting a working lamp
-# silently costs it every property the connect-time read does not carry; asking
+# silently costs it every property a read of the state does not carry; asking
 # an exotic device once too often costs a reconnect.
 _REFUSAL_MARKERS = ("authorization", "authentication", "not permitted")
 
@@ -459,13 +458,12 @@ class GlowriumCoordinator:
 
     @property
     def available(self) -> bool:
-        """Entity availability, based on the device being present (advertising).
+        """Entity availability: the device is advertising, or there is a link.
 
-        The GATT link is dropped and re-established periodically by the device;
-        tying availability to it makes every entity flap to ``unavailable`` for
-        a few seconds on each reconnect. The device advertises continuously, so
-        we treat "present, or currently connected" as available and let the
-        connection churn happen silently underneath.
+        A GATT link to this lamp does not last, and tying availability to it
+        makes every entity flap to ``unavailable`` on each reconnect. The
+        device advertises continuously, so "present, or currently connected"
+        is treated as available and the link is rebuilt silently underneath.
         """
         return self._is_connected or self._present
 
@@ -730,8 +728,8 @@ class GlowriumCoordinator:
         #
         # The link itself must be closed exactly once: bleak does not hang up
         # on garbage collection, and this lamp has one connection slot, so an
-        # abandoned link keeps its successor out until the device's own churn
-        # drops it. Trying twice just spends the ceiling twice against a link
+        # abandoned link keeps its successor out until it drops by itself.
+        # Trying twice just spends the ceiling twice against a link
         # that is already gone.
         #
         # The ceiling is on how long unload waits, not on the hang-up, which is
@@ -768,10 +766,11 @@ class GlowriumCoordinator:
         connected, it is closed in ``disconnect()`` and nowhere else - not when
         the reference is dropped, and not when the link itself goes down.
         A client that is merely forgotten keeps that connection for the life
-        of the process, and the system bus allows one user 256 of them. On a
-        lamp at the edge of range, where a link is made and lost on every poll
-        tick, that took about two and a half hours; after it nothing running as
-        that user could reach the bus at all, Bluetooth included.
+        of the process, and the system bus allows one user 256 of them. With
+        a link made and lost on every poll tick - which is what reading the
+        state on every connect did on BlueZ - that took about two and a half
+        hours; after it nothing running as that user could reach the bus at
+        all, Bluetooth included.
 
         So this is called for every client the coordinator is finished with,
         including one whose link is already gone - then it costs nothing, as
@@ -1074,16 +1073,17 @@ class GlowriumCoordinator:
         """Establish the GATT link, and unless told otherwise prime the state.
 
         The caller must hold ``_lock``; ``_async_ensure_connected`` and the
-        write path both funnel through here so a command can never race the
-        connect/reconnect the device performs underneath.
+        write path both funnel through here so a command can never race a
+        background connect.
 
         A command passes ``prime=False``. It needs the link and its own write,
-        nothing else - and priming is expensive: a device-info read, a state
-        read, the batched request, and up to 3 s waiting for the activation
-        flag, all before the write is even attempted and all inside the command
-        budget. On a lamp where the connect alone is marginal, that is what
-        turns a working command into a reported failure. The poll picks the
-        priming up afterwards (see ``_async_poll_reconnect``).
+        nothing else - and priming is expensive: the state request and the
+        wait for its answer, up to 3 s waiting for the activation flag and,
+        the first time, the device-info read, all before the write is even
+        attempted and all inside the command budget. On a lamp where the
+        connect alone is marginal, that is what turns a working command into a
+        reported failure. The poll picks the priming up afterwards (see
+        ``_async_poll_reconnect``).
         """
         if self._is_connected:
             return
@@ -1327,7 +1327,7 @@ class GlowriumCoordinator:
             _LOGGER.warning(
                 "%s (model %s, firmware %s) refused the batched state request "
                 "%d times in a row, most recently: %s. %s "
-                "Commands still work; properties the connect-time read does not "
+                "Commands still work; properties a read of the state does not "
                 "carry stay unknown. Please report this model",
                 self.address,
                 self.model_id or "unknown",
@@ -1378,7 +1378,9 @@ class GlowriumCoordinator:
             "%s (model %s, firmware %s) sent a frame with %d trailing bytes "
             "and it was dropped: %s. The frame declared less than it carried, "
             "so accepting the remainder could mean acting on a corrupt state. "
-            "Please report this frame - it is exactly the hex dump needed",
+            "Please report this frame - it is exactly the hex dump needed. A "
+            "frame can carry the coordinates stored in the lamp (ids 0a and "
+            "0b, each followed by fb and eight bytes): blank those first",
             self.address,
             self.model_id or "unknown",
             self.sw_version or "unknown",
@@ -1394,8 +1396,8 @@ class GlowriumCoordinator:
         state mirror: the mirror accumulates across a session, so once a key has
         been seen it looks covered for ever.
 
-        Shared by the notify callback and the connect-time read so both handle
-        a split map, the remembered ramp and listener notification identically.
+        Shared by the notify callback and the read of the state, so that both
+        handle a split map, the remembered ramp and the listeners identically.
         """
         self._note_answer()  # whatever it says, the lamp said it
         try:
@@ -1482,9 +1484,9 @@ class GlowriumCoordinator:
     async def _async_write(self, payload: dict[int, Any]) -> None:
         """Serialize a command under the connection lock, with one reconnect.
 
-        The write runs inside ``_lock`` so it cannot race the ~30-60 min GATT
-        churn the device performs; if it still fails (the link dropped
-        mid-command) the connection is rebuilt once and the write retried.
+        The write runs inside ``_lock`` so it cannot race a background
+        reconnect; if it still fails (the link dropped mid-command) the
+        connection is rebuilt once and the write retried.
 
         The whole attempt - including the wait for ``_lock``, which a
         background reconnect may be holding - is capped by
