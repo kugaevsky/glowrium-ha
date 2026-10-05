@@ -242,11 +242,14 @@ the table is under *Changed*.
   report still counts as an answer, so its state is not read instead — but
   the frame is now named in the log, once as a warning, with the bytes it
   takes to write that reading.
-- **A frame printed in the log no longer says where the lamp is.** The
+- **A frame printed in the log has the lamp's coordinates blanked.** The
   warnings that carry a frame ask for it to be posted, and a frame can hold
   the coordinates the lamp stores and the sunrise and sunset times it works
   out from them. Both are now replaced by `xx` wherever the integration
   prints a frame, instead of being left to whoever posts it to blank by hand.
+  They are found by their bytes, since a frame that gets printed is one that
+  could not be decoded - so give such a line one look before posting it all
+  the same.
 - **The lamp's state is asked for, not read, and its clock with it.** The
   request now carries the clock (`0x05`) as well as what the vendor app asks
   for; the lamp answers all of it in one notification. Entities fill in from
