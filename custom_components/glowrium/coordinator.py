@@ -126,6 +126,8 @@ _STACK_FAULT_AFTER = 3
 _STACK_FAULT_BACKOFF_MAX = 300.0
 # Where the repair raised for that fault sends the reader for what to do.
 _TROUBLESHOOTING_URL = "https://github.com/kugaevsky/glowrium-ha#troubleshooting"
+# How much of the lamp's name the repair shows (see _as_text).
+_NAME_SHOWN = 48
 # How long BlueZ gets to report a link dropped once it has called it "not
 # connected". Normally two to three seconds (see _REFUSAL_MARKERS). When the
 # report never comes, the client is held with is_connected True and nothing
@@ -289,6 +291,19 @@ def _encode_device_time(now: datetime | None = None) -> bytes:
             now.second,
         ]
     )
+
+
+def _as_text(name: str) -> str:
+    """Return ``name`` with nothing in it that Markdown or HTML would act on.
+
+    For a name that goes into text Home Assistant renders: the lamp's name
+    comes off the air, and whatever advertises one beginning with "Glowrium"
+    can be set up. Letters and digits of any script, spaces, dashes and
+    underscores are kept - enough to recognise the lamp by. Not a dot: that is
+    all it takes to make an address clickable.
+    """
+    kept = "".join(char if char.isalnum() or char in " -_" else " " for char in name)
+    return " ".join(kept.split())[:_NAME_SHOWN] or "the lamp"
 
 
 def _parse_device_info(raw: bytes) -> dict[str, str]:
@@ -883,7 +898,8 @@ class GlowriumCoordinator:
             learn_more_url=_TROUBLESHOOTING_URL,
             translation_key="bluetooth_stack_stuck",
             translation_placeholders={
-                "name": self.name,
+                # As text: the description is rendered as Markdown.
+                "name": _as_text(self.name),
                 "count": str(self._stuck_hang_ups),
             },
         )

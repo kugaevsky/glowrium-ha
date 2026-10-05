@@ -847,6 +847,51 @@ async def test_a_wedged_stack_is_put_in_front_of_the_user(
     assert issue.learn_more_url.endswith("#troubleshooting")
 
 
+@pytest.mark.parametrize(
+    ("name", "shown"),
+    [
+        (
+            "Glowrium-![x](http://evil.example/p.png)<img src=x>",
+            "Glowrium- x http evil example p png img src x",
+        ),
+        ("Glowrium [here](javascript:alert(1)) `rm` *now*", None),
+        ("Glowrium www.evil.example", "Glowrium www evil example"),
+        ("![]()<>`*#|~", "the lamp"),
+        ("Душевая Glowrium G7", "Душевая Glowrium G7"),
+        ("Glowrium-G7_6DCB8A", "Glowrium-G7_6DCB8A"),
+    ],
+)
+async def test_the_repair_shows_the_lamps_name_as_text_and_nothing_more(
+    hass: HomeAssistant,
+    monkeypatch: pytest.MonkeyPatch,
+    name: str,
+    shown: str | None,
+) -> None:
+    """The lamp's name comes off the air, and a repair is rendered as Markdown.
+
+    Whatever advertises a name beginning with "Glowrium" can be set up, and
+    its name becomes the entry's title. Put into the repair as it is, a name
+    could carry a link or an image - which the dashboard would fetch - into
+    a message the user has every reason to trust. So only letters, digits,
+    spaces, dashes and underscores go in: enough to recognise the lamp by, in
+    any script, and nothing Markdown or HTML acts on - not even a dot, which
+    is all it takes to make an address clickable.
+    """
+    coordinator, _host, clock, _dialled = _on_a_clock(hass, monkeypatch)
+    coordinator.name = name
+
+    await _ticks(coordinator, hass, clock, 3)
+
+    issue = _stack_issue(hass)
+    assert issue is not None
+    in_repair = issue.translation_placeholders["name"]
+    assert not set(in_repair) & set("[]()!<>`*#|~\\:/=\"'.")
+    assert in_repair.strip() == in_repair
+    assert in_repair
+    if shown is not None:
+        assert in_repair == shown
+
+
 async def test_the_repair_goes_when_the_lamp_answers_again(
     hass: HomeAssistant, monkeypatch: pytest.MonkeyPatch
 ) -> None:
