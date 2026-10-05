@@ -18,14 +18,14 @@ body:
     id: integration_version
     attributes:
       label: Glowrium integration version
-      placeholder: "0.1.0"
+      placeholder: "0.3.0"
     validations:
       required: true
   - type: input
     id: model
     attributes:
       label: Device model
-      description: The Glowrium model, e.g. G7. If unknown, paste the device-info string from the device page.
+      description: The Glowrium model, e.g. G7, and the model id from the device page, e.g. Glowrium-C051.
       placeholder: "G7"
     validations:
       required: true
@@ -46,12 +46,24 @@ body:
     validations:
       required: true
   - type: textarea
+    id: diagnostics
+    attributes:
+      label: Diagnostics
+      description: >
+        Settings → Devices & services → Glowrium → ⋮ → Download diagnostics,
+        and attach the file here. It carries the model id, the firmware, what
+        the lamp reported and where the link stands. It is made to be posted:
+        the coordinates the lamp stores, its serial number and its address are
+        not in it.
+  - type: textarea
     id: logs
     attributes:
       label: Relevant log output
       description: >
-        Settings → System → Logs (or `docker logs`). Enable debug logging for
-        `custom_components.glowrium` first if you can.
+        Settings → Devices & services → Glowrium → ⋮ → Enable debug logging,
+        reproduce the problem, then disable it again and take the lines around
+        the problem from the log it offers. That covers the integration and
+        the Bluetooth libraries under it.
       render: shell
   - type: textarea
     id: frames
@@ -64,7 +76,9 @@ body:
         of any frame it could not use — paste those lines. A frame the decoder
         mishandles is the one thing that cannot be guessed at from a
         description, and one real frame has already turned into a fix and a
-        regression test.
+        regression test. Look before you paste: a frame can carry the
+        coordinates the lamp stores. They are the ids `0a` and `0b`, each
+        followed by `fb` and eight more bytes - blank those eight.
       render: shell
   - type: checkboxes
     id: checks

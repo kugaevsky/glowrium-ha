@@ -17,6 +17,17 @@ stack itself is the thing that failed — and three fixes that were waiting for
 a release: the lamp's clock, its daylight-saving offset, and settings changed
 from the vendor app.
 
+A review of the whole integration before the release added the rest. The
+device page gets the lamp's model, firmware and serial number back, a
+malformed frame can no longer raise, and there are two new things to reach
+for when something is wrong: a diagnostics download, and a repair for a
+Bluetooth stack that has stopped answering.
+
+**One change needs something from you.** The options of the *Lighting mode*
+select are keys now (`sun_sync`) where they were names (`Sun SYNC`). An
+automation, script or template that names a lighting mode has to be updated;
+the table is under *Changed*.
+
 ### Fixed
 
 - **The integration no longer ends its own link on every connect.** From 0.2.0
@@ -152,9 +163,64 @@ from the vendor app.
   is now asked each time a link is primed; where it has to be read instead,
   what is still to be asked for is judged by what that read carried, never by
   the mirror.
+- **The device page shows the lamp's model, firmware and serial number
+  again.** Since 0.2.0 the entities have described the device before anything
+  had been read from it, and nothing told Home Assistant what the device-info
+  string said when it arrived. The page showed the model as "Glowrium" and no
+  model id, firmware or serial number — the fields a bug report is asked to
+  quote — and every start took back what an earlier one had put there. What
+  is read is now handed to the device registry when it arrives, and a start
+  no longer overwrites what it has not read yet.
+- **A model's own presets take effect.** The per-model profile is chosen by
+  the model id, and the lighting-mode select fixed its list when it was built —
+  before any lamp had said which model it was. Every lamp got the reference
+  presets, and a profile added for another model would have changed nothing.
+  The model id is now kept with the config entry once it has been read, so the
+  next start knows it before the first entity exists, and the select looks its
+  presets up when asked.
+- **The light has its icon back.** It was taken from the model's profile at
+  the same too-early moment, so it was never set. It is kept with the other
+  icons now.
+- **A malformed frame can no longer end in an exception.** The decoder parses
+  what comes off the radio, and two kinds of frame left it as something its
+  caller does not catch: a map keyed by a list or by another map — three bytes
+  are enough — and maps nested a few hundred deep. In the notification
+  callback that was a traceback per frame; on the path that reads the state it
+  took the background connect with it. A map key is now read as what it is in
+  this protocol, an unsigned property id, and nesting is bounded. A frame with
+  one good pair followed by garbage is no longer taken for a split map and
+  merged, either. A healthy lamp sends none of this: it was found by fuzzing
+  the decoder, not in the field.
+- **A ramp that was refused, or that never reached the lamp, is not applied
+  later.** Setting the ramp on a lamp that has not reported its lighting mode
+  is refused, but the ramp was remembered first. The next switch to Circadian
+  changed the mode and then failed on re-applying that ramp, so the user was
+  told the switch had not worked while watching it take effect. A ramp is now
+  remembered once the lamp has it.
 
 ### Changed
 
+- **Breaking: a lighting mode is a key, and its name a translation.** The
+  options of the *Lighting mode* select were the presets' English names, so
+  the name was also the value: it could not be translated, and it could not
+  be corrected without breaking whatever had it written down. An option is
+  now a key and the name its translation, in all six languages.
+
+  | Was | Is |
+  | --- | --- |
+  | `Sun SYNC` | `sun_sync` |
+  | `Before Sunrise` | `before_sunrise` |
+  | `Sunrise Sync` | `sunrise_sync` |
+  | `Sunset Sync` | `sunset_sync` |
+  | `After Sunset` | `after_sunset` |
+  | `Two-Phase` | `two_phase` |
+  | `Balance` | `balance` |
+  | `Enhanced Two-Phase` | `enhanced_two_phase` |
+
+  The device page looks the same. What has to be updated is anything that
+  names a mode: `select.select_option` with `option: Sun SYNC`, a trigger or
+  condition on the select's state, a template that compares it. The value the
+  select remembered across a restart is converted by itself.
 - **The lamp's state is asked for, not read, and its clock with it.** The
   request now carries the clock (`0x05`) as well as what the vendor app asks
   for; the lamp answers all of it in one notification. Entities fill in from
@@ -165,6 +231,29 @@ from the vendor app.
   while the client it had just given up on was still connected. It now waits for
   that link to be closed first, so a command that needs its second attempt takes
   longer than it did; one that works first time is unaffected.
+- **"Enable debug logging" takes the Bluetooth libraries with it.** The button
+  on the integration's page now also raises the level of bleak and
+  bleak-retry-connector, which is where a link problem is actually read from.
+  They are noisy while it is on.
+
+### Added
+
+- **A diagnostics download.** *Settings → Devices & services → Glowrium → ⋮ →
+  Download diagnostics* gives one file with the model and firmware, what the
+  lamp last reported, and where the link stands — what a bug report is
+  otherwise asked for piece by piece. It is built to be attached to a public
+  issue: it repeats nothing after the lamp. Each property is read the way the
+  integration reads it and written out from that reading; the lamp's clock is
+  given as how far it is from the host's, not as a time; the coordinates the
+  lamp keeps are marked as redacted; and whatever the integration has no name
+  for is only counted. The serial number and the address are not in it.
+- **A repair for a Bluetooth stack that will not let go.** When BlueZ stops
+  answering disconnects (see *Fixed*), Home Assistant now shows it under
+  *Settings → System → Repairs* as well as in the log, with what clears it.
+  It goes away by itself when the lamp answers again.
+- **The log says when the lamp goes out of reach, and when it is back.** Once
+  each way, at info level. Reach is what the entities' availability follows:
+  an advertisement or a link.
 
 ## [0.2.1] - 2026-08-25
 

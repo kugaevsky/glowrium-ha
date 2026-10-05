@@ -45,10 +45,11 @@ Home Assistant entities are stateless views over that coordinator.
 | `cbor.py` | Minimal CBOR encoder/decoder (only the subset the device uses) — the *wire* format |
 | `protocol.py` | Semantic codec — byte layouts (`0x11` slot, `0x2f` ramp) ↔ values; the coordinator's typed accessors delegate here |
 | `const.py` | GATT UUIDs, CBOR property keys, byte-layout offsets, mode constants |
-| `models.py` | Per-model registry (name, icon, lighting-mode presets) keyed by `pkey` |
+| `models.py` | Per-model registry (name, lighting-mode presets) keyed by `pkey` |
+| `diagnostics.py` | The diagnostics download: what the coordinator knows, rebuilt from what it read, with nothing in it the lamp chose |
 | `entity.py` | `GlowriumEntity` base — `DeviceInfo`, availability, update fan-out |
 | `light.py` `select.py` `number.py` `switch.py` `button.py` `time.py` `sensor.py` `binary_sensor.py` | Platform entities |
-| `strings.json`, `translations/`, `icons.json` | UI text and entity icons |
+| `strings.json`, `translations/`, `icons.json` | UI text (entity and preset names, errors, the repair), and entity icons |
 | `manifest.json` | Domain, Bluetooth matcher (`local_name: Glowrium-*`), requirements |
 
 ---
@@ -211,13 +212,34 @@ A single readable, semicolon-delimited string:
 brand:INLEDCO;pkey:Glowrium-C051;devid:CST-XXXXXXXX;mac:XX:XX:XX:XX:XX:XX;version:4;
 ```
 
-Parsed by `_parse_device_info` into a `key:value` dict and surfaced as
-`DeviceInfo`:
+Parsed by `_parse_device_info` into a `key:value` dict:
 
 - `pkey` → **model id** (e.g. `Glowrium-C051`) — also the key used to resolve the
   per-model profile (see [Per-model registry](#per-model-registry)).
 - `version` → **firmware version**.
 - `devid` → **serial number**.
+
+**It arrives after the entities exist, and has to be carried to them.** Setup
+does not wait for the first connect, the string is the last thing read on that
+first link, and Home Assistant takes an entity's description of its device
+once, when the entity is added. So three things hold it together:
+
+- An entity describes only what is known when it is built. A field left out of
+  a `DeviceInfo` is left alone in the device registry; a field given as `None`
+  *is* the value, and wipes what an earlier session learned. (That is what
+  0.2.0 and 0.2.1 did on every start.)
+- When the string has been read, the coordinator writes model, model id,
+  firmware and serial number into the device registry itself
+  (`_async_publish_device_info`), passing `UNDEFINED` for anything the lamp
+  did not say.
+- The model id is kept with the config entry (`CONF_MODEL_ID` in
+  `entry.data`), and handed to the next coordinator when it is built. That is
+  what makes the per-model profile take effect: which presets a lamp has is
+  decided by its model, and the entity that offers them is built before this
+  session has read anything.
+
+It is still read once in every session. Firmware changes between starts, and
+what was remembered is not a reading.
 
 Two sibling characteristics exist but are unused: `facebd03` rejects reads
 (write-only command/OTA channel) and `facebd81` returns a single constant byte.
@@ -236,6 +258,23 @@ A command is just a CBOR map. For example, "turn on at 80 %" is
 `{0x06: true, 0x08: 80}`, which encodes to a 5-byte payload written to
 `facebd01`.
 
+**The decoder returns a value or raises `ValueError`, whatever the bytes.**
+It parses what comes off a radio, and its caller - the notification callback,
+running inside the Bluetooth stack's own message handler - catches exactly
+that. Three rules keep the promise:
+
+- A map key is a property id: an unsigned integer and nothing else. CBOR
+  allows any item there, and an array or another map cannot be a dictionary
+  key at all - `a1 80 00` used to leave the decoder as a `TypeError`.
+- Nesting stops at four levels (`_MAX_DEPTH`). The lamp sends a flat map;
+  five hundred maps inside one another fit in a single attribute value and
+  used to end in a `RecursionError`.
+- Anything this subset has no reading for - a tag, an indefinite length, a
+  half-precision float - is a malformed frame.
+
+`tests/test_cbor.py` holds it to this over a seeded corpus of noise, mutated
+real frames and deep nesting.
+
 ### Frames that end part-way through a map
 
 A device frame may declare more pairs in its map header than the frame actually
@@ -250,6 +289,13 @@ So device frames and our own payloads are decoded differently:
   `short=True`, instead of throwing them all away.
 - `decode(data)` stays strict — a short map in a payload we encoded ourselves is
   a bug, not a wire condition.
+
+What is tolerated is the buffer ending, and only that. A pair that is there
+and malformed is a malformed frame - it used to be taken for the end as well,
+so one good pair followed by garbage decoded to that pair and was merged. And
+only the outermost map may end early: a map nested inside a value is all or
+nothing, so the pair it sits in is dropped whole rather than kept with half a
+value.
 
 Trailing bytes are an error on both paths, raised as `cbor.TrailingBytesError`
 (a `ValueError` subclass carrying the byte count). Accepting the remainder would
@@ -355,14 +401,21 @@ resent. The command is a four-key map written **in this key order**
 The ramp is preserved from a remembered value (or state, or the `0x0e10` = 60 min
 default). Because enabling Circadian resets the device's ramp to a default, the
 coordinator re-applies the user's chosen ramp after a mode switch so it persists.
+A ramp is remembered once the lamp has it - seeded from what the lamp reports,
+or kept after a write that went through. Not before: a ramp that was refused,
+or whose write failed, would otherwise be re-applied by the next switch to
+Circadian, which then fails on something the user was told had not happened.
 
 The **mode** is not defaulted the same way. Setting a mode rewrites the ramp on
 the device regardless, so falling back for the ramp changes nothing the user did
 not already ask for; substituting a mode index would silently *change* a setting
-the caller never touched. So on a lamp that has not reported `0x2b`, switching to
-Circadian and setting the ramp both refuse with a message saying why, rather than
-quietly writing index 1. On a model that never reports `0x2b` at all this is the
-permanent behaviour — deliberate, not a regression.
+the caller never touched. So on a lamp that has not reported `0x2b`, setting the
+ramp refuses with a message saying why, rather than quietly writing index 1, and
+so does the re-applying of a remembered ramp after a switch to Circadian. On a
+model that never reports `0x2b` at all this is the permanent behaviour —
+deliberate, not a regression. *Choosing* a lighting mode is not refused: the
+index is the one the user picked, from the model's profile or, for a model
+without one, from the reference presets.
 
 ---
 
@@ -448,6 +501,11 @@ available = self._is_connected or self._present
   set `False` by `bluetooth.async_track_unavailable` (device powered off / out of
   range).
 - Reconnects happen **silently underneath** an entity that stays `available`.
+- When `available` changes, the log says so at INFO, once each way: `is out of
+  reach`, `is back in reach` (`_async_log_reach`). It is judged by the same
+  expression as the entities, so a lamp that goes quiet while it is connected
+  is not reported as gone. The check sits where the listeners are told, which
+  is the one place every change of either input comes through.
 
 ### Reconnect
 
@@ -598,6 +656,15 @@ at. Seen on the host: three unanswered hang-ups, one warning, dials at
 30 s, 90 s, 150 s; the adapter power-cycled; the lamp back by itself four
 and a half minutes later.
 
+The fault is also raised as a **repair** (`issue_registry`), which is where
+Home Assistant puts what a user can act on: nothing the integration does ends
+it, and a warning reaches only whoever reads the log. It goes up with the
+warning and comes down with the first answer from the lamp, or when the
+coordinator stops watching. It is not persistent - the next start finds out
+for itself. The lamp's name goes into it through `_as_text`: a repair is
+rendered as Markdown, and the name is whatever the lamp advertised when it
+was set up.
+
 **`is_connected` is a claim; an answer is evidence.** In that same incident
 the last exchange before the fault was a request that failed with `Not
 connected` — and then BlueZ never reported the link dropped. The client
@@ -694,25 +761,36 @@ the operating mode matches **or is still unknown** — so they don't collapse to
 
 ## Per-model registry
 
-The CBOR protocol is shared across the Glowrium family; only a few things differ
-per model: the marketing name, the light-entity icon, and the set of circadian
-**lighting-mode presets** (label → command index). Those live in `models.py`,
-keyed by the device-info `pkey`.
+The CBOR protocol is shared across the Glowrium family; only two things differ
+per model: the marketing name and the set of circadian **lighting-mode
+presets** (key → command index). Those live in `models.py`, keyed by the
+device-info `pkey`.
 
 ```python
 @dataclass(frozen=True)
 class GlowriumModel:
     pkey: str  # device-info identifier, e.g. "Glowrium-C051"
     name: str  # marketing name shown on the device page
-    lighting_modes: dict[str, int]  # preset label -> command index (0x2b)
-    icon: str | None = None  # light-entity icon
+    lighting_modes: dict[str, int]  # preset key -> command index (0x2b)
 ```
+
+A preset is a **key** (`sunrise_sync`). The key is what the select stores and
+what an automation names; the name a person reads is its translation, under
+`entity.select.lighting_mode.state` in `strings.json` and every file in
+`translations/`. Until 0.3.0 the English name was the option itself.
 
 `resolve_model(pkey)` returns the matching profile, or a **generic fallback**
 (name `Glowrium`, the reference presets) for an unknown/not-yet-read `pkey` — so
 an unsupported device is still controllable rather than masquerading as a
 specific, tested model. `coordinator.model` resolves this from the `pkey` read
-off `facebd80`.
+off `facebd80` in this session or, before that has happened, from the one an
+earlier session read (see [Device-info string](#device-info-string-facebd80)).
+The lighting-mode select asks for it each time it is rendered rather than
+keeping the list it was built with.
+
+The light's icon is not part of the profile. It is named by a key in
+`icons.json` like every other icon here, which an icon chosen per model could
+not be.
 
 Only the **G7** (`Glowrium-C051`) is verified on hardware today.
 
@@ -728,17 +806,66 @@ Only the **G7** (`Glowrium-C051`) is verified on hardware today.
 3. **Get the `pkey`.** Read the device-info string from `facebd80` (or check the
    device page in HA once it connects) — e.g. `Glowrium-Cxxx`.
 4. **Add one entry to `models.py`.** Create a `GlowriumModel` with the `pkey`,
-   marketing `name`, the `lighting_modes` map from step 2, and an optional `icon`;
-   register it in the `MODELS` dict.
-5. **Update docs/tests.** Flip the model's row in the README supported-devices
+   marketing `name` and the `lighting_modes` map from step 2, keyed by preset
+   key; register it in the `MODELS` dict.
+5. **Name any preset the family did not have yet.** Each new key needs a name
+   in `strings.json` and in each of the six translations; the vendor app's own
+   name is the right one. `tests/test_models.py` fails for a key without a
+   name in any of them.
+6. **Update docs/tests.** Flip the model's row in the README supported-devices
    table, and — if the indices are load-bearing — add coverage in
    `tests/test_coordinator.py`.
 
-That's the whole change: **one `GlowriumModel` record**. Everything else
-(transport, entities, activation, availability) is model-agnostic.
+That's the whole change: **one `GlowriumModel` record**, and names for what is
+new in it. Everything else (transport, entities, activation, availability) is
+model-agnostic.
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) and the README's *"Tested an unverified
 model?"* section for the full contributor workflow.
+
+---
+
+## Diagnostics
+
+`diagnostics.py` produces the file behind *Download diagnostics*: the model and
+firmware, what the lamp last reported, and where the link stands. It exists to
+be attached to a public issue, and nearly everything that could go into it is
+chosen by the lamp - which properties it reports and what it puts under them,
+which fields its device-info string has, what they are called and where one
+ends. So it is not the state mirror minus a list of things to hide.
+
+**The file repeats nothing after the lamp.** The coordinator describes itself
+as it is (`GlowriumCoordinator.diagnostics`), and the diagnostics module
+rebuilds what leaves the host from what it can read:
+
+- Each property the integration knows is read the way the integration reads
+  it, and written out from that reading: a schedule as its times and its
+  brightness, a ramp as seconds, a flag as a flag. The bytes of a schedule
+  that nobody has decoded are therefore not in the file.
+- The clock is given as how far it is from the host's, in seconds. That is
+  what a report needs; the time itself would say which time zone the host is
+  in.
+- A known property whose value does not read as what its name means - seven
+  bytes that are not a date, a schedule whose hours are not hours - is said
+  to be there and `not as expected`. A length is not a check.
+- The coordinates are marked as redacted, so that it can be seen the lamp has
+  them.
+- Whatever has no name here is **counted**, and neither its value, its size
+  nor its id is shown. The sunrise and sunset times the lamp computes
+  (`0x34`) would give the place away as well as the coordinates do.
+- The model id and the firmware are shown only when each is, from end to end,
+  what it claims to be: the family's name, a dash, a letter and three digits;
+  one to three small numbers with dots between them. Where a field of the
+  device-info string ends is what the parser made of it, and a lamp that
+  separates its fields differently would hand over its serial number inside
+  its model id. The fields are counted, not listed - a field's name is the
+  lamp's choice too.
+- Of the config entry, five fields chosen one by one. Its address is in its
+  data, its unique id, its title and its discovery record.
+
+The same reasoning is why CONTRIBUTING.md tells anyone posting raw frames to
+blank the coordinates first: a frame is the lamp's own bytes, and the debug
+log prints the ones it could not use in full.
 
 ---
 
@@ -761,19 +888,32 @@ Unit tests live in `tests/` and **never touch real Bluetooth**:
   from a stack that will not hang up, and the checks on a held link, are
   tested here too.
 - `test_init.py` — setup and unload of the config entry, the entities each
-  platform produces, what is restored after a restart, and the hang-up when
-  Home Assistant stops.
-- `test_config_flow.py` — discovery and entry creation.
+  platform produces and the command each control ends in, what is restored
+  after a restart, what the lamp says about itself reaching the device
+  registry, and the hang-up when Home Assistant stops.
+- `test_config_flow.py` — discovery, the pick-from-a-list flow, and the two
+  places a duplicate is turned away.
+- `test_diagnostics.py` — the diagnostics download, mostly from the side of
+  what must not come out of it whatever the lamp reports.
+- `test_models.py` — the per-model profiles: preset keys are keys, and each
+  has a name in `strings.json` and every translation.
+- `test_translations.py` — every translation carries exactly the keys and
+  placeholders of `strings.json`. hassfest checks the same in CI, on a push.
 
 Run the checks:
 
 ```bash
 .venv/bin/ruff check . && .venv/bin/ruff format --check .
+.venv/bin/mypy
 .venv/bin/pytest
 ```
 
-`pytest` runs in `asyncio_mode = "auto"`; ruff line length is 88 (config in
-`pyproject.toml`). Verification against live hardware is separate and not part
+`pytest` runs in `asyncio_mode = "auto"`; ruff line length is 88 and mypy runs
+in strict mode over the integration (both configured in `pyproject.toml`). CI
+runs the same and holds coverage of the integration to 95 %; it also runs once
+a week with nothing pushed, because the Home Assistant under test is whatever
+is current and `_close_bus` reaches into bleak's private attributes.
+Verification against live hardware is separate and not part
 of the automated suite: `tools/bench.py` runs the production coordinator
 against a lamp from the machine it is started on — see
 [CONTRIBUTING.md](CONTRIBUTING.md#testing-on-hardware). Mind the stack it runs

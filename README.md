@@ -37,6 +37,12 @@ only in **Circadian**; the *Schedule* controls only in **Schedule**. The
 integration drives the device's own native Circadian/Schedule engine rather than
 reimplementing it in Home Assistant.
 
+**Lighting modes in automations.** The select shows the vendor's names; what
+it stores, and what `select.select_option` takes, is a key: `sun_sync`,
+`before_sunrise`, `sunrise_sync`, `sunset_sync`, `after_sunset`, `two_phase`,
+`balance`, `enhanced_two_phase`. Before 0.3.0 the names themselves were the
+options — the [changelog](CHANGELOG.md) has the table if you are upgrading.
+
 ## Supported devices
 
 The Glowrium grow-light family (INLEDCO's `com.inledco.glowrium` app) shares the
@@ -64,15 +70,19 @@ unconfirmed (see below). New models are added in
 [@pentafive](https://github.com/pentafive), who also found and fixed the reason
 every state entity read `unknown` on them ([#5](https://github.com/kugaevsky/glowrium-ha/pull/5)).
 On/off, brightness and state reporting work. What is **not** confirmed is the
-circadian **presets**: `models.py` has no G8 entry, so the lighting-mode names
-fall back to the G7's indices and may not match what the lamp actually does.
-Rather than write a wrong preset silently, the integration refuses to change the
-lighting mode or the ramp on a lamp that has not reported its current mode — so
-on a G8 those two controls report an error instead of guessing. Confirming the
-preset indices needs one btsnoop capture from the vendor app; see
+circadian **presets**: `models.py` has no G8 entry, so the lighting-mode select
+offers the G7's presets and sends the G7's indices, which may not be what the
+same names mean on a G8. Choosing one writes that index; the integration has
+nothing better to go on. What it will not do is change a setting it would
+have to guess at. Setting the **ramp** rewrites the lighting mode along with
+it, so on a lamp that has not reported its mode — and a G8, which refuses to
+be asked for its state, may never report it — the ramp control reports an
+error instead of quietly resetting the mode, and so does a switch to
+Circadian that would have to re-apply a ramp. Confirming the preset indices
+needs one btsnoop capture from the vendor app; see
 [CONTRIBUTING](CONTRIBUTING.md).
 
-One thing changed underneath the G8 in 0.2.2. A lamp is now asked for its
+One thing changed underneath the G8 in 0.3.0. A lamp is now asked for its
 state instead of being read, because on a Linux host a read turned out to end
 the link (see the [changelog](CHANGELOG.md)). A G8 refuses to be asked, so it
 is still read, as before — which should leave a G8 working as it did, and on
@@ -97,9 +107,11 @@ a clear write-up is enough, and I'll help with the rest.
 
 **What to include in your report**
 
-1. **Model & firmware.** The model (e.g. *G3*) and the details from its device
-   page in Home Assistant: manufacturer, model id (`pkey`, e.g. `Glowrium-C051`),
-   firmware, and serial number.
+1. **Model & firmware.** The model (e.g. *G3*) and, from its device page in
+   Home Assistant, the model id (`pkey`, e.g. `Glowrium-C051`) and the
+   firmware. Easier still: attach the diagnostics download from that page
+   (⋮ → *Download diagnostics*), which carries both along with what the lamp
+   reported, and leaves out the coordinates, the serial number and the address.
 2. **How you used it.** Roughly how long (a few days of normal use is great) and
    how — dashboard, automations, scenes, etc.
 3. **What works.** Go entity by entity and say what behaves correctly:
@@ -182,7 +194,9 @@ messages worth acting on, and two symptoms that come without one.
   minutes, with `the lamp answers again` in the log. Restarting Home
   Assistant alone does not clear it. BlueZ before 5.84 can get into this
   state — `Failed to disconnect device: Disconnected (0x0e)` in the journal
-  of the bluetooth service is how it shows there.
+  of the bluetooth service is how it shows there. The same thing is raised
+  under **Settings → System → Repairs**, and goes from there by itself when
+  the lamp answers again.
 - **`refused the batched state request`** — the lamp will not report its state
   when asked. That is a property of the model (a G8 does it), not a fault:
   commands still work and the state is read instead, but the indicator,
@@ -190,7 +204,9 @@ messages worth acting on, and two symptoms that come without one.
   [report the model](CONTRIBUTING.md#sending-protocol-data-for-a-device).
 - **`sent a frame with … trailing bytes and it was dropped`** — a frame the
   decoder would not trust. The message carries it as hex, which is exactly
-  what an issue needs.
+  what an issue needs — after one look: a frame can hold the coordinates the
+  lamp stores. They are the ids `0a` and `0b`, each followed by `fb` and eight
+  more bytes; blank those eight before posting.
 - **A command fails with "out of range or the Bluetooth adapter busy"** — the
   write did not get through. Check that the vendor app is not connected (the
   lamp takes one connection at a time) and that an adapter or a proxy is
@@ -198,16 +214,32 @@ messages worth acting on, and two symptoms that come without one.
 - **Every entity is `unavailable`** — the lamp is not being heard at all: no
   power, out of range, or the adapter is down. Availability follows the
   lamp's advertisements, not the connection, so a lamp that is merely
-  reconnecting does not show this.
+  reconnecting does not show this. The log says since when: `is out of
+  reach`, and `is back in reach` when it returns.
 
 With debug logging on, a Linux host shows one link after every start or
 reload that lasts two seconds — `device info read`, then `disconnected` — and
 is rebuilt on the next 30-second tick. That one is expected: the model and
 firmware can only be had by a read, and through BlueZ a read costs the link.
 
-For anything else, enable debug logging for `custom_components.glowrium`
-(Settings → Devices & services → ⋮ → Enable debug logging) and open an issue
-with the lines around the problem.
+For anything else, open an issue with two things from the integration's page
+(Settings → Devices & services → Glowrium → ⋮). **Download diagnostics** gives
+one file with the model, the firmware, what the lamp reported and where the
+link stands; it is made to be attached, and does not contain the coordinates,
+the serial number or the address. **Enable debug logging** raises the level
+for the integration and for the Bluetooth libraries under it; reproduce the
+problem, switch it off again, and attach the lines around the problem from
+the log it offers to download.
+
+## Removing the integration
+
+Delete it like any other: **Settings → Devices & services → Glowrium → ⋮ →
+Delete**. If it was installed through HACS, remove it there as well and
+restart Home Assistant.
+
+Nothing is left behind on the lamp. It keeps its settings, its schedule, its
+clock and its activation, and goes on running its own program; the vendor app
+can connect to it again as soon as Home Assistant has let go of the link.
 
 ## How it works
 
@@ -229,6 +261,7 @@ see **[ARCHITECTURE.md](ARCHITECTURE.md)**.
 python3.14 -m venv .venv
 .venv/bin/pip install -r requirements-test.txt
 .venv/bin/ruff check . && .venv/bin/ruff format --check .
+.venv/bin/mypy
 .venv/bin/pytest
 ```
 
