@@ -349,14 +349,14 @@ async def test_model_resolution(hass: HomeAssistant) -> None:
     coordinator, _ = _connected_coordinator(hass)
     # Not read yet -> generic profile (reference presets, no false model name).
     assert coordinator.model.name == "Glowrium"
-    assert "Sun SYNC" in coordinator.model.lighting_modes
+    assert "sun_sync" in coordinator.model.lighting_modes
     # Known pkey -> full G7 profile.
     coordinator.device_info = {"pkey": "Glowrium-C051"}
     assert coordinator.model.name == "Glowrium G7"
     # Unknown pkey -> generic, not masquerading as a G7.
     coordinator.device_info = {"pkey": "Glowrium-XXXX"}
     assert coordinator.model.name == "Glowrium"
-    assert "Sun SYNC" in coordinator.model.lighting_modes
+    assert "sun_sync" in coordinator.model.lighting_modes
 
 
 async def test_write_retries_once_after_a_dropped_link(hass: HomeAssistant) -> None:

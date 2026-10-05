@@ -19,7 +19,10 @@ class GlowriumModel:
 
     pkey: str  # device-info identifier, e.g. "Glowrium-C051"
     name: str  # marketing model name shown on the device page
-    lighting_modes: dict[str, int]  # circadian preset label -> command index
+    # Circadian preset key -> command index. The key is what Home Assistant
+    # stores and automations name; what a person reads is its translation, so
+    # every key needs a name in strings.json and in each translation.
+    lighting_modes: dict[str, int]
 
 
 # Glowrium G7 - 48W puck grow light (app model "Glowrium-C051"). Fully verified
@@ -28,14 +31,14 @@ G7: Final = GlowriumModel(
     pkey="Glowrium-C051",
     name="Glowrium G7",
     lighting_modes={
-        "Sun SYNC": 1,
-        "Before Sunrise": 2,
-        "Sunrise Sync": 5,
-        "Sunset Sync": 9,
-        "After Sunset": 16,
-        "Two-Phase": 18,
-        "Balance": 19,
-        "Enhanced Two-Phase": 32,
+        "sun_sync": 1,
+        "before_sunrise": 2,
+        "sunrise_sync": 5,
+        "sunset_sync": 9,
+        "after_sunset": 16,
+        "two_phase": 18,
+        "balance": 19,
+        "enhanced_two_phase": 32,
     },
 )
 

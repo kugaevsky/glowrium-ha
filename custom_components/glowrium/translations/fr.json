@@ -50,7 +50,17 @@
         }
       },
       "lighting_mode": {
-        "name": "Mode d'éclairage"
+        "name": "Mode d'éclairage",
+        "state": {
+          "sun_sync": "Sun SYNC",
+          "before_sunrise": "Before Sunrise",
+          "sunrise_sync": "Sunrise Sync",
+          "sunset_sync": "Sunset Sync",
+          "after_sunset": "After Sunset",
+          "two_phase": "Two-Phase",
+          "balance": "Balance",
+          "enhanced_two_phase": "Enhanced Two-Phase"
+        }
       }
     },
     "sensor": {

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import Final
+
 from homeassistant.components.select import SelectEntity
 from homeassistant.const import EntityCategory
 from homeassistant.core import HomeAssistant
@@ -56,8 +58,26 @@ class GlowriumOperatingModeSelect(GlowriumSettingEntity, SelectEntity):
         await self._coordinator.async_set_operating_mode(option)
 
 
+# What the lighting modes were called while the option was the preset's
+# English name, before 0.3.0 made it a key. Only for reading back a value
+# remembered from then; nothing is offered or accepted under these.
+_NAMES_BEFORE_KEYS: Final = {
+    "Sun SYNC": "sun_sync",
+    "Before Sunrise": "before_sunrise",
+    "Sunrise Sync": "sunrise_sync",
+    "Sunset Sync": "sunset_sync",
+    "After Sunset": "after_sunset",
+    "Two-Phase": "two_phase",
+    "Balance": "balance",
+    "Enhanced Two-Phase": "enhanced_two_phase",
+}
+
+
 class GlowriumLightingModeSelect(GlowriumSettingEntity, SelectEntity):
-    """Circadian lighting mode (Sun SYNC, Sunrise Sync, ...)."""
+    """Circadian lighting mode (Sun SYNC, Sunrise Sync, ...).
+
+    An option is a preset's key; its name is a translation of that key.
+    """
 
     _attr_translation_key = "lighting_mode"
     _attr_entity_category = EntityCategory.CONFIG
@@ -66,6 +86,12 @@ class GlowriumLightingModeSelect(GlowriumSettingEntity, SelectEntity):
         """Initialize the lighting-mode selector."""
         super().__init__(coordinator)
         self._attr_unique_id = f"{coordinator.address}_lighting_mode"
+
+    async def async_added_to_hass(self) -> None:
+        """Recover the last known mode, whichever way it was written down."""
+        await super().async_added_to_hass()
+        if self._restored is not None:
+            self._restored = _NAMES_BEFORE_KEYS.get(self._restored, self._restored)
 
     @property
     def _modes(self) -> dict[str, int]:
@@ -92,7 +118,7 @@ class GlowriumLightingModeSelect(GlowriumSettingEntity, SelectEntity):
         """Return the selected lighting mode, if known."""
         index = self._coordinator.state.get(KEY_LIGHTING_MODE)
         modes = self._modes
-        mode = next((label for label, value in modes.items() if value == index), None)
+        mode = next((key for key, value in modes.items() if value == index), None)
         if mode is None and self._restored in modes:
             return self._restored
         return mode

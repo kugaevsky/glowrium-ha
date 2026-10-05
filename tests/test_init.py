@@ -302,7 +302,7 @@ async def test_settings_survive_a_restart_but_the_light_does_not(
         (
             State("switch.glowrium_g7_1234_indicator_light", "on"),
             State("number.glowrium_g7_1234_ramp_time", "45"),
-            State("select.glowrium_g7_1234_lighting_mode", "Sunrise Sync"),
+            State("select.glowrium_g7_1234_lighting_mode", "sunrise_sync"),
             State("light.glowrium_g7_1234", "on"),
         ),
     )
@@ -311,7 +311,7 @@ async def test_settings_survive_a_restart_but_the_light_does_not(
     assert hass.states.get("switch.glowrium_g7_1234_indicator_light").state == "on"
     assert hass.states.get("number.glowrium_g7_1234_ramp_time").state == "45.0"
     assert (
-        hass.states.get("select.glowrium_g7_1234_lighting_mode").state == "Sunrise Sync"
+        hass.states.get("select.glowrium_g7_1234_lighting_mode").state == "sunrise_sync"
     )
     assert hass.states.get("light.glowrium_g7_1234").state == "unknown"
 
@@ -556,13 +556,13 @@ async def test_the_presets_offered_are_the_ones_of_the_lamp_that_answered(
     other = GlowriumModel(
         pkey="Glowrium-TEST",
         name="Glowrium Test",
-        lighting_modes={"Dawn": 3, "Dusk": 4},
+        lighting_modes={"dawn": 3, "dusk": 4},
     )
     monkeypatch.setitem(models.MODELS, other.pkey, other)
     entry = await _setup_without_bluetooth(hass)
     coordinator = entry.runtime_data
     select = "select.glowrium_g7_1234_lighting_mode"
-    assert "Sun SYNC" in hass.states.get(select).attributes["options"]
+    assert "sun_sync" in hass.states.get(select).attributes["options"]
 
     await coordinator._async_read_device_info(
         _naming_itself(b"pkey:Glowrium-TEST;version:1;;")
@@ -570,12 +570,12 @@ async def test_the_presets_offered_are_the_ones_of_the_lamp_that_answered(
     coordinator._async_notify_listeners()  # as the connect does after the read
     await hass.async_block_till_done()
 
-    assert hass.states.get(select).attributes["options"] == ["Dawn", "Dusk"]
+    assert hass.states.get(select).attributes["options"] == ["dawn", "dusk"]
     coordinator.async_set_lighting_mode = AsyncMock()
     await hass.services.async_call(
         "select",
         "select_option",
-        {"entity_id": select, "option": "Dusk"},
+        {"entity_id": select, "option": "dusk"},
         blocking=True,
     )
     coordinator.async_set_lighting_mode.assert_awaited_once_with(4)
@@ -601,3 +601,47 @@ async def test_the_light_takes_its_icon_from_the_icon_file(hass: HomeAssistant) 
     state = hass.states.get(light)
     assert "icon" not in state.attributes
     assert state.name == "Glowrium-G7_1234"  # still named after the device
+
+
+async def test_a_lighting_mode_is_a_key_and_its_name_is_a_translation(
+    hass: HomeAssistant,
+) -> None:
+    """What an automation stores is a key; what a person reads is its name.
+
+    The options used to be the presets' English names, so the name was also
+    the value: it could not be translated, and it could not be corrected
+    without breaking every automation that had it written down.
+    """
+    await _setup_without_bluetooth(hass)
+
+    options = hass.states.get("select.glowrium_g7_1234_lighting_mode").attributes[
+        "options"
+    ]
+
+    assert options == [
+        "sun_sync",
+        "before_sunrise",
+        "sunrise_sync",
+        "sunset_sync",
+        "after_sunset",
+        "two_phase",
+        "balance",
+        "enhanced_two_phase",
+    ]
+
+
+async def test_a_preset_remembered_by_its_old_name_is_still_recognised(
+    hass: HomeAssistant,
+) -> None:
+    """The value kept from before the change is the preset's old name.
+
+    It is the only record of the mode on a lamp that never reports it, so it
+    is read as the preset it names rather than dropped as an unknown option.
+    """
+    mock_restore_cache(
+        hass, (State("select.glowrium_g7_1234_lighting_mode", "Enhanced Two-Phase"),)
+    )
+    await _setup_without_bluetooth(hass)
+
+    state = hass.states.get("select.glowrium_g7_1234_lighting_mode")
+    assert state.state == "enhanced_two_phase"
