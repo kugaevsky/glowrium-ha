@@ -194,6 +194,13 @@ clock — has been. On BlueZ that link is then spent, and the poll makes
 another thirty seconds later, on which nothing is read at all. A command's
 own connect reads nothing, not even this.
 
+Seen on the host with this in place (2026-10-05, a G7 at RSSI −74…−76): the
+first link primed, read the device info, and was reported dropped 2.01 s
+later; the second was still up two and a half hours on, asked every five
+minutes and answering each time. Three connects in those hours, against
+about three hundred and forty at the old rate, and a state change made by
+the lamp's own circadian program arrived as a notification on the held link.
+
 ### Device-info string (`facebd80`)
 
 A single readable, semicolon-delimited string:

@@ -38,7 +38,12 @@ from the vendor app.
   re-measured without one. The device-info string, which only a read gives,
   is read once per session and last, so the one link it costs has done its
   work by then. Why BlueZ does this is not established; a read through macOS
-  does no such thing.
+  does no such thing. On the host, with the fix in place: the first link was
+  read for the device info and was gone 2.0 s later, as measured; the next was
+  still up two and a half hours later, asked every five minutes and answering
+  each time — three connects in those hours where there had been a hundred an
+  hour — and a command was answered in about a tenth of a second, three of
+  three, with no connection of its own to make first.
 - **Home Assistant no longer runs the system bus out of connections.** bleak
   opens a D-Bus connection of its own for every Bluetooth client and closes it at
   the end of a disconnect that BlueZ answers — not when the last reference to
