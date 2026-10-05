@@ -50,17 +50,26 @@ What is worth sending, roughly in order of usefulness:
    their bytes. One such frame from a G8 turned into a fix and a regression
    test — the decoder had been throwing away eleven valid properties because
    the frame promised twelve pairs and carried eleven.
-2. **A read of `facebd02`**, as hex or decoded. This is the lamp's whole
+2. **The debug log of the first few minutes after a restart**, from any model
+   other than a G7. Since 0.2.2 a lamp is asked for its state before anything
+   is read, and that has only been run on a G7: the log shows whether your
+   lamp answered, refused or stayed silent, and how long each link then
+   lasted. Say what the host is — Home Assistant OS, a Linux box with its own
+   adapter, an ESPHome proxy — because the Bluetooth stack turned out to
+   matter as much as the lamp.
+3. **A read of `facebd02`**, as hex or decoded. This is the lamp's whole
    property map. It is how we learned that the read stops short of the
    indicator, lighting mode, ramp and DST keys, which changed how state is
-   primed.
-3. **The device-info string from `facebd80`** — `brand`, `pkey`, `devid`,
+   primed. Take it last: through BlueZ a read of this lamp ends the link about
+   two seconds later, so anything else you wanted from that connection has to
+   come first.
+4. **The device-info string from `facebd80`** — `brand`, `pkey`, `devid`,
    `version`, and anything else your lamp puts there. Redact `devid` and `mac`
    if you like; the `pkey` is what selects the model profile.
-4. **The GATT table** as your stack reports it (`bluetoothctl`, nRF Connect,
+5. **The GATT table** as your stack reports it (`bluetoothctl`, nRF Connect,
    BlueZ). Two characteristics were missing from `const.py` until a G8 owner
    listed them.
-5. **A btsnoop capture of the vendor app** switching circadian presets. This is
+6. **A btsnoop capture of the vendor app** switching circadian presets. This is
    the one thing that cannot be substituted: it pins the preset indices, and
    without it a model's entry in `models.py` would be a guess. See below.
 
@@ -71,9 +80,16 @@ guarantee, and the docs mark it accordingly.
 ## Testing on hardware
 
 A macOS/Linux machine with a Bluetooth adapter can drive the coordinator against a real lamp
-(keep the vendor app disconnected — the lamp allows a single BLE connection). Docker on macOS
-has **no** access to the host's Bluetooth; use an ESPHome Bluetooth Proxy or a native BT host
-for live testing.
+(keep the vendor app disconnected — the lamp allows a single BLE connection):
+`tools/bench.py` connects, primes and reports, and never writes a setting of its own accord.
+Docker on macOS has **no** access to the host's Bluetooth; use an ESPHome Bluetooth Proxy or
+a native BT host for live testing.
+
+The two stacks do not behave alike. Through BlueZ a GATT read of this lamp ends the link two
+seconds later; through macOS it does not — which is how 0.2.0 and 0.2.1 came to end their own
+link on every connect without it ever showing on a laptop. A change to how the link is made,
+kept or let go of needs a Linux host before it is believed, and its pull request should say
+which stack it was run on.
 
 ## Pull requests
 

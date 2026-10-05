@@ -1,10 +1,9 @@
 """Run the real coordinator against a real lamp, from this machine.
 
-A close-range counterpart to the Home Assistant instance on the server, which
-sits at the edge of the lamp's range and is therefore only good for testing how
-things degrade. Bring the laptop near the lamp and this exercises the same code
-on a link that actually works - which is the only way to answer questions like
-"does the connect-time read carry every key" without guessing.
+A close-range counterpart to the Home Assistant instance on the server. Bring
+the laptop near the lamp and this exercises the same code over a strong link
+and a different Bluetooth stack - which is how questions like "does a read of
+the characteristic carry every key" get answered without guessing.
 
     .venv/bin/python tools/bench.py            # connect, prime, report
     .venv/bin/python tools/bench.py --watch 5  # ...then follow notifications
@@ -18,6 +17,11 @@ bench's, and --clock is the mode that puts it on trial deliberately.
 
 Docker on macOS cannot reach the host's Bluetooth controller, so this runs
 directly on the machine. The address here is a CoreBluetooth UUID, not a MAC.
+
+What a Mac cannot show: through BlueZ a GATT read of this lamp ends the link
+two seconds later, and through macOS it does not (ARCHITECTURE.md, "Priming
+state on connect"). The bench reads facebd02 itself, to report what a read
+carries, so on a Linux host expect the link to go right after the report.
 """
 
 from __future__ import annotations
@@ -113,7 +117,7 @@ def _report(coordinator: GlowriumCoordinator, from_read: set[int] | None) -> Non
         print(f"  0x{key:02x} {_KEY_NAMES.get(key, '?'):<14} {shown}")
     if from_read is not None:
         gap = [k for k in STATE_KEYS if k not in from_read]
-        print(f"\nthe connect-time read alone carried {len(from_read)} keys")
+        print(f"\na read of facebd02 alone carried {len(from_read)} keys")
         if gap:
             names = ", ".join(f"0x{k:02x} {_KEY_NAMES.get(k, '?')}" for k in gap)
             print(f"  it did NOT carry: {names}")

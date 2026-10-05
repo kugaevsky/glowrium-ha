@@ -39,11 +39,12 @@ from the vendor app.
   is read once per session and last, so the one link it costs has done its
   work by then. Why BlueZ does this is not established; a read through macOS
   does no such thing. On the host, with the fix in place: the first link was
-  read for the device info and was gone 2.0 s later, as measured; the next was
-  still up two and a half hours later, asked every five minutes and answering
-  each time — three connects in those hours where there had been a hundred an
-  hour — and a command was answered in about a tenth of a second, three of
-  three, with no connection of its own to make first.
+  read for the device info and was gone 2.0 s later, as measured; the next
+  stayed up for 2 h 44 min, asked every five minutes and answering each time,
+  went down by itself and was replaced 43 s later — three links in three
+  hours where there had been a hundred an hour — and a command was answered
+  in about a tenth of a second, three of three, with no connection of its own
+  to make first.
 - **Home Assistant no longer runs the system bus out of connections.** bleak
   opens a D-Bus connection of its own for every Bluetooth client and closes it at
   the end of a disconnect that BlueZ answers — not when the last reference to
@@ -128,28 +129,29 @@ from the vendor app.
   command could fail with a raw error — no retry, and no "cannot connect".
 - **Turning the DST switch no longer overwrites the offset the lamp reported.**
   The `0x35` slot carries a flag and the offset to apply, written together, and
-  only the flag was ever ours to change — sending a fixed hour turned a half-hour
-  daylight-saving region into a full one the moment the switch was touched
-  ([#4](https://github.com/kugaevsky/glowrium-ha/issues/4)). A lamp that has not
-  reported yet still gets the near-universal hour, so the switch stays usable
-  before its state arrives.
+  only the flag was ever ours to change — sending a fixed hour turned a
+  half-hour daylight-saving region into a full one the moment the switch was
+  touched ([#4](https://github.com/kugaevsky/glowrium-ha/issues/4)). A lamp
+  that has not reported yet still gets the near-universal hour, so the switch
+  stays usable before its state arrives.
 - **The device clock is kept right instead of being set once and forgotten.** It
   was only ever written during first-time bring-up, so a lamp set up months ago
   ran its schedule and its circadian curve off whatever date it had then — one
   owner's was six months out, with nothing to show it because the clock is not an
   entity ([#4](https://github.com/kugaevsky/glowrium-ha/issues/4)). It is now
   checked whenever state is primed and corrected only when it has actually
-  drifted, which on a lamp that reconnects itself every half hour is the
-  difference between a write when needed and a write an hour for nothing.
-  Verified on a G7: it was 39 minutes slow five weeks after this integration
-  set its clock, and priming put it right with a single write.
+  drifted, so a clock that is right costs no write, however often a link is
+  made. Verified on a G7: it was 39 minutes slow five weeks after this
+  integration set its clock, and priming put it right with a single write.
 - **A setting changed from the vendor app while Home Assistant was disconnected
   is picked up again.** The connect-time read never carries the indicator,
   lighting mode, ramp or DST, so once the batched request had supplied them, the
   check for "do we already have everything" was satisfied by the accumulated
   mirror for the rest of the session and the request was never sent again.
-  Reconnecting therefore could not notice that anything had changed. Coverage is
-  now judged by what the current read carried.
+  Reconnecting therefore could not notice that anything had changed. The lamp
+  is now asked each time a link is primed; where it has to be read instead,
+  what is still to be asked for is judged by what that read carried, never by
+  the mirror.
 
 ### Changed
 

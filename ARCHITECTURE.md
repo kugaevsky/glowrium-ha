@@ -196,10 +196,12 @@ own connect reads nothing, not even this.
 
 Seen on the host with this in place (2026-10-05, a G7 at RSSI −74…−76): the
 first link primed, read the device info, and was reported dropped 2.01 s
-later; the second was still up two and a half hours on, asked every five
-minutes and answering each time. Three connects in those hours, against
-about three hundred and forty at the old rate, and a state change made by
-the lamp's own circadian program arrived as a notification on the held link.
+later; the second, made on the next poll tick with nothing read, stayed up
+for 2 h 44 min, asked every five minutes and answering each time, and then
+went down by itself; the third was up and primed 43 s after that, again
+with nothing read. Three links in three hours, where the old rate was about
+a hundred an hour, and a state change made by the lamp's own circadian
+program arrived as a notification on the held link.
 
 ### Device-info string (`facebd80`)
 
@@ -265,7 +267,7 @@ live device.
 
 | Key | Const | Property | Type | Meaning |
 | --- | --- | --- | --- | --- |
-| `0x05` | `KEY_TIME` | Device clock | `bytes(7)` | `year_BE(2), month, day, hour, minute, second`. Set during bring-up / time sync. |
+| `0x05` | `KEY_TIME` | Device clock | `bytes(7)` | `year_BE(2), month, day, hour, minute, second`. Reported with the rest of the state; written during bring-up and whenever it has drifted (see [Keeping the clock right](#keeping-the-clock-right)). |
 | `0x06` | `KEY_POWER` | Power | `bool` | Light on/off. |
 | `0x08` | `KEY_BRIGHTNESS` | Brightness | `int 0..100` | Percentage. The `light` entity scales to HA's 0–255. |
 | `0x09` | `KEY_CIRCADIAN` | Circadian mode | `bool` | Sunrise/sunset-synced auto mode. **Mutually exclusive** with `0x0d`. |
@@ -367,19 +369,23 @@ permanent behaviour — deliberate, not a regression.
 ### Keeping the clock right
 
 `0x05` used to be written only during bring-up, so a lamp provisioned months
-ago kept that date — and both Schedule and Circadian run off it. Because the
-clock can be **read**, correcting it is cheap: the priming path compares what
+ago kept that date — and both Schedule and Circadian run off it. The lamp
+**reports** its clock: `0x05` is one of the ids in `STATE_KEYS`, so it comes
+back in the answer to the state request, and in the read on a lamp that has
+to be read. That makes correcting it cheap: the priming path compares what
 the lamp reports against local time and writes only when it is more than
-`_CLOCK_TOLERANCE` (60 s) out. Writing on every connect would cost a write an
-hour on a lamp that reconnects itself that often, for a clock that is usually
-already right.
+`_CLOCK_TOLERANCE` (60 s) out. A clock that is right costs no write at all,
+however often a link is made, and a lamp that has not reported one is left
+alone — a blind write would be guessing at what it believes.
 
 Measured while settling how the DST flag interacts with this: toggling `0x35`
 does **not** move `0x05`. The lamp stores the clock verbatim and the flag is
 applied — if at all — somewhere we cannot read, so writing local wall-clock
 time is not corrupted by it. What the flag does to the lamp's own schedule
-computation is still unknown; `0x34` is not in the read and asking for ids the
-vendor app does not ask for drops the link.
+computation is still unknown: the curve it computes (`0x34`) is not in the
+read, and whether it can be asked for by id is open (see *What the answer
+covers* under [Priming state on connect](#priming-state-on-connect) before
+trying).
 
 ---
 
@@ -421,9 +427,15 @@ Notes:
 connection.** This is a deliberate design choice, and reviewers should not
 "simplify" it back to the connection state.
 
-The lamp **drops and re-establishes its GATT link on its own every ~30–60 min**.
+A GATT link to this lamp **does not last**, and nothing the integration does
+keeps one up for good. Early notes put the lamp's own drops at every 30–60
+minutes; the one link timed since state stopped being read (2026-10-05, a G7
+on BlueZ) lasted 2 h 44 min, went down by itself, and was rebuilt and primed
+43 s later. That is one link, not a rate. In 0.2.0 and 0.2.1 the integration
+ended each link itself, two seconds after making it (see
+[Priming state on connect](#priming-state-on-connect)).
 If `available` were tied to the connection, every entity would flap to
-`unavailable` for a few seconds on each reconnect, spraying noise into HA history.
+`unavailable` on each reconnect, spraying noise into HA history.
 Since the device advertises continuously, presence is a far better availability
 signal.
 
@@ -452,14 +464,16 @@ will not hang up is a state* below). A command never does.
 
 Establishing a connection (`_async_ensure_connected`, serialized by an
 `asyncio.Lock`) uses `bleak_retry_connector.establish_connection`, subscribes to
-notifications, reads device-info once, primes state by reading `facebd02` and
-then requesting whatever keys that read did not carry, and runs activation if
-needed. **The whole thing is capped at `_CONNECT_TIMEOUT` (10 s), including the
-wait for the lock**, and deliberately shorter than `_COMMAND_TIMEOUT`: a
-background connect holds the lock while a command waits for it inside its own
-budget, so a holder allowed longer than the waiter makes a switch press fail on
-a reachable lamp. It is shorter than `_RECONNECT_INTERVAL` too, so priming
-spawned by one poll tick finishes before the next.
+notifications, primes state by asking the lamp for `STATE_KEYS` — reading
+`facebd02` only when it will not report — runs activation if needed, corrects
+a clock that has drifted, and last of all, once per session, reads the
+device-info string. **The whole thing is capped at `_CONNECT_TIMEOUT` (10 s),
+including the wait for the lock**, and deliberately shorter than
+`_COMMAND_TIMEOUT`: a background connect holds the lock while a command waits
+for it inside its own budget, so a holder allowed longer than the waiter makes
+a switch press fail on a reachable lamp. It is shorter than
+`_RECONNECT_INTERVAL` too, so priming spawned by one poll tick finishes before
+the next.
 
 **Setup does not wait for any of this.** The first connect is a background task
 tied to the config entry, so `async_setup_entry` returns in milliseconds whether
@@ -674,7 +688,7 @@ path scores well enough, which a device at RSSI −85 or worse never does.
 Mode-dependent entities (Lighting mode, Ramp, Schedule controls) gate their own
 availability further via `coordinator.mode_allows(...)`, which returns `True` when
 the operating mode matches **or is still unknown** — so they don't collapse to
-`unavailable` before the first state read.
+`unavailable` before the first state arrives.
 
 ---
 
@@ -733,9 +747,22 @@ model?"* section for the full contributor workflow.
 Unit tests live in `tests/` and **never touch real Bluetooth**:
 
 - `test_cbor.py` — the codec, checked against exact bytes from btsnoop captures.
+- `test_protocol.py` — the byte layouts behind the typed values: the `0x11`
+  schedule slot and the `0x2f` ramp.
 - `test_coordinator.py` — command encoding (power, brightness, lighting mode,
-  operating mode, indicator, DST, schedule) checked against real device bytes; the
-  coordinator is driven with a patched/`None` BLE layer.
+  operating mode, indicator, DST, schedule) checked against real device bytes,
+  and the connection logic around it: priming by asking, the fallbacks to a
+  read, retries and confirmation of a failed write, the clock, activation,
+  unload and stop. The coordinator is driven with a patched/`None` BLE layer.
+- `test_bus_lifetime.py` — what is left behind when a link is let go of. It
+  counts open bus connections rather than calls to `disconnect()`, and runs
+  the same against bleak's own BlueZ client with a stub bus, so a bleak
+  release that renames what `_close_bus` reaches for fails here. The backoff
+  from a stack that will not hang up, and the checks on a held link, are
+  tested here too.
+- `test_init.py` — setup and unload of the config entry, the entities each
+  platform produces, what is restored after a restart, and the hang-up when
+  Home Assistant stops.
 - `test_config_flow.py` — discovery and entry creation.
 
 Run the checks:
@@ -746,5 +773,9 @@ Run the checks:
 ```
 
 `pytest` runs in `asyncio_mode = "auto"`; ruff line length is 88 (config in
-`pyproject.toml`). Manual verification against live hardware is separate — see the
-README — but is not part of the automated suite.
+`pyproject.toml`). Verification against live hardware is separate and not part
+of the automated suite: `tools/bench.py` runs the production coordinator
+against a lamp from the machine it is started on — see
+[CONTRIBUTING.md](CONTRIBUTING.md#testing-on-hardware). Mind the stack it runs
+on: what a read does to the link was invisible from macOS and only showed on
+the BlueZ host.

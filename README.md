@@ -72,6 +72,13 @@ on a G8 those two controls report an error instead of guessing. Confirming the
 preset indices needs one btsnoop capture from the vendor app; see
 [CONTRIBUTING](CONTRIBUTING.md).
 
+One thing changed underneath the G8 in 0.2.2. A lamp is now asked for its
+state instead of being read, because on a Linux host a read turned out to end
+the link (see the [changelog](CHANGELOG.md)). A G8 refuses to be asked, so it
+is still read, as before — which should leave a G8 working as it did, and on
+such a host still reconnecting after every read. Neither half of that has been
+run on a G8 since the change; a report from one, good or bad, is very welcome.
+
 ### Tested an unverified model? Please report back 🙏
 
 The whole Glowrium grow-light family shares the same BLE protocol, so a model
@@ -160,6 +167,47 @@ performed. This integration performs that handshake itself — **entirely locall
 with no cloud** — so a freshly reset device is brought up and controllable
 without the vendor app. The **Activated** binary sensor reports this status; a
 device already paired via the app stays activated across restarts.
+
+## Troubleshooting
+
+The integration says what it finds in the Home Assistant log. These are the
+messages worth acting on, and two symptoms that come without one.
+
+- **`BlueZ has left 3 requests in a row to disconnect the lamp unanswered`** —
+  the host's Bluetooth stack is holding on to a link that no longer exists,
+  and the lamp cannot be reached until it lets go. That is the host, not the
+  lamp. Power-cycle the adapter (`bluetoothctl power off`, then
+  `bluetoothctl power on`) or restart the bluetooth service; Home Assistant
+  takes the adapter back by itself and the lamp follows within about five
+  minutes, with `the lamp answers again` in the log. Restarting Home
+  Assistant alone does not clear it. BlueZ before 5.84 can get into this
+  state — `Failed to disconnect device: Disconnected (0x0e)` in the journal
+  of the bluetooth service is how it shows there.
+- **`refused the batched state request`** — the lamp will not report its state
+  when asked. That is a property of the model (a G8 does it), not a fault:
+  commands still work and the state is read instead, but the indicator,
+  lighting mode, ramp and DST stay `unknown`. Please
+  [report the model](CONTRIBUTING.md#sending-protocol-data-for-a-device).
+- **`sent a frame with … trailing bytes and it was dropped`** — a frame the
+  decoder would not trust. The message carries it as hex, which is exactly
+  what an issue needs.
+- **A command fails with "out of range or the Bluetooth adapter busy"** — the
+  write did not get through. Check that the vendor app is not connected (the
+  lamp takes one connection at a time) and that an adapter or a proxy is
+  within range of the lamp.
+- **Every entity is `unavailable`** — the lamp is not being heard at all: no
+  power, out of range, or the adapter is down. Availability follows the
+  lamp's advertisements, not the connection, so a lamp that is merely
+  reconnecting does not show this.
+
+With debug logging on, a Linux host shows one link after every start or
+reload that lasts two seconds — `device info read`, then `disconnected` — and
+is rebuilt on the next 30-second tick. That one is expected: the model and
+firmware can only be had by a read, and through BlueZ a read costs the link.
+
+For anything else, enable debug logging for `custom_components.glowrium`
+(Settings → Devices & services → ⋮ → Enable debug logging) and open an issue
+with the lines around the problem.
 
 ## How it works
 
