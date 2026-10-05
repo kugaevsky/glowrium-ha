@@ -18,6 +18,7 @@ from __future__ import annotations
 import asyncio
 from itertools import pairwise
 import json
+import logging
 from types import SimpleNamespace
 from typing import Any
 from unittest.mock import AsyncMock
@@ -982,6 +983,68 @@ async def test_the_repair_goes_with_the_entry(
     await coordinator.async_stop()
 
     assert _stack_issue(hass) is None
+
+
+async def test_a_hang_up_that_outlives_the_entry_raises_no_repair(
+    hass: HomeAssistant,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """A hang-up is given longer than an unload waits for it, and may be the third.
+
+    Two were left unanswered and the third is in flight when the entry is
+    unloaded; it runs out afterwards, on a coordinator that has stopped
+    watching. A repair raised then is one nothing takes down: the coordinator
+    that follows starts a count of its own, after a removal there is none, and
+    the repair would go on saying that it goes away by itself. The episode is
+    not announced in the log either - nobody is left to say when it is over.
+    """
+    coordinator, _host, clock, _dialled = _on_a_clock(hass, monkeypatch)
+    await _ticks(coordinator, hass, clock, 2)
+    assert coordinator._stuck_hang_ups == 2
+
+    monkeypatch.setattr(coordinator_module, "_HANG_UP_TIMEOUT", 0.3)
+    clock.now += 30
+    coordinator._async_poll_reconnect(None)
+    await asyncio.sleep(0.05)  # dialled, asked, dropped: the hang-up is in flight
+
+    with caplog.at_level(logging.WARNING, logger=coordinator_module.__name__):
+        await coordinator.async_stop()
+        assert _stack_issue(hass) is None
+        await asyncio.sleep(0.5)  # ...and it runs out, unanswered
+        await hass.async_block_till_done()
+
+    assert coordinator._stuck_hang_ups == 3  # counted, as any other
+    assert _stack_issue(hass) is None
+    assert "BlueZ has left" not in caplog.text
+
+
+async def test_the_hang_up_of_the_unload_itself_raises_no_repair(
+    hass: HomeAssistant,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """The third unanswered hang-up can be the one the unload makes.
+
+    The entry is unloaded with a link still held, after two hang-ups that got
+    no answer. Letting go of that link is the third, and it is the unload that
+    asked for it.
+    """
+    coordinator, host, clock, _dialled = _on_a_clock(hass, monkeypatch)
+    await _ticks(coordinator, hass, clock, 2)
+    assert coordinator._stuck_hang_ups == 2
+    client = await host.dial()
+    coordinator._client = client
+    coordinator._backends[client] = client._backend
+
+    with caplog.at_level(logging.WARNING, logger=coordinator_module.__name__):
+        await coordinator.async_stop()
+        await asyncio.sleep(0.1)
+        await hass.async_block_till_done()
+
+    assert coordinator._stuck_hang_ups == 3
+    assert _stack_issue(hass) is None
+    assert "BlueZ has left" not in caplog.text
 
 
 async def test_a_wedged_stack_is_survived_without_home_assistant() -> None:

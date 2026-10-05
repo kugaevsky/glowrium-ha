@@ -865,7 +865,12 @@ class GlowriumCoordinator:
         """
         self._stuck_hang_ups += 1
         over = self._stuck_hang_ups - _STACK_FAULT_AFTER
-        if over < 0:
+        if over < 0 or self._stopped:
+            # A hang-up is given longer than an unload waits for it, so the
+            # one that makes it a run can come in after the watching stopped.
+            # Nothing dials any more, and an episode announced now is one
+            # nobody would be there to call over: the repair would stand
+            # until Home Assistant restarted.
             return
         # The exponent is capped as well as the gap: a wedge left alone for
         # days would otherwise raise OverflowError here, on every hang-up.
