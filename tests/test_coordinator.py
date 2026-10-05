@@ -1679,6 +1679,38 @@ async def test_a_link_dropped_while_it_is_primed_is_said_to_be_gone(
     assert "out of reach" in _info_lines(caplog)[0]
 
 
+@pytest.mark.parametrize("stopped_by", ["an unload", "Home Assistant stopping"])
+async def test_a_stopped_coordinator_does_not_say_where_the_lamp_is(
+    hass: HomeAssistant,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+    stopped_by: str,
+) -> None:
+    """A coordinator that was told to stop is not the one to call the lamp gone.
+
+    It let go of its link because it was stopped, not because the lamp went
+    anywhere, and it no longer hears advertisements. A command that still
+    arrives is refused, and tells the listeners as any command does - which
+    must not turn into a line saying that the lamp is out of reach until it
+    is heard again. Nobody is listening for it.
+    """
+    coordinator, _client = _connected_coordinator(hass)
+    coordinator._present = False  # held by its link alone
+    monkeypatch.setattr(coordinator_module, "_CONFIRM_TIMEOUT", 0.01)
+
+    with caplog.at_level(logging.INFO, logger=coordinator_module.__name__):
+        if stopped_by == "an unload":
+            await coordinator.async_stop()
+        else:
+            coordinator.async_shutdown()
+        with pytest.raises(HomeAssistantError):
+            await coordinator.async_set_power(True)
+        await hass.async_block_till_done()
+
+    assert not coordinator.available
+    assert _info_lines(caplog) == []
+
+
 async def test_a_lamp_that_is_absent_at_start_is_said_to_be(
     hass: HomeAssistant,
     monkeypatch: pytest.MonkeyPatch,

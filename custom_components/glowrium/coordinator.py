@@ -380,6 +380,9 @@ class GlowriumCoordinator:
         # and the moment before which the poll does not dial because of them.
         self._stuck_hang_ups = 0
         self._dial_not_before = 0.0
+        # Whether this coordinator has announced such a run - in the log and
+        # as a repair - and so has an episode to call over (see _note_answer).
+        self._fault_announced = False
         # The client whose link BlueZ called "not connected" without reporting
         # it dropped, and when (see _LOST_GRACE).
         self._lost: tuple[BleakClientWithServiceCache, float] | None = None
@@ -610,6 +613,11 @@ class GlowriumCoordinator:
         is everywhere either of the two changes while the lamp is watched: a
         coordinator that is stopping lets go of its link and says nothing.
         """
+        if self._stopped:
+            # It let go of its link because it was told to and no longer hears
+            # advertisements: where the lamp is, it cannot say. A command that
+            # still arrives tells the listeners, and comes through here.
+            return
         in_reach = self.available
         if in_reach == self._logged_in_reach:
             return
@@ -696,8 +704,11 @@ class GlowriumCoordinator:
             self._cancel_poll()
             self._cancel_poll = None
         # A coordinator that has stopped watching cannot say when the stack
-        # lets go, so it does not leave the claim standing that it has not.
+        # lets go, so it does not leave the claim standing that it has not -
+        # and has no episode left to call over. The repair filed under this
+        # entry from here on is its successor's.
         self._async_clear_stack_issue()
+        self._fault_announced = False
 
     @callback
     def async_shutdown(self, _event: Event | None = None) -> None:
@@ -889,6 +900,7 @@ class GlowriumCoordinator:
         gap = _RECONNECT_INTERVAL.total_seconds() * 2 ** min(over + 1, 16)
         self._dial_not_before = monotonic() + min(gap, _STACK_FAULT_BACKOFF_MAX)
         if over == 0:
+            self._fault_announced = True
             self._async_raise_stack_issue()
             _LOGGER.warning(
                 "%s: BlueZ has left %d requests in a row to disconnect the lamp "
@@ -950,9 +962,13 @@ class GlowriumCoordinator:
     def _note_answer(self) -> None:
         """Record that the lamp answered: the link is alive, the stack with it."""
         self._last_answer = monotonic()
-        if self._stuck_hang_ups >= _STACK_FAULT_AFTER:
+        if self._fault_announced:
+            self._fault_announced = False
             # At the level the episode was announced at, or whoever read
-            # that warning never learns it is over.
+            # that warning never learns it is over. Only an episode this
+            # coordinator announced: a count can reach the mark after it has
+            # stopped, without a word, and the repair standing under the
+            # entry's id by then is the next coordinator's.
             _LOGGER.warning(
                 "%s: the lamp answers again; the Bluetooth stack has let go",
                 self.address,
@@ -1576,9 +1592,9 @@ class GlowriumCoordinator:
     async def _async_write(self, payload: dict[int, Any]) -> None:
         """Send a command, and tell the listeners how things stand after it.
 
-        Whichever way it went: a command that failed has let go of the link,
-        and that may have been all that made the lamp reachable. A failure is
-        a ``HomeAssistantError`` (see ``_async_deliver``).
+        Whichever way it went: a command whose write failed has let go of the
+        link, and that may have been all that made the lamp reachable. A
+        failure is a ``HomeAssistantError`` (see ``_async_deliver``).
         """
         try:
             await self._async_deliver(payload)

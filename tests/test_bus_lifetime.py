@@ -1053,6 +1053,52 @@ async def test_the_hang_up_of_the_unload_itself_raises_no_repair(
     assert "BlueZ has left" not in caplog.text
 
 
+async def test_a_stopped_coordinator_ends_no_episode_and_takes_down_no_repair(
+    hass: HomeAssistant,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """An episode is ended by the coordinator that announced it, and by no other.
+
+    The count of a stopped coordinator can reach three without a word, and
+    its link can still say something afterwards - a notification on the way
+    in while it is hung up, a write that was in flight. That is not the end
+    of an episode nobody announced. And the repair filed under the entry's
+    id by now belongs to the coordinator that took over after a reload: it
+    is not this one's to take down.
+    """
+    coordinator, host, clock, _dialled = _on_a_clock(hass, monkeypatch)
+    entry = SimpleNamespace(
+        entry_id="01JENTRY",
+        async_create_background_task=lambda _hass, coro, name: hass.async_create_task(
+            coro, name
+        ),
+    )
+    coordinator._entry = entry
+    await _ticks(coordinator, hass, clock, 2)
+    client = await host.dial()
+    coordinator._client = client
+    coordinator._backends[client] = client._backend
+    await coordinator.async_stop()
+    await asyncio.sleep(0.1)
+    await hass.async_block_till_done()
+    assert coordinator._stuck_hang_ups == 3
+    assert _stack_issue(hass) is None
+
+    successor, _host, successor_clock, _ = _on_a_clock(hass, monkeypatch)
+    successor._entry = entry
+    await _ticks(successor, hass, successor_clock, 3)
+    assert _stack_issue(hass) is not None
+
+    caplog.clear()
+    with caplog.at_level(logging.WARNING, logger=coordinator_module.__name__):
+        coordinator._note_answer()
+
+    assert _stack_issue(hass) is not None  # the successor's, and still standing
+    assert not [r for r in caplog.records if r.levelno == logging.WARNING]
+    await successor.async_stop()
+
+
 async def test_a_wedged_stack_is_survived_without_home_assistant() -> None:
     """The bench has no dashboard to raise a repair on, and counts all the same."""
     coordinator = GlowriumCoordinator(None, "AA:BB:CC:DD:EE:FF", "bench")

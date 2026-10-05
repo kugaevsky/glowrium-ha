@@ -687,10 +687,12 @@ warning and comes down with the first answer from the lamp, or when the
 coordinator stops watching. A coordinator that has stopped watching announces
 no episode at all: a hang-up is given longer than an unload waits for it, so
 the third unanswered one can come in afterwards, and a repair raised then
-would have nobody left to take it down. It is not persistent - the next start
-finds out for itself. The lamp's name goes into it through `_as_text`: a
-repair is rendered as Markdown, and the name is whatever the lamp advertised
-when it was set up.
+would have nobody left to take it down. Nor does it end one: an episode is
+called over by the coordinator that announced it (`_fault_announced`), since
+the repair standing under the entry's id after a reload is the next
+coordinator's. It is not persistent - the next start finds out for itself.
+The lamp's name goes into it through `_as_text`: a repair is rendered as
+Markdown, and the name is whatever the lamp advertised when it was set up.
 
 **`is_connected` is a claim; an answer is evidence.** In that same incident
 the last exchange before the fault was a request that failed with `Not
