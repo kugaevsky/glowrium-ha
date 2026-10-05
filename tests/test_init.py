@@ -7,7 +7,8 @@ from bleak.exc import BleakError
 from homeassistant.config_entries import ConfigEntryState
 from homeassistant.const import CONF_ADDRESS, CONF_MODEL_ID, EVENT_HOMEASSISTANT_STOP
 from homeassistant.core import HomeAssistant, State
-from homeassistant.helpers import device_registry as dr
+from homeassistant.helpers import device_registry as dr, entity_registry as er
+from homeassistant.helpers.icon import async_get_icons
 import pytest
 from pytest_homeassistant_custom_component.common import (
     MockConfigEntry,
@@ -578,3 +579,25 @@ async def test_the_presets_offered_are_the_ones_of_the_lamp_that_answered(
         blocking=True,
     )
     coordinator.async_set_lighting_mode.assert_awaited_once_with(4)
+
+
+async def test_the_light_takes_its_icon_from_the_icon_file(hass: HomeAssistant) -> None:
+    """The light's icon is named by a key and kept in icons.json, like the rest.
+
+    It was set in code from the model's profile - at a moment when the model
+    was never known, so it was never set at all: the real host showed none.
+    Kept with the other icons it does not depend on what has been read, and
+    it stays out of the entity's state.
+    """
+    await _setup_without_bluetooth(hass)
+    light = "light.glowrium_g7_1234"
+
+    registered = er.async_get(hass).async_get(light)
+    assert registered is not None
+    assert registered.translation_key == "lamp"
+    icons = await async_get_icons(hass, "entity", integrations=[DOMAIN])
+    assert icons[DOMAIN]["light"]["lamp"]["default"] == "mdi:lightbulb-group"
+
+    state = hass.states.get(light)
+    assert "icon" not in state.attributes
+    assert state.name == "Glowrium-G7_1234"  # still named after the device

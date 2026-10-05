@@ -1,9 +1,8 @@
 """Per-model profiles for Glowrium devices.
 
 The BLE control protocol (CBOR over the ``facebd0x`` service) is shared across
-the Glowrium family; only a few bits differ per model - the marketing name, the
-light-entity icon, and the set of circadian lighting presets. Those live here,
-keyed by the ``pkey``
+the Glowrium family; only a few bits differ per model - the marketing name and
+the set of circadian lighting presets. Those live here, keyed by the ``pkey``
 field of the device-info string (``facebd80``). Add a new model by adding one
 ``GlowriumModel`` entry.
 """
@@ -21,7 +20,6 @@ class GlowriumModel:
     pkey: str  # device-info identifier, e.g. "Glowrium-C051"
     name: str  # marketing model name shown on the device page
     lighting_modes: dict[str, int]  # circadian preset label -> command index
-    icon: str | None = None  # light-entity icon; None -> HA's default light icon
 
 
 # Glowrium G7 - 48W puck grow light (app model "Glowrium-C051"). Fully verified
@@ -39,7 +37,6 @@ G7: Final = GlowriumModel(
         "Balance": 19,
         "Enhanced Two-Phase": 32,
     },
-    icon="mdi:lightbulb-group",
 )
 
 # Registry keyed by device-info pkey. Extend with other Glowrium models here.

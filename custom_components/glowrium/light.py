@@ -26,7 +26,8 @@ async def async_setup_entry(
 class GlowriumLight(GlowriumEntity, LightEntity):
     """The main lamp: on/off (key 6) and brightness (key 8, 0-100%)."""
 
-    _attr_name = None
+    _attr_name = None  # the device's own name
+    _attr_translation_key = "lamp"  # for the icon; see icons.json
     _attr_color_mode = ColorMode.BRIGHTNESS
     _attr_supported_color_modes = {ColorMode.BRIGHTNESS}
 
@@ -34,7 +35,6 @@ class GlowriumLight(GlowriumEntity, LightEntity):
         """Initialize the light."""
         super().__init__(coordinator)
         self._attr_unique_id = coordinator.address
-        self._attr_icon = coordinator.model.icon
 
     @property
     def is_on(self) -> bool | None:
