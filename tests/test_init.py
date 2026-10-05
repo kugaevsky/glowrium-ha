@@ -21,6 +21,7 @@ from custom_components.glowrium import PLATFORMS, cbor, models
 from custom_components.glowrium.const import (
     DOMAIN,
     KEY_BRIGHTNESS,
+    KEY_DST,
     KEY_INDICATOR,
     KEY_LIGHTING_MODE,
     KEY_POWER,
@@ -238,6 +239,37 @@ async def test_the_light_shows_what_the_device_reported(hass: HomeAssistant) -> 
     reported = hass.states.get(light)
     assert reported.state == "on"
     assert reported.attributes["brightness"] == 128  # 50 % of 255, rounded
+
+
+@pytest.mark.parametrize(
+    ("key", "unique_id", "reported", "shown"),
+    [
+        (KEY_DST, "dst", bytes.fromhex("0100000e10"), "on"),
+        (KEY_DST, "dst", bytes.fromhex("0000000e10"), "off"),
+        (KEY_INDICATOR, "indicator", True, "on"),
+        (KEY_INDICATOR, "indicator", False, "off"),
+    ],
+)
+async def test_a_switch_shows_what_the_lamp_reports(
+    hass: HomeAssistant, key: int, unique_id: str, reported: object, shown: str
+) -> None:
+    """Each switch follows the lamp: a flag as it is, the DST slot by its first byte.
+
+    The commands of both were tested, and what they show was not - the DST
+    switch's reading was run by a test about something else, and stopped
+    being run when that test was rewritten.
+    """
+    entry = await _setup_without_bluetooth(hass)
+    switch = er.async_get(hass).async_get_entity_id(
+        "switch", DOMAIN, f"{ADDRESS}_{unique_id}"
+    )
+    assert switch is not None
+    assert hass.states.get(switch).state == "unknown"  # nothing read yet
+
+    entry.runtime_data._ingest(cbor.encode({key: reported}))
+    await hass.async_block_till_done()
+
+    assert hass.states.get(switch).state == shown
 
 
 async def test_turning_the_light_on_reaches_the_lamp(hass: HomeAssistant) -> None:
