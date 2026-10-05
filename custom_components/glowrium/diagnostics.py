@@ -9,10 +9,10 @@ into it was chosen by the lamp: which properties it reports and what it puts
 under them, which fields its device-info string has, what they are called and
 where one ends. So the file repeats nothing after the lamp. Each property the
 integration knows is read the way the integration reads it, and written out
-from that reading - a schedule as its times, a clock as how far it is from
-this host's. What does not read as what its name means is said to be there
-and not as expected. What has no name here is counted. No value, no size and
-no id that the lamp picked goes into the file as the lamp gave it.
+from that reading - a schedule as its times, a clock as how far it was from
+this host's when it came. What does not read as what its name means is said
+to be there and not as expected. What has no name here is counted. No value,
+no size and no id that the lamp picked goes into the file as the lamp gave it.
 
 That holds for what this module returns. Home Assistant wraps it in a header
 of its own (version, time zone, the names of the custom integrations) and adds
@@ -24,6 +24,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from datetime import datetime, time, timedelta
+from functools import partial
 import re
 from typing import Any, Final
 
@@ -102,19 +103,33 @@ def _seconds(raw: bytes) -> int:
     return seconds
 
 
-def _clock(value: Any) -> dict[str, Any]:
-    """Read the device clock, as how far it is from this host's.
+def _clock(value: Any, heard_at: datetime | None) -> dict[str, Any]:
+    """Read the device clock, as how far it was from this host's when it came.
 
     Not as the time it shows: how far off it is is what a report needs, and
     it is a reading of the bytes rather than a copy of them.
+
+    And not against the host's clock of now. The mirror holds the clock the
+    lamp last reported, which can be hours old - a link that goes on talking
+    is not asked for it again, and a lamp out of reach cannot be - and a
+    clock that was exactly right then would read as slow by all of that. It
+    is set against the host's clock of the moment it came (``heard_at``), and
+    how long ago that was is said next to it.
     """
     raw = _octets(value, 7)
     # Naive, like the clock itself: the lamp keeps local wall-clock time.
     shown = datetime(int.from_bytes(raw[:2], "big"), *raw[2:])  # noqa: DTZ001
-    ahead = shown - dt_util.now().replace(tzinfo=None)
-    if abs(ahead) > _FAR_OFF:
-        return {"ahead_of_this_host_by_seconds": "more than a year off"}
-    return {"ahead_of_this_host_by_seconds": round(ahead.total_seconds())}
+    if heard_at is None:  # there, and nothing says since when
+        return {"ahead_of_this_host_by_seconds": None, "as_of_seconds_ago": None}
+    ahead = shown - heard_at.replace(tzinfo=None)
+    return {
+        "ahead_of_this_host_by_seconds": (
+            "more than a year off"
+            if abs(ahead) > _FAR_OFF
+            else round(ahead.total_seconds())
+        ),
+        "as_of_seconds_ago": round((dt_util.now() - heard_at).total_seconds()),
+    }
 
 
 def _schedule(value: Any) -> dict[str, Any]:
@@ -151,9 +166,9 @@ def _dst(value: Any) -> dict[str, Any]:
 
 # The properties that are read out, under the id and the name each has here,
 # with the reading its value has to survive. A length is not a reading: seven
-# bytes can be a clock or six bytes of address and one more.
+# bytes can be a clock or six bytes of address and one more. (The clock is
+# read too, and takes more than its value to read: see _state.)
 _READ: Final[dict[int, tuple[str, Callable[[Any], Any]]]] = {
-    KEY_TIME: ("clock", _clock),
     KEY_POWER: ("power", _flag),
     KEY_BRIGHTNESS: ("brightness", _up_to(_PERCENT)),
     KEY_CIRCADIAN: ("circadian", _flag),
@@ -194,10 +209,11 @@ def _matching(pattern: re.Pattern[str], value: Any) -> Any:
     return REDACTED
 
 
-def _state(reported: dict[Any, Any]) -> dict[str, Any]:
+def _state(reported: dict[Any, Any], clock_heard_at: datetime | None) -> dict[str, Any]:
     """Read the state mirror out, property by property."""
     shown: dict[str, Any] = {}
-    for key, (name, read) in _READ.items():
+    clock = ("clock", partial(_clock, heard_at=clock_heard_at))
+    for key, (name, read) in ({KEY_TIME: clock} | _READ).items():
         if key not in reported:
             continue
         try:
@@ -238,5 +254,5 @@ async def async_get_config_entry_diagnostics(
             "device_info_fields": len(device["info"]),
         },
         "link": described["link"],
-        "state": _state(described["state"]),
+        "state": _state(described["state"], described["clock_heard_at"]),
     }

@@ -344,6 +344,10 @@ class GlowriumCoordinator:
         self.address = address
         self.name = name
         self.state: dict[int, Any] = {}
+        # The host's clock at the moment the lamp's (0x05) last came into the
+        # mirror. A clock is right or wrong only against the moment it was
+        # read at, and the mirror can hold one for hours (see _mirror).
+        self._clock_heard_at: datetime | None = None
         # What the lamp said about itself in this session; empty until read.
         self.device_info: dict[str, str] = {}
         self._remembered_model_id = model_id
@@ -562,6 +566,7 @@ class GlowriumCoordinator:
                 "clients_that_would_not_close": len(self._unreleased),
             },
             "state": dict(self.state),
+            "clock_heard_at": self._clock_heard_at,
         }
 
     @callback
@@ -1477,7 +1482,7 @@ class GlowriumCoordinator:
                 self.address,
                 len(decoded),
             )
-        self.state.update(decoded)
+        self._mirror(decoded)
         self._reports += 1
         self._state_reported.set()
         # Seed the remembered ramp from the device the first time we see it, so
@@ -1520,6 +1525,18 @@ class GlowriumCoordinator:
     def _on_notify(self, _characteristic: Any, data: bytearray) -> None:
         self._carried |= self._ingest(bytes(data))
 
+    def _mirror(self, values: dict[int, Any]) -> None:
+        """Take ``values`` into the state mirror.
+
+        And note the moment, if the lamp's clock is among them - whether the
+        lamp reported it or it is the echo of a clock written to the lamp.
+        The mirror is not emptied when a link drops, so the clock in it can
+        be hours old by the time somebody asks how far off it is.
+        """
+        self.state.update(values)
+        if KEY_TIME in values:
+            self._clock_heard_at = dt_util.now()
+
     async def _write_raw(self, payload: dict[int, Any]) -> None:
         """Write one command frame to the connected device.
 
@@ -1535,7 +1552,7 @@ class GlowriumCoordinator:
         )
         self._note_answer()
         # Optimistic local echo; the device also notifies its new state.
-        self.state.update(payload)
+        self._mirror(payload)
 
     async def _async_write(self, payload: dict[int, Any]) -> None:
         """Serialize a command under the connection lock, with one reconnect.

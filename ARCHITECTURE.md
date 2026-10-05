@@ -859,8 +859,13 @@ rebuilds what leaves the host from what it can read:
   it, and written out from that reading: a schedule as its times and its
   brightness, a ramp as seconds, a flag as a flag. The bytes of a schedule
   that nobody has decoded are therefore not in the file.
-- The clock is given as how far it is from the host's, in seconds. That is
-  what a report needs, and it is a reading rather than a copy.
+- The clock is given as how far it was from the host's, in seconds, at the
+  moment it came into the mirror, and with how long ago that was. How far off
+  it is is what a report needs, and it is a reading rather than a copy. The
+  moment matters because the mirror is not emptied when a link drops: the
+  clock in it is as old as the last time the lamp was asked for its state, or
+  the integration wrote one. Set against the host's clock at the time of the
+  download, a clock that was exactly right read as slow by its own age.
 - A known property whose value does not read as what its name means - seven
   bytes that are not a date, a schedule whose hours are not hours - is said
   to be there and `not as expected`. A length is not a check.

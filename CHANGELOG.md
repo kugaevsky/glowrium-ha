@@ -251,12 +251,13 @@ the table is under *Changed*.
   otherwise asked for piece by piece. What the integration writes into it
   repeats nothing after the lamp: each property is read the way the
   integration reads it and written out from that reading; the lamp's clock is
-  given as how far it is from the host's; the coordinates the lamp keeps are
-  marked as redacted; and whatever the integration has no name for is only
-  counted. The lamp's serial number and address are not put in. Home Assistant
-  adds a header of its own to every diagnostics file - its version, the host's
-  time zone, the names of your custom integrations - so look it over before
-  attaching it to anything public.
+  given as how far it was from the host's when it was reported, and how long
+  ago that was; the coordinates the lamp keeps are marked as redacted; and
+  whatever the integration has no name for is only counted. The lamp's serial
+  number and address are not put in. Home Assistant adds a header of its own
+  to every diagnostics file - its version, the host's time zone, the names of
+  your custom integrations - so look it over before attaching it to anything
+  public.
 - **A repair for a Bluetooth stack that will not let go.** When BlueZ stops
   answering disconnects (see *Fixed*), Home Assistant now shows it under
   *Settings → System → Repairs* as well as in the log, with what clears it.

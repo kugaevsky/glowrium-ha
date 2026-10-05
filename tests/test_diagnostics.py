@@ -5,10 +5,10 @@ that could go into it is chosen by the lamp. Most of these tests are about
 what must not come out of it, whatever the lamp reports.
 """
 
-from datetime import datetime
+from datetime import datetime, timedelta
 import json
 from typing import Any
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 from homeassistant.const import CONF_ADDRESS, CONF_MODEL_ID
 from homeassistant.core import HomeAssistant
@@ -40,9 +40,12 @@ ADDRESS = "AA:BB:CC:DD:EE:FF"
 TITLE = "Glowrium-G7_DDEEFF"
 LATITUDE, LONGITUDE = 41.3166, 69.2906
 SERIAL = "CST-0001"
-# The host's clock while the file is made, and the lamp's a minute behind it.
-HOST_NOW = datetime(2026, 10, 5, 8, 16, 30, tzinfo=dt_util.UTC)
+# The host's clock when the lamp reported, with the lamp's a minute behind
+# it; and the host's clock five minutes later, when the file is made.
+HEARD_AT = datetime(2026, 10, 5, 8, 16, 30, tzinfo=dt_util.UTC)
+HOST_NOW = HEARD_AT + timedelta(minutes=5)
 CLOCK = bytes.fromhex("07ea0a05080f1e")  # 2026-10-05 08:15:30
+CLOCK_RIGHT = bytes.fromhex("07ea0a0508101e")  # 2026-10-05 08:16:30
 SCHEDULE = bytes.fromhex("0100000006001200640000")  # 06:00-18:00, 100 %
 CURVE = bytes.fromhex("000041dc0000489400004948")  # 04:41, 05:10, 05:13 ...
 UNKNOWN_TEXT = "HomeNetwork-5G"
@@ -86,6 +89,16 @@ async def _a_lamp_that_has_reported(hass: HomeAssistant) -> MockConfigEntry:
         "mac": ADDRESS,
         "version": "4",
     }
+    with patch(
+        "custom_components.glowrium.coordinator.dt_util.now", return_value=HEARD_AT
+    ):
+        _report(coordinator)
+    await hass.async_block_till_done()
+    return entry
+
+
+def _report(coordinator: Any) -> None:
+    """Have the lamp report a state, as it does when it is asked for one."""
     coordinator._ingest(
         cbor.encode(
             {
@@ -101,19 +114,17 @@ async def _a_lamp_that_has_reported(hass: HomeAssistant) -> MockConfigEntry:
             }
         )
     )
-    await hass.async_block_till_done()
-    return entry
 
 
-async def _downloaded(hass: HomeAssistant, entry: MockConfigEntry) -> dict[str, Any]:
-    """Return the diagnostics as the file a user would attach.
+async def _downloaded(
+    hass: HomeAssistant, entry: MockConfigEntry, at: datetime = HOST_NOW
+) -> dict[str, Any]:
+    """Return the diagnostics as the file a user would attach, made at ``at``.
 
     Through plain JSON and back: the download is a JSON file, and bytes or a
     set left in it would fail there rather than here.
     """
-    with patch(
-        "custom_components.glowrium.diagnostics.dt_util.now", return_value=HOST_NOW
-    ):
+    with patch("custom_components.glowrium.diagnostics.dt_util.now", return_value=at):
         made = await async_get_config_entry_diagnostics(hass, entry)
     return json.loads(json.dumps(made))
 
@@ -142,7 +153,7 @@ async def test_the_download_says_what_the_lamp_reported(hass: HomeAssistant) -> 
         "device_info_fields": 5,
     }
     assert data["state"] == {
-        "0x05 clock": {"ahead_of_this_host_by_seconds": -60},
+        "0x05 clock": {"ahead_of_this_host_by_seconds": -60, "as_of_seconds_ago": 300},
         "0x06 power": True,
         "0x08 brightness": 70,
         "0x0a 0x0b coordinates": "**REDACTED**",
@@ -161,6 +172,96 @@ async def test_the_download_says_what_the_lamp_reported(hass: HomeAssistant) -> 
     assert data["link"]["connected"] is False
     assert data["link"]["reports"] == 1
     assert data["link"]["unanswered_hang_ups"] == 0
+
+
+@pytest.mark.parametrize("later", [0, 300, 3600, 9840])
+async def test_the_clock_is_judged_at_the_moment_it_was_reported(
+    hass: HomeAssistant, later: int
+) -> None:
+    """How far a clock is off is a fact about the moment it was read at.
+
+    The mirror holds the clock the lamp last reported, and that can be hours
+    old: the lamp reports it when it is asked for its state, which a link
+    that goes on talking is not asked again, and a lamp that is out of reach
+    cannot be. Set against the host's clock at the time of the download, a
+    clock that was exactly right read as slow by however long ago it had been
+    reported. It is set against the host's clock of that moment instead, and
+    the file says how long ago that was.
+    """
+    entry = await _a_lamp_that_has_reported(hass)
+    with patch(
+        "custom_components.glowrium.coordinator.dt_util.now", return_value=HEARD_AT
+    ):
+        entry.runtime_data._ingest(cbor.encode({KEY_TIME: CLOCK_RIGHT}))
+
+    data = await _downloaded(hass, entry, HEARD_AT + timedelta(seconds=later))
+
+    assert data["state"]["0x05 clock"] == {
+        "ahead_of_this_host_by_seconds": 0,
+        "as_of_seconds_ago": later,
+    }
+
+
+async def test_a_report_without_a_clock_does_not_make_the_clock_newer(
+    hass: HomeAssistant,
+) -> None:
+    """The moment kept is the clock's own, not the last time the lamp spoke."""
+    entry = await _a_lamp_that_has_reported(hass)
+    with patch(
+        "custom_components.glowrium.coordinator.dt_util.now",
+        return_value=HEARD_AT + timedelta(minutes=4),
+    ):
+        entry.runtime_data._ingest(cbor.encode({KEY_POWER: False}))
+
+    data = await _downloaded(hass, entry)
+
+    assert data["state"]["0x05 clock"] == {
+        "ahead_of_this_host_by_seconds": -60,
+        "as_of_seconds_ago": 300,
+    }
+
+
+async def test_a_clock_the_integration_set_is_judged_from_when_it_set_it(
+    hass: HomeAssistant,
+) -> None:
+    """The clock in the mirror also changes when the integration corrects it.
+
+    The write is echoed into the mirror, and what is there afterwards is the
+    host's own time of that moment - not a clock that was reported when the
+    one before it was.
+    """
+    entry = await _a_lamp_that_has_reported(hass)
+    coordinator = entry.runtime_data
+    coordinator.state[KEY_TIME] = bytes.fromhex("07e80101000000")  # far off
+    coordinator._client = MagicMock(write_gatt_char=AsyncMock())
+    with patch(
+        "custom_components.glowrium.coordinator.dt_util.now",
+        return_value=HEARD_AT + timedelta(minutes=2),
+    ):
+        await coordinator._async_sync_clock_if_needed()
+    coordinator._client = None  # nothing real to hang up when the test ends
+
+    data = await _downloaded(hass, entry)
+
+    assert data["state"]["0x05 clock"] == {
+        "ahead_of_this_host_by_seconds": 0,
+        "as_of_seconds_ago": 180,
+    }
+
+
+async def test_a_clock_with_no_record_of_when_it_came_is_not_guessed_at(
+    hass: HomeAssistant,
+) -> None:
+    """Without the moment it was read at, a clock is neither right nor wrong."""
+    entry = await _a_lamp_that_has_reported(hass)
+    entry.runtime_data._clock_heard_at = None
+
+    data = await _downloaded(hass, entry)
+
+    assert data["state"]["0x05 clock"] == {
+        "ahead_of_this_host_by_seconds": None,
+        "as_of_seconds_ago": None,
+    }
 
 
 async def test_the_download_does_not_say_where_the_lamp_is_or_which_one_it_is(
@@ -307,16 +408,23 @@ async def test_a_known_property_is_read_out_only_when_it_is_what_its_name_means(
 @pytest.mark.parametrize(
     ("key", "value", "read_out_as"),
     [
-        (KEY_TIME, CLOCK, {"ahead_of_this_host_by_seconds": -60}),
+        (
+            KEY_TIME,
+            CLOCK,
+            {"ahead_of_this_host_by_seconds": -60, "as_of_seconds_ago": 300},
+        ),
         (
             KEY_TIME,
             bytes.fromhex("07ea0a05081c1e"),  # 08:28:30
-            {"ahead_of_this_host_by_seconds": 720},
+            {"ahead_of_this_host_by_seconds": 720, "as_of_seconds_ago": 300},
         ),
         (
             KEY_TIME,
             bytes.fromhex("07e80101000000"),  # set in 2024 and never again
-            {"ahead_of_this_host_by_seconds": "more than a year off"},
+            {
+                "ahead_of_this_host_by_seconds": "more than a year off",
+                "as_of_seconds_ago": 300,
+            },
         ),
         (
             KEY_TIMER,
