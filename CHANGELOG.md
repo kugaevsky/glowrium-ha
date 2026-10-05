@@ -241,12 +241,15 @@ the table is under *Changed*.
 - **A diagnostics download.** *Settings → Devices & services → Glowrium → ⋮ →
   Download diagnostics* gives one file with the model and firmware, what the
   lamp last reported, and where the link stands — what a bug report is
-  otherwise asked for piece by piece. It is built to be attached to a public
-  issue: it repeats nothing after the lamp. Each property is read the way the
+  otherwise asked for piece by piece. What the integration writes into it
+  repeats nothing after the lamp: each property is read the way the
   integration reads it and written out from that reading; the lamp's clock is
-  given as how far it is from the host's, not as a time; the coordinates the
-  lamp keeps are marked as redacted; and whatever the integration has no name
-  for is only counted. The serial number and the address are not in it.
+  given as how far it is from the host's; the coordinates the lamp keeps are
+  marked as redacted; and whatever the integration has no name for is only
+  counted. The lamp's serial number and address are not put in. Home Assistant
+  adds a header of its own to every diagnostics file - its version, the host's
+  time zone, the names of your custom integrations - so look it over before
+  attaching it to anything public.
 - **A repair for a Bluetooth stack that will not let go.** When BlueZ stops
   answering disconnects (see *Fixed*), Home Assistant now shows it under
   *Settings → System → Repairs* as well as in the log, with what clears it.

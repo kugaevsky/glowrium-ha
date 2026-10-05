@@ -13,6 +13,11 @@ from that reading - a schedule as its times, a clock as how far it is from
 this host's. What does not read as what its name means is said to be there
 and not as expected. What has no name here is counted. No value, no size and
 no id that the lamp picked goes into the file as the lamp gave it.
+
+That holds for what this module returns. Home Assistant wraps it in a header
+of its own (version, time zone, the names of the custom integrations) and adds
+the ids of the integration's open repairs - which is why the coordinator files
+its repair under the config entry's id and not under the lamp's address.
 """
 
 from __future__ import annotations
@@ -100,8 +105,8 @@ def _seconds(raw: bytes) -> int:
 def _clock(value: Any) -> dict[str, Any]:
     """Read the device clock, as how far it is from this host's.
 
-    Not as the time it shows. How far off it is is what a report needs, and
-    the time itself would say which time zone the host is in.
+    Not as the time it shows: how far off it is is what a report needs, and
+    it is a reading of the bytes rather than a copy of them.
     """
     raw = _octets(value, 7)
     # Naive, like the clock itself: the lamp keeps local wall-clock time.

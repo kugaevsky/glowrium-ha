@@ -111,7 +111,8 @@ a clear write-up is enough, and I'll help with the rest.
    Home Assistant, the model id (`pkey`, e.g. `Glowrium-C051`) and the
    firmware. Easier still: attach the diagnostics download from that page
    (⋮ → *Download diagnostics*), which carries both along with what the lamp
-   reported, and leaves out the coordinates, the serial number and the address.
+   reported. See [Troubleshooting](#troubleshooting) for what is and is not
+   in that file.
 2. **How you used it.** Roughly how long (a few days of normal use is great) and
    how — dashboard, automations, scenes, etc.
 3. **What works.** Go entity by entity and say what behaves correctly:
@@ -223,13 +224,22 @@ is rebuilt on the next 30-second tick. That one is expected: the model and
 firmware can only be had by a read, and through BlueZ a read costs the link.
 
 For anything else, open an issue with two things from the integration's page
-(Settings → Devices & services → Glowrium → ⋮). **Download diagnostics** gives
-one file with the model, the firmware, what the lamp reported and where the
-link stands; it is made to be attached, and does not contain the coordinates,
-the serial number or the address. **Enable debug logging** raises the level
-for the integration and for the Bluetooth libraries under it; reproduce the
-problem, switch it off again, and attach the lines around the problem from
-the log it offers to download.
+(Settings → Devices & services → Glowrium → ⋮).
+
+**Download diagnostics** gives one file with the model, the firmware, what the
+lamp reported and where the link stands. What this integration writes into it
+has nothing that says where the lamp is or which one it is: not the
+coordinates the lamp stores, not its serial number, not its address. Home
+Assistant puts a header of its own on every diagnostics file — its version and
+how it is installed, the host's time zone, the names of your custom
+integrations — so look the file over before you attach it.
+
+**Enable debug logging** raises the level for the integration and for the
+Bluetooth libraries under it. Reproduce the problem, switch it off again, and
+take the lines around the problem from the log it offers. A log is not made
+for posting the way the diagnostics are: it names the lamp by its Bluetooth
+address, and at debug level the libraries name the other devices they hear
+too. Blank what you would rather not publish.
 
 ## Removing the integration
 

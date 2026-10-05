@@ -52,9 +52,11 @@ body:
       description: >
         Settings → Devices & services → Glowrium → ⋮ → Download diagnostics,
         and attach the file here. It carries the model id, the firmware, what
-        the lamp reported and where the link stands. It is made to be posted:
-        the coordinates the lamp stores, its serial number and its address are
-        not in it.
+        the lamp reported and where the link stands. The integration puts
+        neither the coordinates the lamp stores, nor its serial number, nor
+        its address into it. Home Assistant adds a header of its own to every
+        diagnostics file - its version, the host's time zone, the names of
+        your custom integrations - so look it over before attaching.
   - type: textarea
     id: logs
     attributes:
@@ -63,7 +65,10 @@ body:
         Settings → Devices & services → Glowrium → ⋮ → Enable debug logging,
         reproduce the problem, then disable it again and take the lines around
         the problem from the log it offers. That covers the integration and
-        the Bluetooth libraries under it.
+        the Bluetooth libraries under it. This issue is public: the log names
+        the lamp by its Bluetooth address, and at debug level the libraries
+        name the other devices they hear as well. Blank what you would rather
+        not publish.
       render: shell
   - type: textarea
     id: frames

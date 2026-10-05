@@ -57,14 +57,17 @@ coordinates it was given for its circadian curve, and both a notify frame and
 a read of `facebd02` can carry them. In hex they are the ids `0a` and `0b`,
 each followed by `fb` and eight more bytes — blank those eight. The
 device-info string carries the serial number (`devid`) and the address
-(`mac`); leave both out. The diagnostics download (the first item below) has none of
-this in it and needs no editing.
+(`mac`); leave both out. A debug log names the lamp by its address, and the
+Bluetooth libraries name the other devices they hear. What the integration
+writes into the diagnostics download (the first item below) has none of this
+in it; Home Assistant adds a header of its own to that file — version, time
+zone, the names of your custom integrations — so look it over all the same.
 
 What is worth sending, roughly in order of usefulness:
 
 1. **The diagnostics download**, from the integration's page (⋮ → *Download
    diagnostics*). Model id, firmware, what the lamp reported and where the
-   link stands, in one file made to be attached.
+   link stands, in one file.
 2. **A notify frame the decoder mishandled**, as hex. Turn on debug logging for
    `custom_components.glowrium`; frames that cannot be used are printed with
    their bytes. One such frame from a G8 turned into a fix and a regression

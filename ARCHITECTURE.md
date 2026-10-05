@@ -843,8 +843,7 @@ rebuilds what leaves the host from what it can read:
   brightness, a ramp as seconds, a flag as a flag. The bytes of a schedule
   that nobody has decoded are therefore not in the file.
 - The clock is given as how far it is from the host's, in seconds. That is
-  what a report needs; the time itself would say which time zone the host is
-  in.
+  what a report needs, and it is a reading rather than a copy.
 - A known property whose value does not read as what its name means - seven
   bytes that are not a date, a schedule whose hours are not hours - is said
   to be there and `not as expected`. A length is not a check.
@@ -862,6 +861,13 @@ rebuilds what leaves the host from what it can read:
   lamp's choice too.
 - Of the config entry, five fields chosen one by one. Its address is in its
   data, its unique id, its title and its discovery record.
+
+That is a promise about what this module writes, not about the whole file.
+Home Assistant wraps it in a header of its own - version, installation type,
+the host's time zone, the names of the custom integrations - and adds the ids
+of the integration's open repairs. Which is why the repair for a wedged stack
+is filed under the config entry's id and not under the lamp's address
+(`_stack_issue_id`).
 
 The same reasoning is why CONTRIBUTING.md tells anyone posting raw frames to
 blank the coordinates first: a frame is the lamp's own bytes, and the debug

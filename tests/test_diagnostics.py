@@ -171,9 +171,9 @@ async def test_the_download_does_not_say_where_the_lamp_is_or_which_one_it_is(
     The lamp stores the home's coordinates, and it has a serial number and an
     address that single it out. That the coordinates were reported can be
     seen; what they are cannot, and neither the serial nor the address is
-    anywhere in the file. Nor is the time: the lamp's clock is given as how
-    far it is from this host's, which is what a report needs and says
-    nothing about the time zone the host is in.
+    anywhere in what the integration writes. Nor are the bytes of the clock:
+    it is given as how far it is from this host's, which is what a report
+    needs.
     """
     entry = await _a_lamp_that_has_reported(hass)
 
