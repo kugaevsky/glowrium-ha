@@ -23,15 +23,24 @@ class GlowriumEntity(Entity):
     def __init__(self, coordinator: GlowriumCoordinator) -> None:
         """Attach the entity to the coordinator's device."""
         self._coordinator = coordinator
-        self._attr_device_info = DeviceInfo(
+        info = DeviceInfo(
             connections={(dr.CONNECTION_BLUETOOTH, coordinator.address)},
             name=coordinator.name,
             manufacturer="INLEDCO",
-            model=coordinator.model.name,
-            model_id=coordinator.model_id,
-            sw_version=coordinator.sw_version,
-            serial_number=coordinator.serial_number,
         )
+        # Only what is known at this point, which on a first start is nothing:
+        # the lamp has not been read yet. A field left out is left alone in
+        # the device registry, while a None is taken as the value and wipes
+        # what an earlier session learned. The coordinator fills the rest in
+        # once the lamp has said it (_async_publish_device_info).
+        if coordinator.model_id:
+            info["model"] = coordinator.model.name
+            info["model_id"] = coordinator.model_id
+        if coordinator.sw_version:
+            info["sw_version"] = coordinator.sw_version
+        if coordinator.serial_number:
+            info["serial_number"] = coordinator.serial_number
+        self._attr_device_info = info
 
     async def async_added_to_hass(self) -> None:
         """Subscribe to coordinator updates."""

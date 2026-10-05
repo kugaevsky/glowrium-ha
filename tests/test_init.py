@@ -3,30 +3,37 @@
 import asyncio
 from unittest.mock import AsyncMock, MagicMock, patch
 
+from bleak.exc import BleakError
 from homeassistant.config_entries import ConfigEntryState
-from homeassistant.const import CONF_ADDRESS, EVENT_HOMEASSISTANT_STOP
+from homeassistant.const import CONF_ADDRESS, CONF_MODEL_ID, EVENT_HOMEASSISTANT_STOP
 from homeassistant.core import HomeAssistant, State
+from homeassistant.helpers import device_registry as dr
+import pytest
 from pytest_homeassistant_custom_component.common import (
     MockConfigEntry,
     mock_restore_cache,
 )
 
-from custom_components.glowrium import cbor
+from custom_components.glowrium import cbor, models
 from custom_components.glowrium.const import (
     DOMAIN,
     KEY_BRIGHTNESS,
     KEY_INDICATOR,
     KEY_POWER,
 )
+from custom_components.glowrium.models import GlowriumModel
+
+ADDRESS = "AA:BB:CC:DD:EE:FF"
+G7_INFO = b"brand:INLEDCO;pkey:Glowrium-C051;devid:CST-0001;mac:x;version:4;;"
 
 
-def _entry() -> MockConfigEntry:
+def _entry(**data: str) -> MockConfigEntry:
     """Return a config entry for a lamp at a fixed address."""
     return MockConfigEntry(
         domain=DOMAIN,
         title="Glowrium-G7_1234",
-        unique_id="AA:BB:CC:DD:EE:FF",
-        data={CONF_ADDRESS: "AA:BB:CC:DD:EE:FF"},
+        unique_id=ADDRESS,
+        data={CONF_ADDRESS: ADDRESS, **data},
     )
 
 
@@ -153,18 +160,23 @@ async def test_the_background_connect_is_cancelled_on_unload(
     assert cancelled.is_set()
 
 
-async def _setup_without_bluetooth(hass: HomeAssistant) -> MockConfigEntry:
+async def _setup_without_bluetooth(
+    hass: HomeAssistant, entry: MockConfigEntry | None = None
+) -> MockConfigEntry:
     """Set up the entry with the radio stubbed out, and return it."""
-    entry = _entry()
-    entry.add_to_hass(hass)
+    if entry is None:
+        entry = _entry()
+        entry.add_to_hass(hass)
     with patch(
         "custom_components.glowrium.coordinator.GlowriumCoordinator.async_start",
         new_callable=AsyncMock,
     ):
         assert await hass.config_entries.async_setup(entry.entry_id)
         await hass.async_block_till_done()
-    # Availability follows advertisement presence, which the stubbed start
-    # never observed; these tests are about the entities, not about that.
+    # The stubbed start took neither the entry nor a look at the air.
+    # Availability follows advertisement presence; these tests are about the
+    # entities, not about that.
+    entry.runtime_data._entry = entry
     entry.runtime_data._present = True
     entry.runtime_data._async_notify_listeners()
     await hass.async_block_till_done()
@@ -370,3 +382,199 @@ async def test_the_stop_listener_goes_with_the_entry(hass: HomeAssistant) -> Non
         await hass.async_block_till_done()
 
     shutdown.assert_not_called()
+
+
+def _naming_itself(info: bytes) -> MagicMock:
+    """Return a link on which the device-info string reads as ``info``."""
+    client = MagicMock()
+    client.read_gatt_char = AsyncMock(return_value=bytearray(info))
+    return client
+
+
+def _device(hass: HomeAssistant) -> dr.DeviceEntry:
+    """Return the lamp's entry in the device registry."""
+    device = dr.async_get(hass).async_get_device(
+        connections={(dr.CONNECTION_BLUETOOTH, ADDRESS)}
+    )
+    assert device is not None
+    return device
+
+
+def _described(device: dr.DeviceEntry) -> tuple[str | None, ...]:
+    """Return what the device page shows of the lamp's own description."""
+    return (device.model, device.model_id, device.sw_version, device.serial_number)
+
+
+async def test_what_the_lamp_says_about_itself_reaches_the_device_page(
+    hass: HomeAssistant,
+) -> None:
+    """The device-info string is read after the entities exist, and must still land.
+
+    Setup stopped waiting for the first connect in 0.2.0. Since then the
+    entities have described the device from a coordinator that had read
+    nothing yet, and nobody told the registry when it had: on the real host
+    the page showed the model as "Glowrium" and no model id, firmware or
+    serial at all - the very fields a bug report is asked to quote.
+    """
+    entry = await _setup_without_bluetooth(hass)
+    assert _device(hass).model_id is None  # nothing read yet
+
+    await entry.runtime_data._async_read_device_info(_naming_itself(G7_INFO))
+
+    assert _described(_device(hass)) == (
+        "Glowrium G7",
+        "Glowrium-C051",
+        "4",
+        "CST-0001",
+    )
+
+
+async def test_a_restart_does_not_wipe_what_the_registry_holds(
+    hass: HomeAssistant,
+) -> None:
+    """Not knowing yet is not the same as knowing there is nothing.
+
+    A field left out of the device description is left alone in the registry;
+    a field given as None replaces what was there. Every start described the
+    lamp before reading it, with None for whatever it had not read, and so
+    took back what an earlier session had learned.
+    """
+    entry = _entry()
+    entry.add_to_hass(hass)
+    dr.async_get(hass).async_get_or_create(
+        config_entry_id=entry.entry_id,
+        connections={(dr.CONNECTION_BLUETOOTH, ADDRESS)},
+        manufacturer="INLEDCO",
+        model="Glowrium G7",
+        model_id="Glowrium-C051",
+        sw_version="4",
+        serial_number="CST-0001",
+    )
+
+    await _setup_without_bluetooth(hass, entry)
+
+    assert _described(_device(hass)) == (
+        "Glowrium G7",
+        "Glowrium-C051",
+        "4",
+        "CST-0001",
+    )
+
+
+async def test_the_model_is_remembered_from_one_start_to_the_next(
+    hass: HomeAssistant,
+) -> None:
+    """The profile a lamp gets must not depend on the order things happen in.
+
+    Entities are built at setup, the device-info string arrives later, and the
+    per-model profile is chosen by what that string says. So the model is
+    kept with the config entry once it has been read, and the next start
+    knows it before the first entity exists.
+    """
+    entry = await _setup_without_bluetooth(hass)
+    assert entry.runtime_data.model.name == "Glowrium"  # generic until read
+    await entry.runtime_data._async_read_device_info(_naming_itself(G7_INFO))
+    assert entry.data[CONF_MODEL_ID] == "Glowrium-C051"
+
+    assert await hass.config_entries.async_unload(entry.entry_id)
+    await _setup_without_bluetooth(hass, entry)
+
+    restarted = entry.runtime_data
+    assert not restarted.device_info  # nothing read in this session
+    assert restarted.model is models.G7
+    assert restarted.model_id == "Glowrium-C051"
+
+
+async def test_a_remembered_model_does_not_stand_in_for_reading_it(
+    hass: HomeAssistant,
+) -> None:
+    """Firmware can change between starts; what was remembered is not re-read."""
+    entry = _entry(**{CONF_MODEL_ID: "Glowrium-C051"})
+    entry.add_to_hass(hass)
+    await _setup_without_bluetooth(hass, entry)
+    client = _naming_itself(G7_INFO.replace(b"version:4", b"version:5"))
+
+    await entry.runtime_data._async_read_device_info(client)
+
+    client.read_gatt_char.assert_awaited_once()
+    assert _device(hass).sw_version == "5"
+
+
+async def test_a_model_without_a_profile_still_shows_what_it_is(
+    hass: HomeAssistant,
+) -> None:
+    """An unknown model id is shown as itself, under the family's name."""
+    entry = await _setup_without_bluetooth(hass)
+
+    await entry.runtime_data._async_read_device_info(
+        _naming_itself(b"brand:INLEDCO;pkey:Glowrium-C064;devid:CST-9;version:2;;")
+    )
+
+    assert _described(_device(hass)) == ("Glowrium", "Glowrium-C064", "2", "CST-9")
+    assert entry.data[CONF_MODEL_ID] == "Glowrium-C064"
+
+
+async def test_a_read_that_fails_leaves_the_device_page_alone(
+    hass: HomeAssistant,
+) -> None:
+    """A link lost before the read says nothing about the lamp."""
+    entry = _entry(**{CONF_MODEL_ID: "Glowrium-C051"})
+    entry.add_to_hass(hass)
+    dr.async_get(hass).async_get_or_create(
+        config_entry_id=entry.entry_id,
+        connections={(dr.CONNECTION_BLUETOOTH, ADDRESS)},
+        model="Glowrium G7",
+        model_id="Glowrium-C051",
+        sw_version="4",
+        serial_number="CST-0001",
+    )
+    await _setup_without_bluetooth(hass, entry)
+    client = MagicMock()
+    client.read_gatt_char = AsyncMock(side_effect=BleakError("Not connected"))
+
+    await entry.runtime_data._async_read_device_info(client)
+
+    assert _described(_device(hass)) == (
+        "Glowrium G7",
+        "Glowrium-C051",
+        "4",
+        "CST-0001",
+    )
+    assert entry.data[CONF_MODEL_ID] == "Glowrium-C051"
+
+
+async def test_the_presets_offered_are_the_ones_of_the_lamp_that_answered(
+    hass: HomeAssistant, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A model's own presets take effect, which they could not before.
+
+    The preset list was fixed when the entity was built - before any lamp had
+    said which model it was - so it was always the reference list, and a
+    profile added to models.py for another model changed nothing.
+    """
+    other = GlowriumModel(
+        pkey="Glowrium-TEST",
+        name="Glowrium Test",
+        lighting_modes={"Dawn": 3, "Dusk": 4},
+    )
+    monkeypatch.setitem(models.MODELS, other.pkey, other)
+    entry = await _setup_without_bluetooth(hass)
+    coordinator = entry.runtime_data
+    select = "select.glowrium_g7_1234_lighting_mode"
+    assert "Sun SYNC" in hass.states.get(select).attributes["options"]
+
+    await coordinator._async_read_device_info(
+        _naming_itself(b"pkey:Glowrium-TEST;version:1;;")
+    )
+    coordinator._async_notify_listeners()  # as the connect does after the read
+    await hass.async_block_till_done()
+
+    assert hass.states.get(select).attributes["options"] == ["Dawn", "Dusk"]
+    coordinator.async_set_lighting_mode = AsyncMock()
+    await hass.services.async_call(
+        "select",
+        "select_option",
+        {"entity_id": select, "option": "Dusk"},
+        blocking=True,
+    )
+    coordinator.async_set_lighting_mode.assert_awaited_once_with(4)

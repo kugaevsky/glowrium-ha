@@ -63,12 +63,24 @@ class GlowriumLightingModeSelect(GlowriumSettingEntity, SelectEntity):
     _attr_entity_category = EntityCategory.CONFIG
 
     def __init__(self, coordinator: GlowriumCoordinator) -> None:
-        """Initialize the lighting-mode selector for the device's model."""
+        """Initialize the lighting-mode selector."""
         super().__init__(coordinator)
         self._attr_unique_id = f"{coordinator.address}_lighting_mode"
-        self._modes = coordinator.model.lighting_modes
-        self._attr_options = list(self._modes)
-        self._by_index = {index: label for label, index in self._modes.items()}
+
+    @property
+    def _modes(self) -> dict[str, int]:
+        """The presets of the lamp's model, as it is known right now.
+
+        Looked up each time rather than kept: the entity is built before the
+        lamp has said which model it is, and the answer changes what is
+        offered.
+        """
+        return self._coordinator.model.lighting_modes
+
+    @property
+    def options(self) -> list[str]:
+        """Return the presets this model has."""
+        return list(self._modes)
 
     @property
     def available(self) -> bool:
@@ -79,8 +91,9 @@ class GlowriumLightingModeSelect(GlowriumSettingEntity, SelectEntity):
     def current_option(self) -> str | None:
         """Return the selected lighting mode, if known."""
         index = self._coordinator.state.get(KEY_LIGHTING_MODE)
-        mode = self._by_index.get(index) if isinstance(index, int) else None
-        if mode is None and self._restored in self.options:
+        modes = self._modes
+        mode = next((label for label, value in modes.items() if value == index), None)
+        if mode is None and self._restored in modes:
             return self._restored
         return mode
 

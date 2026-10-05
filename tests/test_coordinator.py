@@ -2496,6 +2496,24 @@ async def test_hanging_up_does_not_need_home_assistant() -> None:
     client.disconnect.assert_awaited_once()
 
 
+async def test_reading_the_device_info_does_not_need_home_assistant() -> None:
+    """What the lamp says about itself is kept even with nowhere to publish it.
+
+    Home Assistant gets it in its device registry and its config entry; the
+    bench has neither, and reads the string all the same.
+    """
+    coordinator = GlowriumCoordinator(None, "AA:BB:CC:DD:EE:FF", "bench")
+    client = _fresh_client()
+    client.read_gatt_char = AsyncMock(
+        return_value=bytearray(b"pkey:Glowrium-C051;version:4;;")
+    )
+
+    await coordinator._async_read_device_info(client)
+
+    assert coordinator.model_id == "Glowrium-C051"
+    assert coordinator.sw_version == "4"
+
+
 async def test_a_retry_hangs_up_without_home_assistant(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

@@ -3,7 +3,12 @@
 from __future__ import annotations
 
 from homeassistant.config_entries import ConfigEntry
-from homeassistant.const import CONF_ADDRESS, EVENT_HOMEASSISTANT_STOP, Platform
+from homeassistant.const import (
+    CONF_ADDRESS,
+    CONF_MODEL_ID,
+    EVENT_HOMEASSISTANT_STOP,
+    Platform,
+)
 from homeassistant.core import HomeAssistant
 
 from .coordinator import GlowriumCoordinator
@@ -24,7 +29,14 @@ type GlowriumConfigEntry = ConfigEntry[GlowriumCoordinator]
 
 async def async_setup_entry(hass: HomeAssistant, entry: GlowriumConfigEntry) -> bool:
     """Set up Glowrium from a config entry."""
-    coordinator = GlowriumCoordinator(hass, entry.data[CONF_ADDRESS], entry.title)
+    coordinator = GlowriumCoordinator(
+        hass,
+        entry.data[CONF_ADDRESS],
+        entry.title,
+        # What an earlier session read off the lamp. The entities are built
+        # before this one has read anything, and the presets depend on it.
+        model_id=entry.data.get(CONF_MODEL_ID),
+    )
     # Published before it is started, not after: async_start registers the
     # bluetooth callbacks and the reconnect poll, so a setup cancelled part-way
     # through it would otherwise leave a live coordinator that async_unload_entry

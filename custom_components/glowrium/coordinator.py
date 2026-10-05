@@ -16,9 +16,12 @@ from bleak.exc import BleakError
 from bleak_retry_connector import BleakClientWithServiceCache, establish_connection
 from homeassistant.components import bluetooth
 from homeassistant.config_entries import ConfigEntry
+from homeassistant.const import CONF_MODEL_ID
 from homeassistant.core import Event, HomeAssistant, callback
 from homeassistant.exceptions import HomeAssistantError
+from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers.event import async_track_time_interval
+from homeassistant.helpers.typing import UNDEFINED
 from homeassistant.util import dt as dt_util
 
 from . import cbor, protocol
@@ -303,13 +306,26 @@ class GlowriumCoordinator:
     reports its state as CBOR maps notified on ``NOTIFY_UUID`` (facebd02).
     """
 
-    def __init__(self, hass: HomeAssistant, address: str, name: str) -> None:
-        """Initialize the coordinator for the device at ``address``."""
+    def __init__(
+        self,
+        hass: HomeAssistant,
+        address: str,
+        name: str,
+        model_id: str | None = None,
+    ) -> None:
+        """Initialize the coordinator for the device at ``address``.
+
+        ``model_id`` is the model an earlier session read off the lamp, if
+        one did. The entities are built before this session has read
+        anything, and which presets a lamp has depends on its model.
+        """
         self.hass = hass
         self.address = address
         self.name = name
         self.state: dict[int, Any] = {}
+        # What the lamp said about itself in this session; empty until read.
         self.device_info: dict[str, str] = {}
+        self._remembered_model_id = model_id
         self._client: BleakClientWithServiceCache | None = None
         # The device resets its ramp to a default when circadian is re-enabled,
         # so remember the user's chosen ramp and re-apply it on mode switch.
@@ -393,13 +409,17 @@ class GlowriumCoordinator:
 
     @property
     def model(self) -> GlowriumModel:
-        """Return the per-model profile resolved from the device-info pkey."""
-        return resolve_model(self.device_info.get("pkey"))
+        """Return the per-model profile for the lamp's model id."""
+        return resolve_model(self.model_id)
 
     @property
     def model_id(self) -> str | None:
-        """Device model code from the device-info string (e.g. Glowrium-C051)."""
-        return self.device_info.get("pkey")
+        """Device model code (e.g. Glowrium-C051), read now or remembered.
+
+        From the device-info string once this session has read it, and until
+        then from what an earlier session read.
+        """
+        return self.device_info.get("pkey") or self._remembered_model_id
 
     @property
     def sw_version(self) -> str | None:
@@ -1050,6 +1070,40 @@ class GlowriumCoordinator:
             "%s: device info read; on BlueZ this link does not outlive a read",
             self.address,
         )
+        self._async_publish_device_info()
+
+    @callback
+    def _async_publish_device_info(self) -> None:
+        """Hand what the lamp said about itself on to Home Assistant.
+
+        The entities described the device when they were built, which is
+        before anything was read, and Home Assistant takes that description
+        once. So what is learned afterwards is put into the device registry
+        here, and the model is kept with the config entry so that the next
+        start knows it before the first entity exists.
+        """
+        entry = self._entry
+        if self.hass is None or entry is None:  # the bench has neither
+            return
+        registry = dr.async_get(self.hass)
+        device = registry.async_get_device(
+            connections={(dr.CONNECTION_BLUETOOTH, self.address)}
+        )
+        if device is not None:
+            # Only what the lamp actually said. The registry takes None as a
+            # value; UNDEFINED is how a field is left as it is.
+            registry.async_update_device(
+                device.id,
+                model=self.model.name if self.model_id else UNDEFINED,
+                model_id=self.model_id or UNDEFINED,
+                sw_version=self.sw_version or UNDEFINED,
+                serial_number=self.serial_number or UNDEFINED,
+            )
+        model_id = self.device_info.get("pkey")
+        if model_id and entry.data.get(CONF_MODEL_ID) != model_id:
+            self.hass.config_entries.async_update_entry(
+                entry, data={**entry.data, CONF_MODEL_ID: model_id}
+            )
 
     async def _request_state(self, client: BleakClientWithServiceCache) -> bool:
         """Prime the state mirror: ask the lamp to report, read only if it will not.
