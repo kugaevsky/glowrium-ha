@@ -787,9 +787,10 @@ async def test_a_fault_ends_with_the_lamp_and_not_with_a_hang_up(
     """Once announced, the episode is closed by the lamp answering - and said.
 
     BlueZ may start answering disconnects again while the lamp still says
-    nothing. If that quietly cleared the count, the lamp's eventual answer
-    would find no episode to close, and the warning in the log would be
-    left standing with nothing after it.
+    nothing, and stop again. That is one episode, not two. If an answered
+    hang-up quietly cleared the count, the next run of unanswered ones would
+    be announced as a second fault in the middle of the first - with the
+    backoff starting over - and the log would read as two faults and one end.
     """
     coordinator, host, clock, dialled = _on_a_clock(hass, monkeypatch)
     coordinator._activation_checked = True
@@ -799,6 +800,12 @@ async def test_a_fault_ends_with_the_lamp_and_not_with_a_hang_up(
     host.released.set()  # hang-ups go through now; the lamp still answers nothing
     await _ticks(coordinator, hass, clock, 6)
     assert len([r for r in caplog.records if r.levelname == "WARNING"]) == 1
+
+    host.released.clear()  # ...and then they stop going through again
+    await _ticks(coordinator, hass, clock, 24)
+    assert len([r for r in caplog.records if r.levelname == "WARNING"]) == 1
+    assert coordinator._stuck_hang_ups > coordinator_module._STACK_FAULT_AFTER
+    host.released.set()
 
     async def _healthy(*_args: object, **_kwargs: object) -> _WedgedClient:
         dialled.append(clock.now)
