@@ -596,7 +596,8 @@ class GlowriumCoordinator:
         since when. Judged by what the entities are judged by - an
         advertisement or a link - so a lamp that is quiet while connected is
         not reported as gone. Checked wherever the listeners are told, which
-        is everywhere either of the two changes.
+        is everywhere either of the two changes while the lamp is watched: a
+        coordinator that is stopping lets go of its link and says nothing.
         """
         in_reach = self.available
         if in_reach == self._logged_in_reach:
@@ -1027,6 +1028,8 @@ class GlowriumCoordinator:
                     # of a link that never worked.
                     _LOGGER.debug("%s: link answers nothing, dropping", self.address)
                     self._hang_up(client)
+                    # Said here: the return below skips the else at the end.
+                    self._async_notify_listeners()
                     return
                 await self._async_activate_if_needed()
                 await self._async_sync_clock_if_needed()
@@ -1560,6 +1563,18 @@ class GlowriumCoordinator:
         self._mirror(payload)
 
     async def _async_write(self, payload: dict[int, Any]) -> None:
+        """Send a command, and tell the listeners how things stand after it.
+
+        Whichever way it went: a command that failed has let go of the link,
+        and that may have been all that made the lamp reachable. A failure is
+        a ``HomeAssistantError`` (see ``_async_deliver``).
+        """
+        try:
+            await self._async_deliver(payload)
+        finally:
+            self._async_notify_listeners()
+
+    async def _async_deliver(self, payload: dict[int, Any]) -> None:
         """Serialize a command under the connection lock, with one reconnect.
 
         The write runs inside ``_lock`` so it cannot race a background
@@ -1625,7 +1640,6 @@ class GlowriumCoordinator:
                 # the device had its chance to answer.
                 if failed is not None:
                     self._hang_up(failed)
-        self._async_notify_listeners()
 
     async def _async_device_confirms(
         self, payload: dict[int, Any], reports_before: int

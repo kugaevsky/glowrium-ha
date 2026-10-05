@@ -196,6 +196,11 @@ the table is under *Changed*.
   changed the mode and then failed on re-applying that ramp, so the user was
   told the switch had not worked while watching it take effect. A ramp is now
   remembered once the lamp has it.
+- **Entities go unavailable when a command finds the lamp gone.** A command
+  that failed let go of the link and told its caller, and nobody else. If the
+  lamp had stopped advertising as well, its entities went on reading as
+  available until something else happened to tell them. They are told now,
+  and so is the log.
 
 ### Changed
 

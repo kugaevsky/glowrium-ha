@@ -1605,6 +1605,60 @@ async def test_a_lamp_with_a_link_is_not_out_of_reach_for_being_quiet(
     await hass.async_block_till_done()  # the hang-up the disconnect started
 
 
+async def test_a_command_that_fails_says_the_link_is_gone(
+    hass: HomeAssistant,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """A failed command lets go of the link, and that may be all there was.
+
+    The lamp was connected and no longer advertising. The command fails, the
+    link is dropped, and nothing reaches the lamp any more - which the
+    entities have to hear there and then, and the log with them. The error
+    handed to the caller used to be all that was said: the entities stayed
+    available until something else happened to tell them.
+    """
+    coordinator, client = _connected_coordinator(hass)
+    client.write_gatt_char = AsyncMock(side_effect=BleakError("Not connected"))
+    coordinator._present = False
+    monkeypatch.setattr(coordinator_module, "_CONFIRM_TIMEOUT", 0.01)
+    told: list[bool] = []
+    coordinator.async_add_listener(lambda: told.append(coordinator.available))
+    assert coordinator.available
+
+    with caplog.at_level(logging.INFO, logger=coordinator_module.__name__):
+        with pytest.raises(HomeAssistantError):
+            await coordinator.async_set_power(True)
+        await hass.async_block_till_done()
+
+    assert not coordinator.available
+    assert told
+    assert told[-1] is False
+    assert len(_info_lines(caplog)) == 1
+    assert "out of reach" in _info_lines(caplog)[0]
+
+
+async def test_a_link_dropped_while_it_is_primed_is_said_to_be_gone(
+    hass: HomeAssistant, caplog: pytest.LogCaptureFixture
+) -> None:
+    """The poll's priming can be what finds a link dead, and drops it."""
+    coordinator, client = _connected_coordinator(hass)
+    client.read_gatt_char = AsyncMock(side_effect=BleakError("Not connected"))
+    client.write_gatt_char = AsyncMock(side_effect=BleakError("Not connected"))
+    coordinator._present = False
+    told: list[bool] = []
+    coordinator.async_add_listener(lambda: told.append(coordinator.available))
+
+    with caplog.at_level(logging.INFO, logger=coordinator_module.__name__):
+        await coordinator._async_prime()
+        await hass.async_block_till_done()
+
+    assert coordinator._client is None
+    assert told == [False]
+    assert len(_info_lines(caplog)) == 1
+    assert "out of reach" in _info_lines(caplog)[0]
+
+
 async def test_a_lamp_that_is_absent_at_start_is_said_to_be(
     hass: HomeAssistant,
     monkeypatch: pytest.MonkeyPatch,

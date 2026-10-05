@@ -521,8 +521,12 @@ available = self._is_connected or self._present
 - When `available` changes, the log says so at INFO, once each way: `is out of
   reach`, `is back in reach` (`_async_log_reach`). It is judged by the same
   expression as the entities, so a lamp that goes quiet while it is connected
-  is not reported as gone. The check sits where the listeners are told, which
-  is the one place every change of either input comes through.
+  is not reported as gone. The check sits where the listeners are told, and
+  the listeners are told wherever a link is let go of while the lamp is being
+  watched - by the stack reporting a drop, by a probe or a priming that got no
+  answer, and by a command that failed, whose caller gets an error and whose
+  entities would otherwise go on reading as available. A coordinator that is
+  stopping lets go of its link and says nothing.
 
 ### Reconnect
 
