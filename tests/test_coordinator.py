@@ -1466,6 +1466,93 @@ async def test_a_write_without_a_link_is_refused_not_dropped(
         await coordinator._write_raw({KEY_POWER: True})
 
 
+def _info_lines(caplog: pytest.LogCaptureFixture) -> list[str]:
+    """Return what the coordinator logged at INFO, the level a user reads."""
+    return [
+        record.getMessage()
+        for record in caplog.records
+        if record.levelno == logging.INFO and record.name == coordinator_module.__name__
+    ]
+
+
+async def test_going_out_of_reach_and_coming_back_are_each_said_once(
+    hass: HomeAssistant, caplog: pytest.LogCaptureFixture
+) -> None:
+    """The log says when the lamp became unreachable, and when it returned.
+
+    Its entities go unavailable and nothing said why or since when. Once
+    each way, however many times the same thing is observed in between.
+    """
+    coordinator, _ = _connected_coordinator(hass)
+    coordinator._client = None
+    coordinator._present = True
+    coordinator._reconnecting = True  # this is about the log, not about dialling
+
+    with caplog.at_level(logging.INFO, logger=coordinator_module.__name__):
+        coordinator._async_on_unavailable(None)
+        coordinator._async_on_unavailable(None)
+        coordinator._async_notify_listeners()
+        assert len(_info_lines(caplog)) == 1
+        assert "out of reach" in _info_lines(caplog)[0]
+        assert "Glowrium-G7" in _info_lines(caplog)[0]
+
+        caplog.clear()
+        coordinator._async_on_advertisement(None, None)
+        coordinator._async_on_advertisement(None, None)
+        coordinator._async_notify_listeners()
+        assert len(_info_lines(caplog)) == 1
+        assert "back in reach" in _info_lines(caplog)[0]
+
+
+async def test_a_lamp_with_a_link_is_not_out_of_reach_for_being_quiet(
+    hass: HomeAssistant, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Reach is the advertisement or the link, the same as for the entities.
+
+    A lamp may stop advertising while it is connected. Its entities stay
+    available then, and the log must not say otherwise - until the link goes
+    as well, which is the moment it really is out of reach.
+    """
+    coordinator, client = _connected_coordinator(hass)
+    coordinator._present = True
+
+    with caplog.at_level(logging.INFO, logger=coordinator_module.__name__):
+        coordinator._async_on_unavailable(None)
+        assert coordinator.available
+        assert _info_lines(caplog) == []
+
+        coordinator._async_on_disconnect(client)
+        assert not coordinator.available
+        assert len(_info_lines(caplog)) == 1
+        assert "out of reach" in _info_lines(caplog)[0]
+    await hass.async_block_till_done()  # the hang-up the disconnect started
+
+
+async def test_a_lamp_that_is_absent_at_start_is_said_to_be(
+    hass: HomeAssistant,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Starting with the lamp unplugged is the first time it is out of reach."""
+    coordinator, _ = _connected_coordinator(hass)
+    coordinator._client = None
+    fake = MagicMock()
+    fake.async_register_callback.return_value = lambda: None
+    fake.async_track_unavailable.return_value = lambda: None
+    fake.async_address_present.return_value = False
+    monkeypatch.setattr(coordinator_module, "bluetooth", fake)
+    entry = MagicMock()
+    entry.async_create_background_task = lambda _hass, coro, _name: coro.close()
+
+    with caplog.at_level(logging.INFO, logger=coordinator_module.__name__):
+        await coordinator.async_start(entry)
+    try:
+        assert len(_info_lines(caplog)) == 1
+        assert "out of reach" in _info_lines(caplog)[0]
+    finally:
+        await coordinator.async_stop()
+
+
 async def test_starting_watches_for_the_device(
     hass: HomeAssistant, monkeypatch: pytest.MonkeyPatch
 ) -> None:

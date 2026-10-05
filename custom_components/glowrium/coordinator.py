@@ -363,6 +363,10 @@ class GlowriumCoordinator:
         # The keys the lamp has reported since it was last asked for its state.
         self._carried: set[int] = set()
         self._present = False
+        # What the log last said about the lamp being in reach (see
+        # _async_log_reach). Starts as "in reach", so a lamp that is absent
+        # from the first moment is said to be.
+        self._logged_in_reach = True
         self._reconnecting = False
         # Set by async_stop and never cleared: a stopped coordinator takes no
         # new link (see _connect_locked). Nothing would ever let go of it.
@@ -518,8 +522,33 @@ class GlowriumCoordinator:
 
     @callback
     def _async_notify_listeners(self) -> None:
+        self._async_log_reach()
         for update_callback in list(self._listeners):
             update_callback()
+
+    @callback
+    def _async_log_reach(self) -> None:
+        """Say once when the lamp goes out of reach, and once when it is back.
+
+        The entities go unavailable then, and without this nothing says why or
+        since when. Judged by what the entities are judged by - an
+        advertisement or a link - so a lamp that is quiet while connected is
+        not reported as gone. Checked wherever the listeners are told, which
+        is everywhere either of the two changes.
+        """
+        in_reach = self.available
+        if in_reach == self._logged_in_reach:
+            return
+        self._logged_in_reach = in_reach
+        if in_reach:
+            _LOGGER.info("%s (%s) is back in reach", self.name, self.address)
+        else:
+            _LOGGER.info(
+                "%s (%s) is out of reach: it is not advertising and there is no "
+                "link to it. Its entities are unavailable until it is heard again",
+                self.name,
+                self.address,
+            )
 
     async def async_start(self, entry: ConfigEntry) -> None:
         """Watch for the device and keep it connected.
@@ -552,6 +581,7 @@ class GlowriumCoordinator:
         self._present = bluetooth.async_address_present(
             self.hass, self.address, connectable=True
         )
+        self._async_log_reach()  # absent from the start is worth saying too
         self._spawn(self._async_initial_connect(), "initial connect")
         # Advertisement callbacks are throttled, so also poll: reconnect within
         # _RECONNECT_INTERVAL after any drop, regardless of advertisement timing.
