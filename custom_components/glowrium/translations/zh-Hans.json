@@ -102,7 +102,7 @@
   "issues": {
     "bluetooth_stack_stuck": {
       "title": "主机的蓝牙协议栈占用着一个已不存在的连接",
-      "description": "Home Assistant 连续 {count} 次请求此主机的蓝牙协议栈断开与 {name} 的连接，均未得到响应。这说明协议栈仍占用着一个已不存在的连接：问题不在灯上，重启 Home Assistant 也无法解决。\n\n请在主机上重启蓝牙适配器（先执行 `bluetoothctl power off`，再执行 `bluetoothctl power on`），或重启主机的 bluetooth 服务。在此之前，集成会降低尝试连接这盏灯的频率。灯再次响应后，此提示会自动消失。"
+      "description": "Home Assistant 连续 {count} 次请求此主机的蓝牙协议栈断开与 {name} 的连接，均未得到响应。这说明协议栈仍占用着一个已不存在的连接：问题不在灯具上，重启 Home Assistant 也无法解决。\n\n请在主机上重启蓝牙适配器（先执行 `bluetoothctl power off`，再执行 `bluetoothctl power on`），或重启主机的 bluetooth 服务。在此之前，集成会降低尝试连接灯具的频率。灯具再次响应后，此提示会自动消失。"
     }
   }
 }
