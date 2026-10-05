@@ -396,11 +396,13 @@ def _naming_itself(info: bytes) -> MagicMock:
 
 
 def _device(hass: HomeAssistant) -> dr.DeviceEntry:
-    """Return the lamp's entry in the device registry."""
-    device = dr.async_get(hass).async_get_device(
-        connections={(dr.CONNECTION_BLUETOOTH, ADDRESS)}
-    )
-    assert device is not None
+    """Return the lamp's entry in the device registry.
+
+    Found through the config entry, the way the integration finds it: from
+    Home Assistant 2026.10 a lookup by connection is deprecated.
+    """
+    (entry,) = hass.config_entries.async_entries(DOMAIN)
+    (device,) = dr.async_entries_for_config_entry(dr.async_get(hass), entry.entry_id)
     return device
 
 

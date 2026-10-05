@@ -1219,10 +1219,11 @@ class GlowriumCoordinator:
         if self.hass is None or entry is None:  # the bench has neither
             return
         registry = dr.async_get(self.hass)
-        device = registry.async_get_device(
-            connections={(dr.CONNECTION_BLUETOOTH, self.address)}
-        )
-        if device is not None:
+        # The device is found through the config entry it belongs to, not by
+        # its address: since Home Assistant 2026.10 a connection no longer
+        # names one device across config entries, and looking one up that way
+        # is deprecated. There is one, once the first entity has been added.
+        for device in dr.async_entries_for_config_entry(registry, entry.entry_id):
             # Only what the lamp actually said. The registry takes None as a
             # value; UNDEFINED is how a field is left as it is.
             registry.async_update_device(
