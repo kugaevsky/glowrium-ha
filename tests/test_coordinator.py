@@ -3,6 +3,7 @@
 import asyncio
 from datetime import datetime
 import logging
+import random
 from time import monotonic
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
@@ -941,6 +942,25 @@ _CURVE = bytes(range(0x40, 0x5C))  # 28 bytes of sunrise and sunset times
             "c0" + "0afb" + "xx" * 8 + "ff",
             id="behind something that cannot be read",
         ),
+        pytest.param(
+            # 18 34 41 reads as the times, one byte long - and that byte is the
+            # id of the latitude that follows.
+            "183441" + "0afb" + _LATITUDE_HEX,
+            "183441" + "xx" + "fb" + "xx" * 8,
+            id="an id swallowed by something that only looked private",
+        ),
+        pytest.param(
+            # 0a fb, and six bytes later the real longitude: taking eight bytes
+            # for a latitude takes the longitude's id with them.
+            "0afb" + "00" * 6 + "0bfb" + _LONGITUDE_HEX,
+            "0afb" + "xx" * 8 + "xx" * 8,
+            id="an id inside what was taken for another value",
+        ),
+        pytest.param(
+            "1834" + "57" + "00" * 13 + "0afb" + _LATITUDE_HEX,
+            "1834" + "57" + "xx" * 23,
+            id="a coordinate inside what was taken for the times",
+        ),
         pytest.param("a206f5081846", "a206f5081846", id="nothing of the kind"),
         pytest.param("", "", id="nothing at all"),
     ],
@@ -956,9 +976,54 @@ def test_a_frame_goes_into_the_log_without_what_says_where_the_lamp_is(
     are found by their bytes wherever they stand - an id and the head of its
     value - and the value is put down as xx. Everything else stays, byte for
     byte, at the length it had: that is what makes the dump worth posting.
+
+    Every offset is looked at, whatever was found before it. A search that
+    skipped past each value it found would skip the id of the next one
+    whenever a find was a false one - and print that value whole.
     """
     assert _for_the_log(bytes.fromhex(frame)) == shown
     assert len(shown) == len(frame)
+
+
+def test_wherever_it_stands_in_whatever_noise_a_coordinate_is_blanked() -> None:
+    """No bytes around a coordinate, or ahead of it, keep it from being found.
+
+    The bytes that surround it are noise leaning towards the ones the search
+    looks for, so that false finds come up all the time - before the
+    coordinate, across its id, inside it. What stays in the dump is the
+    frame's own bytes, in place.
+    """
+    rng = random.Random(20261005)
+    lures = bytes.fromhex("0a0bfbfaf9183440414c575859")
+    private = [
+        bytes.fromhex("0afb" + _LATITUDE_HEX),
+        bytes.fromhex("0bfb" + _LONGITUDE_HEX),
+        bytes.fromhex("1834581c") + _CURVE,
+    ]
+
+    def noise(most: int) -> bytes:
+        return bytes(
+            rng.choice(lures) if rng.random() < 0.6 else rng.randrange(256)
+            for _ in range(rng.randrange(most))
+        )
+
+    for _ in range(3000):
+        value = rng.choice(private)
+        head = 4 if value[0] == 0x18 else 2
+        before = noise(40)
+        frame = before + value + noise(40)
+
+        shown = _for_the_log(frame)
+
+        assert len(shown) == 2 * len(frame)
+        start = 2 * (len(before) + head)
+        assert shown[start : 2 * (len(before) + len(value))] == "xx" * (
+            len(value) - head
+        ), frame.hex()
+        assert all(
+            shown[2 * i : 2 * i + 2] in ("xx", f"{byte:02x}")
+            for i, byte in enumerate(frame)
+        )
 
 
 @pytest.mark.parametrize(

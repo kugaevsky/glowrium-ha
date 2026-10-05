@@ -337,19 +337,26 @@ def _for_the_log(frame: bytes) -> str:
     posts it to blank hex by hand is asking for it to be forgotten.
 
     The frame being logged is one that could not be read to its end, so the
-    values are not found by decoding it: they are looked for by their bytes,
-    at every offset - an id and the head of its value. A match that was
-    something else costs a few bytes of the dump. Everything else stays as it
-    is and where it is, which is what makes the dump worth having.
+    values are not found by decoding it: they are looked for by their bytes -
+    an id and the head of its value. A match that was something else costs a
+    few bytes of the dump. Everything else stays as it is and where it is,
+    which is what makes the dump worth having.
+
+    Every offset is looked at, whatever was found before it. Skipping past a
+    value once it is found would be the natural way to walk a frame, and a
+    false match would then carry the search over the id of a real one - whose
+    value would be printed whole. Looked at one by one, a false match can
+    only blank more.
     """
-    shown: list[str] = []
-    at = 0
-    while at < len(frame):
+    hidden = bytearray(len(frame))
+    for at in range(len(frame)):
         head, value = _private_at(frame, at)
-        hidden = min(value, len(frame) - at - head)
-        shown.append(frame[at : at + head].hex() + "xx" * hidden)
-        at += head + hidden
-    return "".join(shown)
+        start = at + head
+        hidden[start : start + value] = b"\x01" * len(hidden[start : start + value])
+    return "".join(
+        "xx" if blank else f"{byte:02x}"
+        for byte, blank in zip(frame, hidden, strict=True)
+    )
 
 
 def _as_text(name: str) -> str:
