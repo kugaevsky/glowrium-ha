@@ -507,6 +507,41 @@ class GlowriumCoordinator:
         """Schedule gradual-fade duration in minutes, or None if not yet read."""
         return protocol.schedule_gradual_minutes(self.state)
 
+    def diagnostics(self) -> dict[str, Any]:
+        """Describe the lamp and the link, for a diagnostics download.
+
+        What the lamp said about itself, everything it has reported, and where
+        the connection stands - as it is, private or not. What of this may
+        leave the host is for the caller to choose, which is the one that
+        knows it is writing a file to be shared (see diagnostics.py).
+        """
+        client = self._client
+        backend = self._backends.get(client) if client is not None else None
+        return {
+            "device": {
+                "model": self.model.name,
+                "model_id": self.model_id,
+                "firmware": self.sw_version,
+                "info": dict(self.device_info),
+            },
+            "link": {
+                "available": self.available,
+                "advertising": self._present,
+                "connected": self._is_connected,
+                "primed": client is not None and client is self._primed_client,
+                "client": type(backend).__name__ if backend is not None else None,
+                "reports": self._reports,
+                "writes_sent": self._writes_sent,
+                "seconds_since_last_answer": round(monotonic() - self._last_answer),
+                "state_request_refusals": self._state_request_failures,
+                "state_request_paused": self._state_request_muted,
+                "unanswered_hang_ups": self._stuck_hang_ups,
+                "dials_held_back": monotonic() < self._dial_not_before,
+                "clients_that_would_not_close": len(self._unreleased),
+            },
+            "state": dict(self.state),
+        }
+
     @callback
     def async_add_listener(
         self, update_callback: Callable[[], None]
