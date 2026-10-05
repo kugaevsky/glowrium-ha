@@ -95,6 +95,12 @@
     "lighting_mode_not_read": {
       "message": "Aún no se puede cambiar: {name} no ha informado de su modo de iluminación actual. Aparecerá cuando la lámpara se conecte."
     },
+    "link_not_released": {
+      "message": "No se pudo enviar el comando a {name}: la conexión Bluetooth anterior con el dispositivo no se pudo cerrar y no se abre otra encima de ella. Si no se resuelve por sí solo, reinicia Home Assistant; si vuelve a ocurrir después, la pila Bluetooth del host está reteniendo la conexión: apaga y vuelve a encender el adaptador Bluetooth del host."
+    },
+    "not_running": {
+      "message": "No se pudo enviar el comando a {name}: la integración se está recargando o Home Assistant se está deteniendo. Vuelve a intentarlo cuando esté de nuevo en marcha."
+    },
     "schedule_not_read": {
       "message": "Aún no se puede cambiar: {name} no ha informado de su programación actual. Aparecerá cuando la lámpara se conecte."
     }

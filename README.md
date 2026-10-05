@@ -218,6 +218,19 @@ messages worth acting on, and two symptoms that come without one.
   write did not get through. Check that the vendor app is not connected (the
   lamp takes one connection at a time) and that an adapter or a proxy is
   within range of the lamp.
+- **A command fails with "the integration is being reloaded or Home Assistant
+  is stopping"** — it arrived while the integration was on its way out.
+  Nothing is wrong with the lamp or with the radio; send it again once the
+  integration is running again.
+- **A command fails with "the previous Bluetooth connection to it could not be
+  closed"** — the integration is left holding a connection it can neither hang
+  up nor close, and does not open another on top of it: each one would cost
+  the host a connection to its system bus. It keeps trying to close it, and a
+  restart of Home Assistant lets go of it. If it comes back after the restart,
+  the host's Bluetooth stack is holding on to the link: clear it as for the
+  unanswered disconnects above — no repair is raised for it in this case.
+  Either way, please open an issue: it means the Bluetooth library has changed
+  underneath the integration.
 - **Every entity is `unavailable`** — the lamp is not being heard at all: no
   power, out of range, or the adapter is down. Availability follows the
   lamp's advertisements, not the connection, so a lamp that is merely

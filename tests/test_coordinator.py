@@ -2783,6 +2783,19 @@ def _dialling(
     return dial
 
 
+def _counting_connects(coordinator: GlowriumCoordinator) -> list[dict[str, bool]]:
+    """Note each time the coordinator sets about getting a link, and how."""
+    asked: list[dict[str, bool]] = []
+    connect = coordinator._connect_locked
+
+    async def _counted(**kwargs: bool) -> None:
+        asked.append(kwargs)
+        await connect(**kwargs)
+
+    coordinator._connect_locked = _counted
+    return asked
+
+
 def _fresh_client() -> MagicMock:
     """Return a client as establish_connection hands one back: up, but unread."""
     client = MagicMock()
@@ -3676,6 +3689,100 @@ async def test_a_stopped_coordinator_does_not_dial(
 
     dial.assert_not_awaited()
     assert coordinator._client is None
+
+
+@pytest.mark.parametrize("stopped_by", ["an unload", "Home Assistant stopping"])
+async def test_a_command_refused_because_it_has_stopped_says_so(
+    hass: HomeAssistant, monkeypatch: pytest.MonkeyPatch, stopped_by: str
+) -> None:
+    """A stopped coordinator does not send its user off to buy a Bluetooth proxy.
+
+    The command is refused because the integration is being reloaded or Home
+    Assistant is going down. The radio did nothing, and "the device may be
+    out of range ... a Bluetooth proxy near the device usually fixes this"
+    is advice for something else. It is said as what it is - and once: a link
+    that is refused on purpose is not asked for a second time.
+    """
+    coordinator, _ = _connected_coordinator(hass)
+    dial = _dialling(coordinator, monkeypatch, _fresh_client(), _fresh_client())
+    monkeypatch.setattr(coordinator_module, "_CONFIRM_TIMEOUT", 0.01)
+    asked = _counting_connects(coordinator)
+    if stopped_by == "an unload":
+        await coordinator.async_stop()
+    else:
+        coordinator.async_shutdown()
+
+    with pytest.raises(HomeAssistantError) as err:
+        await coordinator.async_set_power(True)
+    await hass.async_block_till_done()
+
+    assert err.value.translation_key == "not_running"
+    assert err.value.translation_placeholders == {"name": "Glowrium-G7"}
+    assert len(asked) == 1
+    dial.assert_not_awaited()
+
+
+async def test_a_command_overtaken_by_a_stop_says_so_too(
+    hass: HomeAssistant, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The stop can come while the command's own connect is on its way.
+
+    The link it then gets is not kept, and the command is told why - not
+    sent round a second time to be refused at the door instead.
+    """
+    coordinator, _ = _connected_coordinator(hass)
+    coordinator._client = None
+    client = _fresh_client()
+    subscribing, subscribed = asyncio.Event(), asyncio.Event()
+
+    async def _subscribe_slowly(*_a: object) -> None:
+        subscribing.set()
+        await subscribed.wait()
+
+    client.start_notify = AsyncMock(side_effect=_subscribe_slowly)
+    dial = _dialling(coordinator, monkeypatch, client, _fresh_client())
+    monkeypatch.setattr(coordinator_module, "_CONFIRM_TIMEOUT", 0.01)
+    asked = _counting_connects(coordinator)
+
+    command = asyncio.create_task(coordinator.async_set_power(True))
+    async with asyncio.timeout(1):
+        await subscribing.wait()  # dialled, and now waiting to be subscribed
+    await coordinator.async_stop()  # nothing held: over at once
+    subscribed.set()
+
+    with pytest.raises(HomeAssistantError) as err:
+        await command
+    await hass.async_block_till_done()
+
+    assert err.value.translation_key == "not_running"
+    assert len(asked) == 1
+    assert dial.await_count == 1
+    client.disconnect.assert_awaited_once()
+    assert coordinator._client is None
+
+
+async def test_a_lamp_the_scanner_has_lost_is_still_said_to_be_out_of_range(
+    hass: HomeAssistant, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Of the reasons a command gets no link, only this one is about range.
+
+    The scanner no longer has the lamp. That is the radio's doing: the message
+    about range and a proxy is the right one for it, and the command goes
+    round for its second attempt as it always did - the lamp may be heard
+    again by then.
+    """
+    coordinator, _ = _connected_coordinator(hass)
+    coordinator._client = None  # nothing held, and the lamp is not in the list
+    monkeypatch.setattr(coordinator_module, "_CONFIRM_TIMEOUT", 0.01)
+    asked = _counting_connects(coordinator)
+
+    with pytest.raises(HomeAssistantError) as err:
+        await coordinator.async_set_power(True)
+    await hass.async_block_till_done()
+
+    assert err.value.translation_key == "cannot_connect"
+    assert err.value.translation_placeholders == {"name": "Glowrium-G7"}
+    assert len(asked) == 2
 
 
 async def test_shutting_down_does_not_hold_home_assistant_up(

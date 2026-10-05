@@ -202,6 +202,24 @@ _LINK_ERRORS = (BleakError, TimeoutError, EOFError, OSError)
 _REFUSAL_MARKERS = ("authorization", "authentication", "not permitted")
 
 
+class _NoNewLinkError(BleakError):
+    """The coordinator's own "no" to a new link: nothing the radio did.
+
+    It has been stopped, or the last client it let go of could not be closed
+    and nothing is dialled over that. Still a ``BleakError``, so that every
+    background path goes on treating it as a link that could not be had. A
+    command asks which of the two it was (``translation_key``) and says so,
+    instead of telling its user that the lamp may be out of range and a
+    Bluetooth proxy would help - and it does not try a second time, because
+    neither changes within a retry.
+    """
+
+    def __init__(self, message: str, translation_key: str) -> None:
+        """Keep the key of the message a command shows for this."""
+        super().__init__(message)
+        self.translation_key = translation_key
+
+
 class _Bus(Enum):
     """What was behind a client that had been told to disconnect."""
 
@@ -1210,13 +1228,16 @@ class GlowriumCoordinator:
         if self._stopped:
             # Only a command gets here: one already in flight when the entry
             # was unloaded, or one sent after Home Assistant began to stop.
-            raise BleakError(f"{self.address}: stopped, taking no new link")
+            raise _NoNewLinkError(
+                f"{self.address}: stopped, taking no new link", "not_running"
+            )
         if self._unreleased:
             # Every dial opens a connection to the system bus, and the last
             # one could be neither hung up nor closed (see _async_disconnect).
-            raise BleakError(
+            raise _NoNewLinkError(
                 f"{self.address}: the previous link is still open and will "
-                "not close; not dialling over it"
+                "not close; not dialling over it",
+                "link_not_released",
             )
         device = self._ble_device()
         if device is None:
@@ -1235,7 +1256,9 @@ class GlowriumCoordinator:
                 # Stopped while this connect was on its way. Keeping the
                 # link would hand it to a coordinator nobody will stop
                 # again, and the lamp has one slot.
-                raise BleakError(f"{self.address}: stopped while connecting")  # noqa: TRY301
+                raise _NoNewLinkError(  # noqa: TRY301
+                    f"{self.address}: stopped while connecting", "not_running"
+                )
         except BaseException as err:
             # Including cancellation by a deadline. Nothing references this
             # client yet, and bleak does not hang up on garbage collection, so
@@ -1701,7 +1724,12 @@ class GlowriumCoordinator:
                         break
                     except _LINK_ERRORS as err:
                         client, self._client = self._client, None
-                        if attempt == _WRITE_ATTEMPTS:
+                        if attempt == _WRITE_ATTEMPTS or isinstance(
+                            err, _NoNewLinkError
+                        ):
+                            # The last attempt - or the coordinator's own
+                            # "no", which a second attempt would only be
+                            # given again.
                             failed = client
                             raise
                         _LOGGER.debug(
@@ -1732,7 +1760,13 @@ class GlowriumCoordinator:
                     _LOGGER.debug("Command to %s failed: %s", self.address, err)
                     raise HomeAssistantError(
                         translation_domain=DOMAIN,
-                        translation_key="cannot_connect",
+                        # What stopped it, when it was the coordinator itself:
+                        # "out of range, try a proxy" is advice for the radio.
+                        translation_key=(
+                            err.translation_key
+                            if isinstance(err, _NoNewLinkError)
+                            else "cannot_connect"
+                        ),
                         translation_placeholders={"name": self.name},
                     ) from err
             finally:

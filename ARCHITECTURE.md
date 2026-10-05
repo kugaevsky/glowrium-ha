@@ -791,7 +791,14 @@ device lets bleak's own retries stack up for minutes, and the button in the UI
 looks like it has hung. Any failure — timeout or `BleakError` — is re-raised as a
 `HomeAssistantError` carrying the translated `cannot_connect` message, so the user
 sees "out of range or adapter busy; try a Bluetooth proxy" instead of a stack
-trace. Note that `BleakOutOfConnectionSlotsError` is the usual symptom of a weak
+trace. Except where it was the coordinator itself that said no: it has been
+stopped, or the last client it let go of would not close and nothing is dialled
+over that (`_NoNewLinkError`). Neither is the radio's doing and a proxy mends
+neither, so each carries the key of a message of its own (`not_running`,
+`link_not_released`) and is not tried a second time - to every background path
+it is still a `BleakError`, a link that could not be had.
+
+Note that `BleakOutOfConnectionSlotsError` is the usual symptom of a weak
 link, *not* of exhausted slots — `habluetooth` reports it whenever no connection
 path scores well enough, which a device at RSSI −85 or worse never does.
 

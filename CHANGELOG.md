@@ -4,6 +4,19 @@ All notable changes to this project are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+- **A command the integration itself refuses says why.** A command that
+  arrives while the integration is being reloaded or Home Assistant is
+  stopping, or while a connection that could not be closed is still held, was
+  reported like any write that failed: "the device may be out of range … a
+  Bluetooth proxy near the device usually fixes this". Neither is anything
+  the radio did, and a proxy mends neither. Each now has a message of its
+  own, in all six languages, and is no longer tried a second time first
+  ([#22](https://github.com/kugaevsky/glowrium-ha/issues/22)).
+
 ## [0.3.0] - 2026-10-06
 
 > [!WARNING]

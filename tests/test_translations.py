@@ -63,6 +63,31 @@ def test_a_translation_keeps_the_placeholders_of_what_it_translates(
         assert _placeholders(text) == _placeholders(STRINGS[key]), key
 
 
+ERRORS = sorted(
+    key.split(".")[1]
+    for key in STRINGS
+    if key.startswith("exceptions.") and key.endswith(".message")
+)
+SOURCES = "".join(path.read_text() for path in sorted(INTEGRATION.glob("*.py")))
+
+
+@pytest.mark.parametrize("key", ERRORS)
+def test_the_message_of_an_error_names_the_lamp(key: str) -> None:
+    """Each says which lamp the command was for, and takes nothing else."""
+    assert _placeholders(STRINGS[f"exceptions.{key}.message"]) == {"name"}
+
+
+@pytest.mark.parametrize("key", ERRORS)
+def test_the_message_of_an_error_is_one_the_integration_raises(key: str) -> None:
+    """A message nothing raises is a key misspelt at one end or the other.
+
+    And the end that raises it then shows its user the key in place of a
+    message. This holds the messages to the code; which key each failure
+    raises is held by the tests of the failures themselves.
+    """
+    assert f'"{key}"' in SOURCES
+
+
 def test_english_is_strings_json_word_for_word() -> None:
     """en.json is the copy Home Assistant serves; it must not drift."""
     english = json.loads((INTEGRATION / "translations" / "en.json").read_text())

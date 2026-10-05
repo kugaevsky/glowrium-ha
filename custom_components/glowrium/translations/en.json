@@ -95,6 +95,12 @@
     "lighting_mode_not_read": {
       "message": "Cannot change this yet: {name} has not reported its current lighting mode. It should populate once the lamp is connected."
     },
+    "link_not_released": {
+      "message": "Cannot send the command to {name}: the previous Bluetooth connection to it could not be closed, and no new one is opened on top of it. If this does not clear by itself, restart Home Assistant; if it comes back after that, the host's Bluetooth stack is holding on to the connection: power-cycle the Bluetooth adapter on the host."
+    },
+    "not_running": {
+      "message": "Cannot send the command to {name}: the integration is being reloaded or Home Assistant is stopping. Try again once it is running again."
+    },
     "schedule_not_read": {
       "message": "Cannot change this yet: {name} has not reported its current schedule. It should populate once the lamp is connected."
     }

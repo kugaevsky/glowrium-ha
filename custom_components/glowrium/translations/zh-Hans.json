@@ -95,6 +95,12 @@
     "lighting_mode_not_read": {
       "message": "暂时无法更改：{name} 尚未报告当前的照明模式。灯具连接后即会显示。"
     },
+    "link_not_released": {
+      "message": "无法向 {name} 发送命令：与该设备的上一个蓝牙连接未能关闭，因此不会在其之上建立新的连接。如果未能自行恢复，请重启 Home Assistant；如果重启后再次出现，说明主机的蓝牙协议栈仍占用着该连接：请在主机上重启蓝牙适配器。"
+    },
+    "not_running": {
+      "message": "无法向 {name} 发送命令：集成正在重新加载，或 Home Assistant 正在停止。请在其恢复运行后重试。"
+    },
     "schedule_not_read": {
       "message": "暂时无法更改：{name} 尚未报告当前的定时计划。灯具连接后即会显示。"
     }
