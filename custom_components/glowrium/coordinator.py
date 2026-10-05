@@ -1605,8 +1605,13 @@ class GlowriumCoordinator:
 
     async def async_set_ramp(self, minutes: int) -> None:
         """Set the circadian ramp time in minutes (0 = Sun Sync auto)."""
-        self._desired_ramp = protocol.be2_minutes_to_bytes(minutes)
-        await self._async_write(self._mode_payload(ramp=self._desired_ramp))
+        ramp = protocol.be2_minutes_to_bytes(minutes)
+        await self._async_write(self._mode_payload(ramp=ramp))
+        # Remembered only once the lamp has it. Building the command can
+        # refuse and the write can fail; a ramp kept from either would be
+        # re-applied by the next switch to Circadian, which then fails on
+        # something the user was already told had not happened.
+        self._desired_ramp = ramp
 
     async def async_set_operating_mode(self, mode: str) -> None:
         """Set the mutually-exclusive Manual/Circadian/Schedule mode."""

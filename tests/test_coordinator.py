@@ -773,6 +773,43 @@ async def test_ramp_refuses_when_lighting_mode_unread(hass: HomeAssistant) -> No
     client.write_gatt_char.assert_not_awaited()
 
 
+async def test_a_ramp_that_was_refused_is_not_remembered(hass: HomeAssistant) -> None:
+    """A refused ramp must not come back to fail the next thing the user does.
+
+    The ramp was noted as the user's choice before the command was built, and
+    building it is what refuses. The note stayed. A later switch to Circadian
+    then made both of its writes - the mode did change - and went on to
+    re-apply the remembered ramp, which refused again: the user was told the
+    switch had failed while watching it take effect.
+    """
+    coordinator, client = _connected_coordinator(hass)
+    with pytest.raises(HomeAssistantError):
+        await coordinator.async_set_ramp(30)
+
+    await coordinator.async_set_operating_mode("circadian")
+
+    written = [call.args[1] for call in client.write_gatt_char.await_args_list]
+    assert written == [
+        cbor.encode({KEY_SCHEDULE: False}),
+        cbor.encode({KEY_CIRCADIAN: True}),
+    ]
+
+
+async def test_a_ramp_that_never_reached_the_lamp_is_not_remembered(
+    hass: HomeAssistant, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """What the user was told had failed is not applied behind their back later."""
+    coordinator, client = _connected_coordinator(hass)
+    coordinator._ingest(cbor.encode({KEY_LIGHTING_MODE: 5}))
+    monkeypatch.setattr(coordinator_module, "_CONFIRM_TIMEOUT", 0.01)
+    client.write_gatt_char.side_effect = BleakError("Not connected")
+
+    with pytest.raises(HomeAssistantError):
+        await coordinator.async_set_ramp(30)
+
+    assert coordinator._desired_ramp is None
+
+
 async def test_command_gives_up_instead_of_hanging(
     hass: HomeAssistant, monkeypatch: pytest.MonkeyPatch
 ) -> None:
