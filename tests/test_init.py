@@ -22,10 +22,15 @@ from custom_components.glowrium.const import (
     DOMAIN,
     KEY_BRIGHTNESS,
     KEY_INDICATOR,
+    KEY_LIGHTING_MODE,
     KEY_POWER,
 )
-from custom_components.glowrium.coordinator import _parse_device_info as _parsed
+from custom_components.glowrium.coordinator import (
+    GlowriumCoordinator,
+    _parse_device_info as _parsed,
+)
 from custom_components.glowrium.models import GlowriumModel
+from custom_components.glowrium.select import GlowriumLightingModeSelect
 
 ADDRESS = "AA:BB:CC:DD:EE:FF"
 G7_INFO = b"brand:INLEDCO;pkey:Glowrium-C051;devid:CST-0001;mac:x;version:4;;"
@@ -881,3 +886,71 @@ async def test_a_remembered_mode_the_lamp_does_not_have_is_not_shown(
     await _setup_without_bluetooth(hass)
 
     assert hass.states.get("select.glowrium_g7_1234_lighting_mode").state == "unknown"
+
+
+def test_the_select_itself_does_not_offer_a_mode_the_lamp_does_not_have() -> None:
+    """The entity says so itself, rather than leaving it to Home Assistant.
+
+    Home Assistant drops a current option that is not among the options, so
+    the state above reads the same either way. What the entity answers is
+    asked here directly.
+    """
+    select = GlowriumLightingModeSelect(
+        GlowriumCoordinator(None, ADDRESS, "Glowrium-G7")
+    )
+
+    select._restored = "moonlight"
+    assert select.current_option is None
+
+    select._restored = "balance"
+    assert select.current_option == "balance"
+
+
+async def test_the_lighting_mode_shown_is_the_one_the_lamp_reports(
+    hass: HomeAssistant,
+) -> None:
+    """The select follows the lamp: the index it reports is shown as its key.
+
+    A value remembered from before stands in only until the lamp says
+    something.
+    """
+    mock_restore_cache(
+        hass, (State("select.glowrium_g7_1234_lighting_mode", "balance"),)
+    )
+    entry = await _setup_without_bluetooth(hass)
+    coordinator = entry.runtime_data
+    select = "select.glowrium_g7_1234_lighting_mode"
+    assert hass.states.get(select).state == "balance"
+
+    coordinator._ingest(cbor.encode({KEY_LIGHTING_MODE: 5}))
+    await hass.async_block_till_done()
+    assert hass.states.get(select).state == "sunrise_sync"
+
+    coordinator._ingest(cbor.encode({KEY_LIGHTING_MODE: 32}))
+    await hass.async_block_till_done()
+    assert hass.states.get(select).state == "enhanced_two_phase"
+
+
+async def test_a_string_that_names_no_model_leaves_the_one_on_record(
+    hass: HomeAssistant,
+) -> None:
+    """Nor is a model the lamp did not name this time replaced by a guess.
+
+    With no model id read and none remembered, the profile in use is the
+    reference one - which is how the lamp is driven, not what it is.
+    """
+    entry = _entry()
+    entry.add_to_hass(hass)
+    dr.async_get(hass).async_get_or_create(
+        config_entry_id=entry.entry_id,
+        connections={(dr.CONNECTION_BLUETOOTH, ADDRESS)},
+        model="Glowrium G8",
+        model_id="Glowrium-C064",
+    )
+    await _setup_without_bluetooth(hass, entry)
+
+    await entry.runtime_data._async_read_device_info(
+        _naming_itself(b"brand:INLEDCO;version:7;;")
+    )
+
+    assert _described(_device(hass)) == ("Glowrium G8", "Glowrium-C064", "7", None)

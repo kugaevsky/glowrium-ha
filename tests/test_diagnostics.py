@@ -16,7 +16,7 @@ from homeassistant.util import dt as dt_util
 import pytest
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
-from custom_components.glowrium import cbor
+from custom_components.glowrium import cbor, coordinator as coordinator_module
 from custom_components.glowrium.const import (
     DOMAIN,
     KEY_ACTIVATED,
@@ -372,6 +372,7 @@ async def test_the_fields_of_the_device_info_string_are_only_counted(
         (KEY_TIME, bytes.fromhex("07ea0a05180f1e")),  # hour 24
         (KEY_TIME, CLOCK + b"\x00"),
         (KEY_TIMER, CURVE + bytes(28)),
+        (KEY_TIMER, SCHEDULE + b"\x00"),  # every field in place, and one byte more
         (KEY_TIMER, bytes.fromhex("0100000019001200640000")),  # starts at 25:00
         (KEY_TIMER, bytes.fromhex("0100000006001200650000")),  # 101 %
         (KEY_TIMER, bytes.fromhex("0200000006001200640000")),  # neither on nor off
@@ -600,4 +601,87 @@ async def test_a_lamp_that_has_reported_nothing_makes_a_file_all_the_same(
         "model_id": "Glowrium-C051",
         "firmware": None,
         "device_info_fields": 0,
+    }
+
+
+class _Behind:
+    """What sits behind a client. Its class name is what the file shows."""
+
+
+async def test_the_download_says_where_the_link_stands(
+    hass: HomeAssistant, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The link is described in full, and by nothing the lamp chose.
+
+    A link is held here, and most of what can go wrong with one has. Every
+    field is a count or a flag the integration keeps, and the whole section
+    is held to this list: the coordinator describes itself for the file, so
+    a field added there arrives here, and has to be looked at. The client is
+    named by its class - which says whether BlueZ or a proxy is behind the
+    link - and not printed, since a client prints with the address in it.
+    """
+    entry = await _a_lamp_that_has_reported(hass)
+    coordinator = entry.runtime_data
+    monkeypatch.setattr(coordinator_module, "monotonic", lambda: 5000.0)
+    client = MagicMock(is_connected=True)
+    coordinator._client = coordinator._primed_client = client
+    coordinator._backends[client] = _Behind()
+    _report(coordinator)  # a second report; an answer also resets what follows
+    coordinator._writes_sent = 3
+    coordinator._last_answer = 5000.0 - 42
+    coordinator._state_request_failures = 1
+    coordinator._state_request_muted_until = 5000.0 + 60
+    coordinator._stuck_hang_ups = 2
+    coordinator._dial_not_before = 5000.0 + 60
+    coordinator._unreleased.add(object())
+
+    data = await _downloaded(hass, entry)
+    coordinator._client = None  # nothing real to hang up when the test ends
+    coordinator._unreleased.clear()
+
+    assert data["link"] == {
+        "available": True,
+        "advertising": False,
+        "connected": True,
+        "primed": True,
+        "client": "_Behind",
+        "reports": 2,
+        "writes_sent": 3,
+        "seconds_since_last_answer": 42,
+        "state_request_refusals": 1,
+        "state_request_paused": True,
+        "unanswered_hang_ups": 2,
+        "dials_held_back": True,
+        "clients_that_would_not_close": 1,
+    }
+    _nothing_private_in(data)
+
+
+async def test_a_lamp_that_is_heard_and_not_connected_is_described_as_that(
+    hass: HomeAssistant, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The same section with no link held and nothing gone wrong."""
+    entry = await _a_lamp_that_has_reported(hass)
+    coordinator = entry.runtime_data
+    coordinator._present = True
+    monkeypatch.setattr(
+        coordinator_module, "monotonic", lambda: coordinator._last_answer
+    )
+
+    data = await _downloaded(hass, entry)
+
+    assert data["link"] == {
+        "available": True,
+        "advertising": True,
+        "connected": False,
+        "primed": False,
+        "client": None,
+        "reports": 1,
+        "writes_sent": 0,
+        "seconds_since_last_answer": 0,
+        "state_request_refusals": 0,
+        "state_request_paused": False,
+        "unanswered_hang_ups": 0,
+        "dials_held_back": False,
+        "clients_that_would_not_close": 0,
     }

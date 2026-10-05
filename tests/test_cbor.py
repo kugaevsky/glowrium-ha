@@ -203,6 +203,17 @@ def test_modest_nesting_still_decodes() -> None:
         cbor.decode(cbor.encode({1: [{2: [[3], 4]}, 5]}))  # five
 
 
+def test_containers_side_by_side_are_not_containers_inside_one_another() -> None:
+    """Depth comes back down on the way out of a container.
+
+    Five arrays in one flat map are two levels deep, however many of them
+    there are.
+    """
+    flat = {1: [], 2: [], 3: [], 4: [], 5: []}
+    assert cbor.decode(cbor.encode(flat)) == flat
+    assert cbor.decode_frame(bytes.fromhex("a501800280038004800580")) == (flat, False)
+
+
 @pytest.mark.parametrize(
     "frame",
     [
