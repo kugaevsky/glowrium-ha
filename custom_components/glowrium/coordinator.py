@@ -427,6 +427,9 @@ class GlowriumCoordinator:
         # cannot tell a fresh report from an hours-old one.
         self._reports = 0
         self._writes_sent = 0
+        # What _reports stood at when the lamp last reported each id. A report
+        # vouches for what it carried, not for everything in the mirror.
+        self._reported_at: dict[int, int] = {}
 
     @property
     def _state_request_muted(self) -> bool:
@@ -1519,6 +1522,7 @@ class GlowriumCoordinator:
             )
         self._mirror(decoded)
         self._reports += 1
+        self._reported_at.update(dict.fromkeys(decoded, self._reports))
         self._state_reported.set()
         # Seed the remembered ramp from the device the first time we see it, so
         # it survives an HA restart (the device persists its own ramp). Guard on
@@ -1693,6 +1697,14 @@ class GlowriumCoordinator:
         the report has to be newer than the write, and the caller only asks at
         all once a write actually reached the characteristic: a command that
         never got that far has nothing to be vouched for.
+
+        And it has to be about the command. The lamp reports of its own accord
+        all day - its brightness, as the circadian curve moves it - and such a
+        report is as fresh as any, while saying nothing of a power flag the
+        mirror got wrong hours ago. So at least one of the properties the
+        command set has to have been reported since the write. Not all of
+        them: the lamp reports what changed, and a mode command carries a
+        ramp that is usually what it already was.
         """
         tracked = {key: value for key, value in payload.items() if key in STATE_KEYS}
         if not tracked:
@@ -1706,8 +1718,8 @@ class GlowriumCoordinator:
                     # today; it is the order that stays correct if a report ever
                     # arrives from anywhere else.
                     self._state_reported.clear()
-                    if self._reports > reports_before and all(
-                        self.state.get(k) == v for k, v in tracked.items()
+                    if all(self.state.get(k) == v for k, v in tracked.items()) and any(
+                        self._reported_at.get(k, 0) > reports_before for k in tracked
                     ):
                         return True
                     await self._state_reported.wait()

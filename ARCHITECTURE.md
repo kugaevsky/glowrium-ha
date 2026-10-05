@@ -764,10 +764,15 @@ failure the coordinator waits up to `_CONFIRM_TIMEOUT` (2 s) for the device to
 report the state the command asked for, and stays quiet if it does. The report
 must be **newer than the write** — the state mirror is never invalidated, so
 matching a stale mirror would vouch for a write that never landed — and the
-check only runs when a write actually reached the characteristic. Only keys in
-`STATE_KEYS` are compared — a mode command also carries fixed parameters (`0x2c`,
-`0x32`) the device never reports back. The cost is that a command which really
-did fail takes those 2 s longer to say so.
+check only runs when a write actually reached the characteristic. It must also
+be **about the command**: the lamp reports of its own accord all day, and a
+fresh report of its brightness says nothing about a power flag the mirror got
+wrong hours ago. At least one property the command set has to have been
+reported since the write (`_reported_at`) — one, not all, because the lamp
+reports what changed and a mode command carries a ramp that is usually what it
+already was. Only keys in `STATE_KEYS` are compared — a mode command also
+carries fixed parameters (`0x2c`, `0x32`) the device never reports back. The
+cost is that a command which really did fail takes those 2 s longer to say so.
 
 **A command is capped at `_COMMAND_TIMEOUT` (15 s)**, covering the wait for the
 lock as well as the connect-and-write itself; a command that fails may then

@@ -196,6 +196,15 @@ the table is under *Changed*.
   changed the mode and then failed on re-applying that ramp, so the user was
   told the switch had not worked while watching it take effect. A ramp is now
   remembered once the lamp has it.
+- **A command that failed is not reported as delivered because the lamp said
+  something else.** When a write fails, the lamp is given a moment to report
+  the state the command asked for: on a weak link it is often only the
+  acknowledgement that is lost. Any report newer than the write counted, as
+  long as what Home Assistant believed already matched the command — and
+  the lamp reports its brightness of its own accord as the circadian curve
+  moves it. A stale belief and one such report made a command that never
+  arrived look delivered. The report now has to be about something the
+  command set.
 - **Entities go unavailable when a command finds the lamp gone.** A command
   that failed let go of the link and told its caller, and nobody else. If the
   lamp had stopped advertising as well, its entities went on reading as

@@ -1896,6 +1896,76 @@ async def test_a_stale_mirror_does_not_vouch_for_a_failed_write(
         await coordinator.async_set_power(False)
 
 
+@pytest.mark.parametrize(
+    "frame",
+    [
+        pytest.param("a1081828", id="a report about something else"),
+        pytest.param("a208182809c000", id="a report read only in part"),
+    ],
+)
+async def test_a_report_vouches_only_for_what_it_carries(
+    hass: HomeAssistant, monkeypatch: pytest.MonkeyPatch, frame: str
+) -> None:
+    """A report that is newer than the write is not thereby about the write.
+
+    The mirror says the lamp is off, and is stale: it is on. Asked to turn
+    it off, the write fails - and a moment later the lamp reports its
+    brightness, as it does of its own accord all day. That report is fresh
+    and says nothing about power. The mirror goes on matching the command
+    only because nothing has corrected it, and the command was reported as
+    delivered to a lamp that never got it.
+    """
+    coordinator, client = _connected_coordinator(hass)
+    monkeypatch.setattr(coordinator_module, "_CONFIRM_TIMEOUT", 0.05)
+    coordinator.state[KEY_POWER] = False  # what the lamp said, some time ago
+
+    async def _fails_and_the_lamp_says_something_else(
+        *_args: object, **_kwargs: object
+    ) -> None:
+        coordinator._ingest(bytes.fromhex(frame))
+        raise BleakError("Not connected")
+
+    client.write_gatt_char = AsyncMock(
+        side_effect=_fails_and_the_lamp_says_something_else
+    )
+
+    async def _relink(*, prime: bool = True) -> None:
+        assert prime is False
+        coordinator._client = client
+
+    coordinator._connect_locked = _relink
+
+    with pytest.raises(HomeAssistantError):
+        await coordinator.async_set_power(False)
+    assert coordinator.state[KEY_BRIGHTNESS] == 40  # the report itself was taken
+
+
+async def test_a_command_is_vouched_for_by_what_it_changed(
+    hass: HomeAssistant, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The lamp reports what changed, and that is enough.
+
+    A mode command carries the ramp as well. A ramp that was already what
+    the command carried is not reported again, and need not be: the mode
+    was, after the write, and with the value asked for.
+    """
+    coordinator, client = _connected_coordinator(hass)
+    monkeypatch.setattr(coordinator_module, "_CONFIRM_TIMEOUT", 0.05)
+    coordinator._ingest(
+        cbor.encode({KEY_LIGHTING_MODE: 1, KEY_RAMP: bytes.fromhex("0e10")})
+    )
+
+    async def _write_then_notify(_uuid: str, data: bytes, **_kw: object) -> None:
+        assert cbor.decode(data)[KEY_RAMP] == bytes.fromhex("0e10")
+        coordinator._ingest(cbor.encode({KEY_LIGHTING_MODE: 5}))
+        raise BleakError("Unlikely Error")
+
+    client.write_gatt_char = AsyncMock(side_effect=_write_then_notify)
+
+    await coordinator.async_set_lighting_mode(5)  # must not raise
+    assert coordinator.state[KEY_LIGHTING_MODE] == 5
+
+
 async def test_a_command_that_never_reached_the_wire_fails_at_once(
     hass: HomeAssistant, monkeypatch: pytest.MonkeyPatch
 ) -> None:
