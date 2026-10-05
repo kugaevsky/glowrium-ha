@@ -1552,7 +1552,7 @@ class GlowriumCoordinator:
         handle a split map, the remembered ramp and the listeners identically.
         """
         self._note_answer()  # whatever it says, the lamp said it
-        short = False
+        short = said = False
         try:
             decoded, short = cbor.decode_frame(data)
         except cbor.UnreadableItemError as err:
@@ -1562,7 +1562,7 @@ class GlowriumCoordinator:
             # on BlueZ a read ends the link (see _request_state). A frame of
             # which nothing was read is still no report, and takes that way.
             self._log_unreadable_item(data, err)
-            decoded = err.ahead
+            decoded, said = err.ahead, True
         except cbor.TrailingBytesError as err:
             # Reported apart from a merely malformed frame, and loudly the first
             # time: rejecting these is what changed in #5, and on a model whose
@@ -1575,6 +1575,15 @@ class GlowriumCoordinator:
             _LOGGER.debug("Undecodable frame %s: %s", _for_the_log(data), err)
             return frozenset()
         if not isinstance(decoded, dict) or not decoded:
+            if not said:
+                # Decoded without a fault, and still of no use: every frame
+                # that is dropped is named, or nobody can ask what it was.
+                _LOGGER.debug(
+                    "%s: frame %s decodes to nothing that can be used: it is "
+                    "not a map of properties, or is one with nothing in it",
+                    self.address,
+                    _for_the_log(data),
+                )
             return frozenset()
         if short:
             _LOGGER.debug(
@@ -1764,9 +1773,13 @@ class GlowriumCoordinator:
         all day - its brightness, as the circadian curve moves it - and such a
         report is as fresh as any, while saying nothing of a power flag the
         mirror got wrong hours ago. So at least one of the properties the
-        command set has to have been reported since the write. Not all of
+        command set has to have been reported since the command was taken up
+        (``reports_before`` is noted before the wait for the lock, so a report
+        that came while the command waited counts: it is as fresh). Not all of
         them: the lamp reports what changed, and a mode command carries a
-        ramp that is usually what it already was.
+        ramp that is usually what it already was. What this leaves is a
+        coincidence: one property reported with the value asked for, while
+        another matches a mirror that is stale.
         """
         tracked = {key: value for key, value in payload.items() if key in STATE_KEYS}
         if not tracked:

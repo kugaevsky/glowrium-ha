@@ -913,13 +913,13 @@ _CURVE = bytes(range(0x40, 0x5C))  # 28 bytes of sunrise and sunset times
             id="those times, on a lamp that keeps fewer",
         ),
         pytest.param(
-            "a1" + "0afa" + "41458794",
-            "a1" + "0afa" + "xx" * 4,
+            "a2" + "0afa" + "41458794" + "06f5",
+            "a2" + "0afa" + "xx" * 4 + "06f5",
             id="a coordinate kept as a shorter float",
         ),
         pytest.param(
-            "a1" + "0bf9" + "5c17",
-            "a1" + "0bf9" + "xx" * 2,
+            "a2" + "0bf9" + "5c17" + "06f5",
+            "a2" + "0bf9" + "xx" * 2 + "06f5",
             id="a coordinate kept as the shortest float there is",
         ),
         pytest.param(
@@ -1042,6 +1042,11 @@ def test_wherever_it_stands_in_whatever_noise_a_coordinate_is_blanked() -> None:
             "Undecodable frame",
             id="undecodable",
         ),
+        pytest.param(
+            "81" + cbor.encode(_WHERE).hex(),
+            "nothing that can be used",
+            id="decoded, and not a map of properties",
+        ),
     ],
 )
 async def test_no_line_in_the_log_carries_the_coordinates(
@@ -1106,6 +1111,36 @@ async def test_a_frame_the_decoder_refuses_is_dropped_and_nothing_is_raised(
     assert not coordinator.state
     assert coordinator._reports == 0
     assert said in caplog.text
+    assert "nothing that can be used" not in caplog.text  # said once is enough
+
+
+@pytest.mark.parametrize(
+    "frame",
+    [
+        pytest.param("80", id="an empty array"),
+        pytest.param("8206f5", id="an array"),
+        pytest.param("a0", id="a map with nothing in it"),
+        pytest.param("05", id="a number"),
+        pytest.param("f6", id="null"),
+    ],
+)
+async def test_a_frame_that_decodes_to_nothing_usable_is_named_as_well(
+    hass: HomeAssistant, caplog: pytest.LogCaptureFixture, frame: str
+) -> None:
+    """A frame can decode without a fault and still be of no use.
+
+    The decoder reads CBOR; what the lamp reports is a map of properties. A
+    frame that is anything else, or a map with nothing in it, was dropped
+    without a line - while the documents tell whoever reports a problem that
+    every frame the integration could not use is in the debug log.
+    """
+    coordinator = GlowriumCoordinator(hass, "AA:BB:CC:DD:EE:FF", "Glowrium-G7")
+    with caplog.at_level(logging.DEBUG, logger=coordinator_module.__name__):
+        assert coordinator._ingest(bytes.fromhex(frame)) == frozenset()
+    assert not coordinator.state
+    assert coordinator._reports == 0
+    assert f"frame {frame} decodes to nothing that can be used" in caplog.text
+    assert not [r for r in caplog.records if r.levelno == logging.WARNING]
 
 
 # {power: on, brightness: 70, 0x09: <a tag, which nothing here can read> ...

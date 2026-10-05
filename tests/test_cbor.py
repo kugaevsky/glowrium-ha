@@ -193,9 +193,10 @@ def test_a_frame_nested_deeper_than_any_real_one_is_malformed(frame: str) -> Non
 
     The lamp sends a flat map. The decoder recurses for every level, and an
     attribute value has room for five hundred of them. As released, it was a
-    map nested as a key that went too deep - one byte a level - and 498 of
-    them ended in a RecursionError, again something the caller does not
-    catch. A key is a property id now, which shuts that way in. The bound
+    map nested as a key that went too deep - one byte a level - and just
+    under five hundred of them, fewer the deeper the caller already stood,
+    ended in a RecursionError: again something the caller does not catch.
+    A key is a property id now, which shuts that way in. The bound
     shuts the other: without it the last frame here is deeper than Python
     lets this decoder go, where the first two would merely decode.
     """
