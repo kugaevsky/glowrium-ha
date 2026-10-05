@@ -266,9 +266,12 @@ that. Three rules keep the promise:
 - A map key is a property id: an unsigned integer and nothing else. CBOR
   allows any item there, and an array or another map cannot be a dictionary
   key at all - `a1 80 00` used to leave the decoder as a `TypeError`.
-- Nesting stops at four levels (`_MAX_DEPTH`). The lamp sends a flat map;
-  five hundred maps inside one another fit in a single attribute value and
-  used to end in a `RecursionError`.
+- Nesting stops at four levels (`_MAX_DEPTH`). The lamp sends a flat map,
+  and the decoder recurses for every level. Five hundred maps, each the key
+  of the one around it, are five hundred bytes - one attribute value - and
+  used to end in a `RecursionError`. With a key held to a property id that
+  way in is shut, and the bound shuts the other: five hundred arrays inside
+  one another fit as well, and are deeper than Python lets the decoder go.
 - Anything this subset has no reading for - a tag, an indefinite length, a
   half-precision float - is a malformed frame.
 

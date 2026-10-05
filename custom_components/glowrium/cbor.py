@@ -19,7 +19,8 @@ from typing import Any
 _LEN_BYTES = {24: 1, 25: 2, 26: 4, 27: 8}
 
 # The lamp sends a flat map. The bound is there for a frame built to recurse:
-# five hundred maps inside one another fit in a single attribute value.
+# five hundred arrays inside one another fit in a single attribute value, and
+# that is deeper than Python lets this decoder go.
 _MAX_DEPTH = 4
 
 

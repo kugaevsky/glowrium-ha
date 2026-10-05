@@ -180,15 +180,26 @@ def test_a_map_keyed_by_anything_but_a_property_id_is_malformed(frame: str) -> N
         cbor.decode_frame(bytes.fromhex(frame))
 
 
-@pytest.mark.parametrize("head", ["a100", "81"])
-def test_a_frame_nested_deeper_than_any_real_one_is_malformed(head: str) -> None:
+@pytest.mark.parametrize(
+    "frame",
+    [
+        pytest.param("a100" * 250 + "00", id="250 maps, each the value of the last"),
+        pytest.param("81" * 250 + "00", id="250 arrays"),
+        pytest.param("81" * 499 + "00", id="499 arrays: all a frame has room for"),
+    ],
+)
+def test_a_frame_nested_deeper_than_any_real_one_is_malformed(frame: str) -> None:
     """Nesting is bounded, so a frame cannot be built to exhaust the stack.
 
-    The lamp sends a flat map. Five hundred maps inside one another still fit in
-    one attribute value, and decoding them recursed until Python gave up with a
-    RecursionError - again something the caller does not catch.
+    The lamp sends a flat map. The decoder recurses for every level, and an
+    attribute value has room for five hundred of them. As released, it was a
+    map nested as a key that went too deep - one byte a level - and 498 of
+    them ended in a RecursionError, again something the caller does not
+    catch. A key is a property id now, which shuts that way in. The bound
+    shuts the other: without it the last frame here is deeper than Python
+    lets this decoder go, where the first two would merely decode.
     """
-    deep = bytes.fromhex(head) * 250 + b"\x00"
+    deep = bytes.fromhex(frame)
     with pytest.raises(ValueError, match="nested"):
         cbor.decode(deep)
     with pytest.raises(ValueError, match="nested"):

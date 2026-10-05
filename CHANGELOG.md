@@ -184,12 +184,12 @@ the table is under *Changed*.
 - **A malformed frame can no longer end in an exception.** The decoder parses
   what comes off the radio, and two kinds of frame left it as something its
   caller does not catch: a map keyed by a list or by another map — three bytes
-  are enough — and maps nested a few hundred deep. In the notification
-  callback that was a traceback per frame; on the path that reads the state it
-  took the background connect with it. A map key is now read as what it is in
-  this protocol, an unsigned property id, and nesting is bounded. A healthy
-  lamp sends none of this: it was found by fuzzing the decoder, not in the
-  field.
+  are enough — and a few hundred maps each the key of the next, which still
+  fit in one frame. In the notification callback that was a traceback per
+  frame; on the path that reads the state it took the background connect with
+  it. A map key is now read as what it is in this protocol, an unsigned
+  property id, and nesting is bounded. A healthy lamp sends none of this: it
+  was found by fuzzing the decoder, not in the field.
 - **A ramp that was refused, or that never reached the lamp, is not applied
   later.** Setting the ramp on a lamp that has not reported its lighting mode
   is refused, but the ramp was remembered first. The next switch to Circadian

@@ -901,7 +901,7 @@ async def test_malformed_frame_is_not_reported_as_trailing_bytes(
         pytest.param("a18000", "cannot read", id="keyed by an array"),
         pytest.param("ada200", "cannot read", id="keyed by a map that ran out"),
         pytest.param(
-            "a100" * 250 + "00", "cannot read", id="nested as deep as a frame allows"
+            "a1" * 499, "cannot read", id="maps as keys, as deep as a frame allows"
         ),
         pytest.param("c000", "Undecodable frame", id="not a map at all"),
         pytest.param("", "Undecodable frame", id="empty"),
@@ -913,10 +913,11 @@ async def test_a_frame_the_decoder_refuses_is_dropped_and_nothing_is_raised(
     """No frame can end the notification callback in an exception.
 
     The callback runs inside the Bluetooth stack's own message handler. A map
-    keyed by an array used to leave it as a TypeError - a traceback per frame
-    on a local adapter, and on the path that reads the state, an exception
-    that took the whole connect with it. Nothing of these frames could be
-    read, so nothing is merged; each is named in the log.
+    keyed by an array used to leave it as a TypeError, and five hundred maps
+    each the key of the next as a RecursionError - a traceback per frame on a
+    local adapter, and on the path that reads the state, an exception that
+    took the whole connect with it. Nothing of these frames could be read,
+    so nothing is merged; each is named in the log.
     """
     coordinator = GlowriumCoordinator(hass, "AA:BB:CC:DD:EE:FF", "Glowrium-G7")
     with caplog.at_level(logging.DEBUG, logger=coordinator_module.__name__):
