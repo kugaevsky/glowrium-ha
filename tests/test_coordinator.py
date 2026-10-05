@@ -855,6 +855,31 @@ async def test_malformed_frame_is_not_reported_as_trailing_bytes(
     assert not [r for r in caplog.records if r.levelno == logging.WARNING]
 
 
+@pytest.mark.parametrize(
+    "frame",
+    [
+        pytest.param("a18000", id="keyed by an array"),
+        pytest.param("ada200", id="keyed by a map that ran out"),
+        pytest.param("a100" * 250 + "00", id="nested as deep as a frame allows"),
+    ],
+)
+async def test_a_frame_the_decoder_refuses_is_dropped_and_nothing_is_raised(
+    hass: HomeAssistant, caplog: pytest.LogCaptureFixture, frame: str
+) -> None:
+    """No frame can end the notification callback in an exception.
+
+    The callback runs inside the Bluetooth stack's own message handler. These
+    three used to leave it as a TypeError and a RecursionError - a traceback
+    per frame on a local adapter, and on the path that reads the state, an
+    exception that took the whole connect with it.
+    """
+    coordinator = GlowriumCoordinator(hass, "AA:BB:CC:DD:EE:FF", "Glowrium-G7")
+    with caplog.at_level(logging.DEBUG, logger=coordinator_module.__name__):
+        assert coordinator._ingest(bytes.fromhex(frame)) == frozenset()
+    assert not coordinator.state
+    assert "Undecodable frame" in caplog.text
+
+
 async def test_setup_is_not_held_by_a_connect_that_never_finishes(
     hass: HomeAssistant, monkeypatch: pytest.MonkeyPatch
 ) -> None:

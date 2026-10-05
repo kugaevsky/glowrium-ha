@@ -1,5 +1,7 @@
 """Tests for the minimal CBOR codec (validated against real device bytes)."""
 
+import random
+
 import pytest
 
 from custom_components.glowrium import cbor
@@ -148,3 +150,151 @@ def test_trailing_bytes_raise_their_own_type() -> None:
     with pytest.raises((ValueError, IndexError)) as other:
         cbor.decode(bytes.fromhex("a306f508"))
     assert not isinstance(other.value, cbor.TrailingBytesError)
+
+
+@pytest.mark.parametrize(
+    "frame",
+    [
+        "a18000",  # an empty array as the key
+        "a1a000",  # an empty map as the key
+        "ada200",  # a map that ran out, standing in as a key
+        "a1f500",  # true
+        "a1f600",  # null
+        "a1616100",  # the text "a"
+        "a1410000",  # one byte
+        "a1fb3ff000000000000000",  # 1.0
+        "a12000",  # -1: the protocol's ids are not negative either
+    ],
+)
+def test_a_map_keyed_by_anything_but_a_property_id_is_malformed(frame: str) -> None:
+    """A map key is a property id, and a property id is an unsigned integer.
+
+    Nothing else is a frame from this lamp. It used to be decoded all the same,
+    and a key that cannot be hashed - an array, another map - left the decoder
+    as a TypeError, which is not what its caller catches: three bytes off the
+    air ended the notification callback in a traceback.
+    """
+    with pytest.raises(ValueError, match="map key"):
+        cbor.decode(bytes.fromhex(frame))
+    with pytest.raises(ValueError, match="map key"):
+        cbor.decode_frame(bytes.fromhex(frame))
+
+
+@pytest.mark.parametrize("head", ["a100", "81"])
+def test_a_frame_nested_deeper_than_any_real_one_is_malformed(head: str) -> None:
+    """Nesting is bounded, so a frame cannot be built to exhaust the stack.
+
+    The lamp sends a flat map. Five hundred maps inside one another still fit in
+    one attribute value, and decoding them recursed until Python gave up with a
+    RecursionError - again something the caller does not catch.
+    """
+    deep = bytes.fromhex(head) * 250 + b"\x00"
+    with pytest.raises(ValueError, match="nested"):
+        cbor.decode(deep)
+    with pytest.raises(ValueError, match="nested"):
+        cbor.decode_frame(deep)
+
+
+def test_modest_nesting_still_decodes() -> None:
+    """The bound is on depth, not on containers as such."""
+    nested = {1: [{2: [3, 4]}, 5]}  # four containers deep
+    assert cbor.decode(cbor.encode(nested)) == nested
+    with pytest.raises(ValueError, match="nested"):
+        cbor.decode(cbor.encode({1: [{2: [[3], 4]}, 5]}))  # five
+
+
+@pytest.mark.parametrize(
+    "frame",
+    [
+        "a206f508c0",  # the second value is a tag, which is not supported
+        "a206f5c000",  # the second key is
+        "a206f5081c",  # the second value has a length this codec does not read
+    ],
+)
+def test_only_the_end_of_the_buffer_makes_a_map_short(frame: str) -> None:
+    """A pair that is malformed is not a pair that did not arrive.
+
+    Tolerating a split map means accepting a buffer that ends early. It used
+    to mean accepting any failure inside a pair, so a frame with one good pair
+    and then garbage decoded to that one pair, flagged short and merged - the
+    short, plausible map the strict path exists to keep out.
+    """
+    with pytest.raises(ValueError, match="unsupported"):
+        cbor.decode_frame(bytes.fromhex(frame))
+
+
+def test_a_map_cut_short_inside_a_value_drops_that_pair_whole() -> None:
+    """Only the outermost map may end early; what is inside it is all or nothing.
+
+    A nested map that ran out used to hand back what it had and rewind, and the
+    map around it carried on from the rewound position, reading the same bytes
+    a second time as something else.
+    """
+    # {1: {2: 3, <the buffer ends here>
+    value, short = cbor.decode_frame(bytes.fromhex("a201a20203"))
+    assert short is True
+    assert value == {}  # the only pair that started never finished
+
+    # {6: True, 1: {2: 3, <the buffer ends here>
+    value, short = cbor.decode_frame(bytes.fromhex("a306f501a20203"))
+    assert short is True
+    assert value == {0x06: True}
+
+
+def test_nothing_but_a_valueerror_leaves_the_frame_decoder() -> None:
+    """Whatever arrives, the decoder either decodes it or raises ValueError.
+
+    That is the whole of what its caller has to know. The corpus is the kind
+    of thing a radio can deliver: noise, noise leaning towards containers and
+    long lengths, a real frame with bytes flipped, cut and inserted, and one
+    container nested as deep as a frame has room for.
+    """
+    rng = random.Random(20261005)
+    real = cbor.encode(
+        {
+            0x05: bytes.fromhex("07ea0a05080f1e"),
+            0x06: True,
+            0x08: 70,
+            0x0A: 41.31,
+            0x11: bytes.fromhex("0100000006001200640000"),
+            0x2B: 1,
+            0x35: bytes.fromhex("0100000e10"),
+        }
+    )
+    heads = bytes(range(0x80, 0xC0)) + bytes([0x9B, 0xBB, 0x5B, 0x7B, 0xF9, 0xFB])
+
+    def frame() -> bytes:
+        kind = rng.randrange(4)
+        if kind == 0:
+            return rng.randbytes(rng.randrange(0, 301))
+        if kind == 1:
+            return bytes(
+                rng.choice(heads) if rng.random() < 0.5 else rng.randrange(256)
+                for _ in range(rng.randrange(0, 301))
+            )
+        if kind == 2:
+            mutated = bytearray(real)
+            for _ in range(rng.randrange(1, 6)):
+                if not mutated:
+                    break
+                at = rng.randrange(len(mutated))
+                op = rng.randrange(3)
+                if op == 0:
+                    mutated[at] = rng.randrange(256)
+                elif op == 1:
+                    del mutated[at:]
+                else:
+                    mutated[at:at] = rng.randbytes(rng.randrange(1, 9))
+            return bytes(mutated)
+        head = rng.choice([b"\x81", b"\xa1\x00", b"\xa2\x00", b"\x9f", b"\xbf"])
+        return head * rng.randrange(1, 256) + rng.randbytes(rng.randrange(0, 4))
+
+    decoded = 0
+    for _ in range(20_000):
+        data = frame()
+        try:
+            cbor.decode_frame(data)
+        except ValueError:
+            continue
+        decoded += 1
+    assert decoded > 1_000  # the corpus is not all rejects: some of it is valid

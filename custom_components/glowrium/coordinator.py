@@ -1229,7 +1229,7 @@ class GlowriumCoordinator:
             # would never be noticed.
             self._log_trailing_bytes(data, err.count)
             return frozenset()
-        except (ValueError, IndexError) as err:
+        except ValueError as err:  # the decoder raises nothing else
             _LOGGER.debug("Undecodable frame %s: %s", data.hex(), err)
             return frozenset()
         if not isinstance(decoded, dict) or not decoded:

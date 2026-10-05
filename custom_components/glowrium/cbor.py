@@ -3,6 +3,12 @@
 Only the subset the device uses is implemented: maps keyed by unsigned ints,
 unsigned/negative ints, byte strings, text strings, arrays, booleans, null and
 IEEE-754 single/double floats. Validated against the live device.
+
+What it decodes comes off a radio, so the decoder promises its caller one
+thing: it returns a value or raises ``ValueError``, whatever the bytes. A key
+that is not a property id, a container nested deeper than any real frame, an
+item this subset has no reading for - each is a malformed frame, not an
+exception of its own kind.
 """
 
 from __future__ import annotations
@@ -12,9 +18,17 @@ from typing import Any
 
 _LEN_BYTES = {24: 1, 25: 2, 26: 4, 27: 8}
 
-# Raised while decoding when the buffer ends before the item does: _byte runs
-# off the end (IndexError), _take gets a short slice (ValueError).
-_RAN_OUT = (IndexError, ValueError)
+# The lamp sends a flat map. The bound is there for a frame built to recurse:
+# five hundred maps inside one another fit in a single attribute value.
+_MAX_DEPTH = 4
+
+
+class _RanOutError(ValueError):
+    """The buffer ended before the item did.
+
+    Told apart from every other way a frame can be malformed, because it is
+    the one a split map is allowed (see ``_Decoder._map``).
+    """
 
 
 class TrailingBytesError(ValueError):
@@ -34,9 +48,10 @@ class TrailingBytesError(ValueError):
 
 
 class _Decoder:
-    def __init__(self, data: bytes, tolerant: bool = False) -> None:
+    def __init__(self, data: bytes, *, tolerant: bool = False) -> None:
         self._b = data
         self._i = 0
+        self._depth = 0
         # Device frames may end part-way through a map (see _map). Only the
         # device path opts into tolerating that; everything else stays strict,
         # so a short map in our own encoded payloads is still an error.
@@ -54,15 +69,25 @@ class _Decoder:
             return self._take(self._uint(ai))
         if major == 3:
             return self._take(self._uint(ai)).decode("utf-8", "replace")
-        if major == 4:
-            return [self.read() for _ in range(self._uint(ai))]
-        if major == 5:
-            return self._map(self._uint(ai))
+        if major in (4, 5):
+            return self._container(major, self._uint(ai))
         if major == 7:
             return self._simple(ai)
         raise ValueError(f"unsupported CBOR major type {major}")
 
-    def _map(self, pairs: int) -> dict:
+    def _container(self, major: int, count: int) -> Any:
+        """Decode an array or a map, one level further in."""
+        if self._depth == _MAX_DEPTH:
+            raise ValueError(f"CBOR nested deeper than {_MAX_DEPTH} levels")
+        self._depth += 1
+        try:
+            if major == 4:
+                return [self.read() for _ in range(count)]
+            return self._map(count)
+        finally:
+            self._depth -= 1
+
+    def _map(self, pairs: int) -> dict[int, Any]:
         """Decode a map of ``pairs`` key/value pairs.
 
         When ``tolerant`` (device frames only), a buffer that ends part-way
@@ -71,28 +96,46 @@ class _Decoder:
         frame carries a header promising N pairs but contains only some of them,
         and treating that as garbage discards every property that *did* arrive.
 
+        That is all it tolerates. Only the buffer ending counts - a pair that is
+        there and malformed is a malformed frame - and only for the outermost
+        map: one nested inside a value is all or nothing, so the pair it sits in
+        is dropped whole rather than kept with half a value.
+
         When not tolerant the shortfall raises, so a truncated map in anything
         we encoded ourselves is still surfaced as the bug it is.
         """
-        out: dict = {}
+        out: dict[int, Any] = {}
+        tolerant = self._tolerant and self._depth == 1
         for _ in range(pairs):
-            if not self._tolerant:
-                # Two statements, not out[self.read()] = self.read(): Python
+            if not tolerant:
+                # Two statements, not out[self._key()] = self.read(): Python
                 # evaluates an assignment's right-hand side before its target,
                 # which would read the pair value-first.
-                key = self.read()
+                key = self._key()
                 out[key] = self.read()
                 continue
             start = self._i
             try:
-                key = self.read()
+                key = self._key()
                 value = self.read()
-            except _RAN_OUT:
+            except _RanOutError:
                 self._i = start
                 self.short = True
                 break
             out[key] = value
         return out
+
+    def _key(self) -> int:
+        """Read a map key, which in this protocol is a property id.
+
+        An unsigned integer and nothing else. Whatever else CBOR allows there
+        is not a frame from this lamp, and some of it - an array, another map -
+        cannot be a dictionary key at all.
+        """
+        ib = self._byte()
+        if ib >> 5 != 0:
+            raise ValueError(f"unsupported CBOR map key of major type {ib >> 5}")
+        return self._uint(ib & 0x1F)
 
     def expect_consumed(self) -> None:
         """Raise if the buffer holds more than the item just decoded."""
@@ -100,6 +143,8 @@ class _Decoder:
             raise TrailingBytesError(len(self._b) - self._i)
 
     def _byte(self) -> int:
+        if self._i >= len(self._b):
+            raise _RanOutError("truncated CBOR item")
         v = self._b[self._i]
         self._i += 1
         return v
@@ -107,7 +152,7 @@ class _Decoder:
     def _take(self, n: int) -> bytes:
         v = self._b[self._i : self._i + n]
         if len(v) != n:
-            raise ValueError("truncated CBOR value")
+            raise _RanOutError("truncated CBOR value")
         self._i += n
         return v
 
@@ -133,7 +178,7 @@ class _Decoder:
 
 
 def decode(data: bytes) -> Any:
-    """Decode a single CBOR item from ``data``.
+    """Decode a single CBOR item from ``data``, or raise ``ValueError``.
 
     Trailing bytes are an error: a frame that carries more than the item it
     declares is malformed, and silently ignoring the remainder lets a corrupt
@@ -149,7 +194,8 @@ def decode_frame(data: bytes) -> tuple[Any, bool]:
     """Decode ``data``, also reporting whether a map ended part-way.
 
     ``(value, short)``. Use this for device frames, where a split map should
-    yield the properties it carried rather than nothing at all.
+    yield the properties it carried rather than nothing at all. Anything it
+    cannot decode raises ``ValueError``, and nothing else does.
     """
     dec = _Decoder(data, tolerant=True)
     value = dec.read()
