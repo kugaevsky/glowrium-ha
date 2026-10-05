@@ -24,6 +24,7 @@ from custom_components.glowrium.const import (
     KEY_INDICATOR,
     KEY_POWER,
 )
+from custom_components.glowrium.coordinator import _parse_device_info as _parsed
 from custom_components.glowrium.models import GlowriumModel
 
 ADDRESS = "AA:BB:CC:DD:EE:FF"
@@ -678,3 +679,161 @@ async def test_debug_logging_takes_the_bluetooth_libraries_with_it(
         "bleak",
         "bleak_retry_connector",
     }
+
+
+def _call(domain: str, service: str, entity: str, **data: object) -> tuple:
+    """Describe a service call on one of the lamp's entities."""
+    return domain, service, {"entity_id": f"{domain}.glowrium_g7_1234{entity}", **data}
+
+
+@pytest.mark.parametrize(
+    ("call", "method", "args"),
+    [
+        (_call("light", "turn_off", ""), "async_set_light_state", (False,)),
+        (
+            _call("switch", "turn_on", "_indicator_light"),
+            "async_set_indicator",
+            (True,),
+        ),
+        (
+            _call("switch", "turn_off", "_indicator_light"),
+            "async_set_indicator",
+            (False,),
+        ),
+        (
+            _call("switch", "turn_on", "_daylight_saving_time"),
+            "async_set_dst",
+            (True,),
+        ),
+        (
+            _call("switch", "turn_off", "_daylight_saving_time"),
+            "async_set_dst",
+            (False,),
+        ),
+        (_call("button", "press", "_sync_location"), "async_sync_location", ()),
+        (
+            _call("select", "select_option", "_operating_mode", option="schedule"),
+            "async_set_operating_mode",
+            ("schedule",),
+        ),
+        (
+            _call("select", "select_option", "_lighting_mode", option="sunset_sync"),
+            "async_set_lighting_mode",
+            (9,),
+        ),
+        (
+            _call("number", "set_value", "_ramp_time", value=45),
+            "async_set_ramp",
+            (45,),
+        ),
+        (
+            _call("number", "set_value", "_schedule_gradual", value=15),
+            "async_set_timer_gradual",
+            (15,),
+        ),
+        (
+            _call("number", "set_value", "_schedule_brightness", value=80),
+            "async_set_timer_brightness",
+            (80,),
+        ),
+        (
+            _call("time", "set_value", "_schedule_start", time="06:30:00"),
+            "async_set_timer_start",
+            (6, 30),
+        ),
+        (
+            _call("time", "set_value", "_schedule_end", time="21:05:00"),
+            "async_set_timer_end",
+            (21, 5),
+        ),
+    ],
+)
+async def test_every_control_reaches_the_command_it_stands_for(
+    hass: HomeAssistant,
+    call: tuple[str, str, dict[str, object]],
+    method: str,
+    args: tuple[object, ...],
+) -> None:
+    """Each control on the device page ends in the right command, rightly put.
+
+    The light's switching on was walked from the service call to the write.
+    The other twelve controls were not: an entity wired to the wrong command,
+    or handing a schedule's hour over as its minute, passed everything.
+    """
+    entry = await _setup_without_bluetooth(hass)
+    coordinator = entry.runtime_data
+    setattr(coordinator, method, AsyncMock())
+    domain, service, data = call
+
+    await hass.services.async_call(domain, service, data, blocking=True)
+
+    getattr(coordinator, method).assert_awaited_once_with(*args)
+
+
+async def test_a_value_remembered_in_a_shape_it_no_longer_has_is_let_go(
+    hass: HomeAssistant,
+) -> None:
+    """What was kept from the last run is a stand-in, and may be unreadable.
+
+    A number that is no number and a time that is no time are shown as
+    unknown, the same as having remembered nothing - not as an error on
+    every state write.
+    """
+    mock_restore_cache(
+        hass,
+        (
+            State("number.glowrium_g7_1234_ramp_time", "soon"),
+            State("time.glowrium_g7_1234_schedule_start", "morning"),
+            State("time.glowrium_g7_1234_schedule_end", "18:30:00"),
+        ),
+    )
+    await _setup_without_bluetooth(hass)
+
+    assert hass.states.get("number.glowrium_g7_1234_ramp_time").state == "unknown"
+    assert hass.states.get("time.glowrium_g7_1234_schedule_start").state == "unknown"
+    assert hass.states.get("time.glowrium_g7_1234_schedule_end").state == "18:30:00"
+
+
+async def test_a_brightness_that_is_not_a_number_is_not_a_brightness(
+    hass: HomeAssistant,
+) -> None:
+    """The light says it is on and leaves out a level it cannot read."""
+    entry = await _setup_without_bluetooth(hass)
+
+    entry.runtime_data._ingest(cbor.encode({KEY_POWER: True, KEY_BRIGHTNESS: b"\x46"}))
+    await hass.async_block_till_done()
+
+    light = hass.states.get("light.glowrium_g7_1234")
+    assert light.state == "on"
+    assert light.attributes["brightness"] is None
+
+
+async def test_an_entity_built_after_the_lamp_was_read_describes_it_in_full(
+    hass: HomeAssistant,
+) -> None:
+    """What is already known when an entity is built goes into its description.
+
+    A platform set up late - a reload of one, an entity added afterwards -
+    is built by a coordinator that has read the lamp, and should not wait
+    for the registry to be told a second time.
+    """
+    entry = _entry()
+    entry.add_to_hass(hass)
+
+    def _already_read(coordinator: object, _entry: object) -> None:
+        coordinator.device_info = _parsed(G7_INFO)
+
+    with patch(
+        "custom_components.glowrium.coordinator.GlowriumCoordinator.async_start",
+        autospec=True,
+        side_effect=_already_read,
+    ):
+        assert await hass.config_entries.async_setup(entry.entry_id)
+        await hass.async_block_till_done()
+
+    assert _described(_device(hass)) == (
+        "Glowrium G7",
+        "Glowrium-C051",
+        "4",
+        "CST-0001",
+    )
