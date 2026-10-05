@@ -105,7 +105,7 @@ def _clock(value: Any) -> dict[str, Any]:
     """
     raw = _octets(value, 7)
     # Naive, like the clock itself: the lamp keeps local wall-clock time.
-    shown = datetime(int.from_bytes(raw[:2], "big"), *raw[2:])
+    shown = datetime(int.from_bytes(raw[:2], "big"), *raw[2:])  # noqa: DTZ001
     ahead = shown - dt_util.now().replace(tzinfo=None)
     if abs(ahead) > _FAR_OFF:
         return {"ahead_of_this_host_by_seconds": "more than a year off"}

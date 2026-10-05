@@ -7,8 +7,12 @@ select = [
     "A",
     "ASYNC",
     "B",
+    "BLE",    # a broad except has to say why it is one
     "C4",
+    "C90",
+    "COM818",
     "D",
+    "DTZ",    # the lamp's clock is local time; a naive datetime is a decision
     "E",
     "F",
     "G",
@@ -16,28 +20,67 @@ select = [
     "LOG",
     "N",
     "PERF",
+    "PGH",
     "PIE",
     "PL",
     "PT",
     "PTH",
+    "PYI",
     "RET",
+    "RSE",
     "RUF",
+    "S",      # bandit's checks, all of them
     "SIM",
     "SLF",
+    "SLOT",
+    "T10",
+    "T20",
+    "TC",
     "TID",
     "TRY",
     "UP",
     "W",
 ]
-ignore = ["D203", "D213", "TRY003", "RUF012"]
+ignore = [
+    "D203",
+    "D213",
+    "RUF012",
+    "TRY003",
+    # Imports are kept where they are read, as Home Assistant core keeps them:
+    # moving them under TYPE_CHECKING buys nothing here and costs a second
+    # place to look.
+    "TC001",
+    "TC002",
+    "TC003",
+    "TC006",
+]
+
+[tool.ruff.lint.mccabe]
+# Home Assistant core's ceiling. PLR0912 and PLR0915 already hold every
+# function well under it; this is the backstop they do not provide.
+max-complexity = 25
 
 [tool.ruff.lint.per-file-ignores]
 "custom_components/glowrium/cbor.py" = ["PLR2004", "PLR0911", "PLR0912"]
-"tests/*" = ["PLR2004", "SLF001"]
+# Tests assert, reach into the coordinator, stand in for a Bluetooth stack
+# that raises anything, and write the lamp's clock the way the lamp does.
+"tests/*" = ["PLR2004", "SLF001", "S101", "S311", "BLE001", "DTZ001"]
+# The bench is a command-line tool: it prints, and it survives whatever a
+# real lamp throws at it in order to report it.
+"tools/*" = ["T201", "BLE001", "DTZ001"]
 
 [tool.ruff.lint.isort]
 force-sort-within-sections = true
 combine-as-imports = true
+
+[tool.mypy]
+python_version = "3.14"
+files = ["custom_components/glowrium"]
+strict = true
+# Home Assistant re-exports from its components without __all__ - ColorMode
+# from homeassistant.components.light is the documented import - and is itself
+# checked with implicit re-exports allowed.
+implicit_reexport = true
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

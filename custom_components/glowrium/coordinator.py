@@ -248,14 +248,14 @@ def _close_bus(backend: Any, address: str) -> _Bus:
             monitor.set()
             backend._disconnect_monitor_event = None  # noqa: SLF001
         backend._cleanup_all()  # noqa: SLF001
-    except Exception as err:
+    except Exception as err:  # noqa: BLE001 - whatever bleak's own tidying raises
         # Tidying, and not ours to rely on: the bus is closed either way.
         _LOGGER.debug("%s: tidying up behind a client failed: %r", address, err)
     was_up = getattr(bus, "connected", True)
     try:
         if was_up:
             bus.disconnect()
-    except Exception as err:
+    except Exception as err:  # noqa: BLE001 - the bus is closed or it is not
         _LOGGER.debug("%s: closing a client's bus failed: %r", address, err)
         return _Bus.OPEN
     backend._bus = None  # noqa: SLF001
@@ -819,7 +819,7 @@ class GlowriumCoordinator:
             async with asyncio.timeout(ceiling):
                 await client.disconnect()
             hung_up = True
-        except Exception as err:
+        except Exception as err:  # noqa: BLE001 - explained below
             unanswered = isinstance(err, TimeoutError)
             # Anything at all: besides its own errors, bleak passes on whatever
             # the bus raised and ends on an assertion. Nobody is waiting for
@@ -928,8 +928,8 @@ class GlowriumCoordinator:
     @callback
     def _async_on_advertisement(
         self,
-        service_info: bluetooth.BluetoothServiceInfoBleak,
-        change: bluetooth.BluetoothChange,
+        _service_info: bluetooth.BluetoothServiceInfoBleak,
+        _change: bluetooth.BluetoothChange,
     ) -> None:
         was_present = self._present
         self._present = True
@@ -1634,7 +1634,9 @@ class GlowriumCoordinator:
         if not isinstance(raw, (bytes, bytearray)) or len(raw) < _CLOCK_LENGTH:
             return
         try:
-            reported = datetime(
+            # Naive on purpose: the lamp keeps local wall-clock time and has
+            # no notion of a zone, and it is compared with local time below.
+            reported = datetime(  # noqa: DTZ001
                 (raw[0] << 8) | raw[1], raw[2], raw[3], raw[4], raw[5], raw[6]
             )
         except ValueError:  # a nonsense date is itself a reason to correct it

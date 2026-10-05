@@ -3,17 +3,29 @@ name: Test
 on:
   push:
   pull_request:
+  schedule:
+    # Once a week with nothing pushed. The Home Assistant under test is
+    # whatever is current, and the integration reaches into bleak's private
+    # attributes to close a client's bus (see _close_bus): a release that
+    # moves them has to fail here before it reaches anybody's host.
+    - cron: "0 5 * * 1"
   workflow_dispatch:
+
+permissions:
+  contents: read
 
 jobs:
   test:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-python@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: "3.14"
       - run: pip install -r requirements-test.txt
       - run: ruff check .
       - run: ruff format --check .
-      - run: pytest
+      - run: mypy
+      - run: pytest --cov=custom_components/glowrium --cov-fail-under=95
