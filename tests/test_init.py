@@ -5,6 +5,7 @@ import importlib
 from unittest.mock import AsyncMock, MagicMock, patch
 
 from bleak.exc import BleakError
+from homeassistant.components.logger.helpers import get_integration_loggers
 from homeassistant.config_entries import ConfigEntryState
 from homeassistant.const import CONF_ADDRESS, CONF_MODEL_ID, EVENT_HOMEASSISTANT_STOP
 from homeassistant.core import HomeAssistant, State
@@ -659,3 +660,21 @@ def test_every_platform_says_how_many_calls_it_takes_at_once(platform: str) -> N
     module = importlib.import_module(f"custom_components.glowrium.{platform}")
 
     assert module.PARALLEL_UPDATES == 0
+
+
+async def test_debug_logging_takes_the_bluetooth_libraries_with_it(
+    hass: HomeAssistant,
+) -> None:
+    """Enabling debug logging has to switch on what a link problem is read from.
+
+    The button on the integration's page raises the level of the loggers the
+    manifest names. It named none, so it gave the integration's own lines and
+    nothing of what happened underneath them - the connect attempts, the
+    reads, the disconnect - which is where every link problem here was
+    actually found, and had to be switched on by hand.
+    """
+    assert await get_integration_loggers(hass, DOMAIN) >= {
+        "custom_components.glowrium",
+        "bleak",
+        "bleak_retry_connector",
+    }
