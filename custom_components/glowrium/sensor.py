@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-from typing import Any
-
 from homeassistant.components.sensor import SensorEntity
 from homeassistant.const import EntityCategory
 from homeassistant.core import HomeAssistant
@@ -11,6 +9,7 @@ from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 
 from . import GlowriumConfigEntry
 from .const import KEY_LATITUDE, KEY_LONGITUDE
+from .coordinator import GlowriumCoordinator
 from .entity import GlowriumEntity
 
 
@@ -34,7 +33,9 @@ class GlowriumCoordinateSensor(GlowriumEntity, SensorEntity):
 
     _attr_entity_category = EntityCategory.DIAGNOSTIC
 
-    def __init__(self, coordinator: Any, key: int, translation_key: str) -> None:
+    def __init__(
+        self, coordinator: GlowriumCoordinator, key: int, translation_key: str
+    ) -> None:
         """Initialize a coordinate sensor."""
         super().__init__(coordinator)
         self._key = key

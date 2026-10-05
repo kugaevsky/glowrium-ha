@@ -10,6 +10,7 @@ from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 
 from . import GlowriumConfigEntry
 from .const import KEY_BRIGHTNESS, KEY_POWER
+from .coordinator import GlowriumCoordinator
 from .entity import GlowriumEntity
 
 
@@ -29,7 +30,7 @@ class GlowriumLight(GlowriumEntity, LightEntity):
     _attr_color_mode = ColorMode.BRIGHTNESS
     _attr_supported_color_modes = {ColorMode.BRIGHTNESS}
 
-    def __init__(self, coordinator: Any) -> None:
+    def __init__(self, coordinator: GlowriumCoordinator) -> None:
         """Initialize the light."""
         super().__init__(coordinator)
         self._attr_unique_id = coordinator.address

@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-from typing import Any
-
 from homeassistant.components.select import SelectEntity
 from homeassistant.const import EntityCategory
 from homeassistant.core import HomeAssistant
@@ -15,6 +13,7 @@ from .const import (
     MODE_CIRCADIAN,
     OPERATING_MODES,
 )
+from .coordinator import GlowriumCoordinator
 from .entity import GlowriumSettingEntity
 
 
@@ -39,7 +38,7 @@ class GlowriumOperatingModeSelect(GlowriumSettingEntity, SelectEntity):
     _attr_translation_key = "operating_mode"
     _attr_options = list(OPERATING_MODES)
 
-    def __init__(self, coordinator: Any) -> None:
+    def __init__(self, coordinator: GlowriumCoordinator) -> None:
         """Initialize the operating-mode selector."""
         super().__init__(coordinator)
         self._attr_unique_id = f"{coordinator.address}_operating_mode"
@@ -63,7 +62,7 @@ class GlowriumLightingModeSelect(GlowriumSettingEntity, SelectEntity):
     _attr_translation_key = "lighting_mode"
     _attr_entity_category = EntityCategory.CONFIG
 
-    def __init__(self, coordinator: Any) -> None:
+    def __init__(self, coordinator: GlowriumCoordinator) -> None:
         """Initialize the lighting-mode selector for the device's model."""
         super().__init__(coordinator)
         self._attr_unique_id = f"{coordinator.address}_lighting_mode"
@@ -79,7 +78,8 @@ class GlowriumLightingModeSelect(GlowriumSettingEntity, SelectEntity):
     @property
     def current_option(self) -> str | None:
         """Return the selected lighting mode, if known."""
-        mode = self._by_index.get(self._coordinator.state.get(KEY_LIGHTING_MODE))
+        index = self._coordinator.state.get(KEY_LIGHTING_MODE)
+        mode = self._by_index.get(index) if isinstance(index, int) else None
         if mode is None and self._restored in self.options:
             return self._restored
         return mode

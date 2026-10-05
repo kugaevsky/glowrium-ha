@@ -10,6 +10,7 @@ from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 
 from . import GlowriumConfigEntry
 from .const import KEY_DST, KEY_INDICATOR
+from .coordinator import GlowriumCoordinator
 from .entity import GlowriumSettingEntity
 
 
@@ -30,7 +31,7 @@ class GlowriumIndicatorSwitch(GlowriumSettingEntity, SwitchEntity):
 
     _attr_translation_key = "indicator"
 
-    def __init__(self, coordinator: Any) -> None:
+    def __init__(self, coordinator: GlowriumCoordinator) -> None:
         """Initialize the indicator switch."""
         super().__init__(coordinator)
         self._attr_unique_id = f"{coordinator.address}_indicator"
@@ -57,7 +58,7 @@ class GlowriumDstSwitch(GlowriumSettingEntity, SwitchEntity):
 
     _attr_translation_key = "dst"
 
-    def __init__(self, coordinator: Any) -> None:
+    def __init__(self, coordinator: GlowriumCoordinator) -> None:
         """Initialize the DST switch."""
         super().__init__(coordinator)
         self._attr_unique_id = f"{coordinator.address}_dst"

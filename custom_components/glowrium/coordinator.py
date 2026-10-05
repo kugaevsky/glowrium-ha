@@ -331,17 +331,17 @@ class GlowriumCoordinator:
         # What sits behind each client, noted when the client is taken: by
         # the time it has to be closed, Home Assistant's wrapper may have
         # forgotten its backend (see _close_bus).
-        self._backends: dict[Any, Any] = {}
+        self._backends: dict[BleakClientWithServiceCache, Any] = {}
         # Clients that would not hang up and whose bus could not be closed
         # either. While there is one, nothing is dialled (see _connect_locked).
-        self._unreleased: set[Any] = set()
+        self._unreleased: set[BleakClientWithServiceCache] = set()
         # Hang-ups in a row that BlueZ left unanswered (see _STACK_FAULT_AFTER),
         # and the moment before which the poll does not dial because of them.
         self._stuck_hang_ups = 0
         self._dial_not_before = 0.0
         # The client whose link BlueZ called "not connected" without reporting
         # it dropped, and when (see _LOST_GRACE).
-        self._lost: tuple[Any, float] | None = None
+        self._lost: tuple[BleakClientWithServiceCache, float] | None = None
         # When the lamp last answered anything (see _PROBE_INTERVAL).
         self._last_answer = monotonic()
         # The keys the lamp has reported since it was last asked for its state.

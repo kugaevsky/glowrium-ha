@@ -2,14 +2,13 @@
 
 from __future__ import annotations
 
-from typing import Any
-
 from homeassistant.components.binary_sensor import BinarySensorEntity
 from homeassistant.const import EntityCategory
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 
 from . import GlowriumConfigEntry
+from .coordinator import GlowriumCoordinator
 from .entity import GlowriumEntity
 
 
@@ -32,7 +31,7 @@ class GlowriumActivatedSensor(GlowriumEntity, BinarySensorEntity):
     _attr_translation_key = "activated"
     _attr_entity_category = EntityCategory.DIAGNOSTIC
 
-    def __init__(self, coordinator: Any) -> None:
+    def __init__(self, coordinator: GlowriumCoordinator) -> None:
         """Initialize the activation-status sensor."""
         super().__init__(coordinator)
         self._attr_unique_id = f"{coordinator.address}_activated"

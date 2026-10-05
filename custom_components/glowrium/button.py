@@ -2,13 +2,12 @@
 
 from __future__ import annotations
 
-from typing import Any
-
 from homeassistant.components.button import ButtonEntity
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 
 from . import GlowriumConfigEntry
+from .coordinator import GlowriumCoordinator
 from .entity import GlowriumEntity
 
 
@@ -29,7 +28,7 @@ class GlowriumSyncLocationButton(GlowriumEntity, ButtonEntity):
 
     _attr_translation_key = "sync_location"
 
-    def __init__(self, coordinator: Any) -> None:
+    def __init__(self, coordinator: GlowriumCoordinator) -> None:
         """Initialize the sync-location button."""
         super().__init__(coordinator)
         self._attr_unique_id = f"{coordinator.address}_sync_location"
