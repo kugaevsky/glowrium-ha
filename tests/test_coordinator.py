@@ -229,11 +229,11 @@ async def test_set_dst(hass: HomeAssistant) -> None:
 async def test_sync_location(hass: HomeAssistant) -> None:
     """Sync writes HA's home coordinates as float64 to keys 0x0a/0x0b."""
     coordinator, client = _connected_coordinator(hass)
-    hass.config.latitude = 41.3166
-    hass.config.longitude = 69.2906
+    hass.config.latitude = 12.3456
+    hass.config.longitude = 65.4321
     await coordinator.async_sync_location()
     client.write_gatt_char.assert_awaited_once_with(
-        WRITE_UUID, cbor.encode({0x0A: 41.3166, 0x0B: 69.2906}), response=True
+        WRITE_UUID, cbor.encode({0x0A: 12.3456, 0x0B: 65.4321}), response=True
     )
 
 
@@ -322,12 +322,12 @@ def test_parse_device_info() -> None:
     """The facebd80 device-info string parses into a key/value map."""
     raw = (
         b"brand:Glowrium;pkey:Glowrium-C051;subid:3;"
-        b"devid:CST-80F4166DCB8A;mac:80F4166DCB8A;version:4;;"
+        b"devid:CST-AABBCCDDEEFF;mac:AABBCCDDEEFF;version:4;;"
     )
     info = _parse_device_info(raw)
     assert info["pkey"] == "Glowrium-C051"
     assert info["version"] == "4"
-    assert info["devid"] == "CST-80F4166DCB8A"
+    assert info["devid"] == "CST-AABBCCDDEEFF"
 
 
 async def test_device_info_properties(hass: HomeAssistant) -> None:
@@ -337,11 +337,11 @@ async def test_device_info_properties(hass: HomeAssistant) -> None:
     coordinator.device_info = {
         "pkey": "Glowrium-C051",
         "version": "4",
-        "devid": "CST-80F4166DCB8A",
+        "devid": "CST-AABBCCDDEEFF",
     }
     assert coordinator.model_id == "Glowrium-C051"
     assert coordinator.sw_version == "4"
-    assert coordinator.serial_number == "CST-80F4166DCB8A"
+    assert coordinator.serial_number == "CST-AABBCCDDEEFF"
 
 
 async def test_model_resolution(hass: HomeAssistant) -> None:

@@ -58,7 +58,7 @@ def test_decode_float64() -> None:
 
 def test_encode_float64() -> None:
     """float64 coordinates encode with the 0xfb prefix and round-trip."""
-    coords = {0x0A: 41.3166, 0x0B: 69.2906}
+    coords = {0x0A: 12.3456, 0x0B: 65.4321}
     encoded = cbor.encode(coords)
     assert encoded[0] == 0xA2  # map with 2 pairs
     assert encoded[2:3] == b"\xfb"  # first value is a float64
@@ -331,7 +331,7 @@ def test_nothing_but_a_valueerror_leaves_the_frame_decoder() -> None:
             0x05: bytes.fromhex("07ea0a05080f1e"),
             0x06: True,
             0x08: 70,
-            0x0A: 41.31,
+            0x0A: 12.34,
             0x11: bytes.fromhex("0100000006001200640000"),
             0x2B: 1,
             0x35: bytes.fromhex("0100000e10"),

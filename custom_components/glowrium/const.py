@@ -6,7 +6,7 @@ from typing import Final
 
 DOMAIN: Final = "glowrium"
 
-# BLE devices advertise a local name like "Glowrium-G7_6DCB8A".
+# BLE devices advertise a local name like "Glowrium-G7_DDEEFF".
 NAME_PREFIX: Final = "Glowrium"
 
 # GATT characteristics of the "rabbit iot ble" (facebd0x-...) control service.

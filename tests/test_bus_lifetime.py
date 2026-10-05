@@ -863,8 +863,8 @@ async def test_a_wedged_stack_is_put_in_front_of_the_user(
         ("Glowrium [here](javascript:alert(1)) `rm` *now*", None),
         ("Glowrium www.evil.example", "Glowrium www evil example"),
         ("![]()<>`*#|~", "the lamp"),
-        ("Душевая Glowrium G7", "Душевая Glowrium G7"),
-        ("Glowrium-G7_6DCB8A", "Glowrium-G7_6DCB8A"),
+        ("Лампа над столом G7", "Лампа над столом G7"),
+        ("Glowrium-G7_DDEEFF", "Glowrium-G7_DDEEFF"),
         # Picked from the list of discovered lamps: titled with its address.
         ("Glowrium-G7_DDEEFF (AA:BB:CC:DD:EE:FF)", "Glowrium-G7_DDEEFF"),
         (

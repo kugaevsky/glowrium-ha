@@ -38,7 +38,7 @@ from custom_components.glowrium.diagnostics import async_get_config_entry_diagno
 
 ADDRESS = "AA:BB:CC:DD:EE:FF"
 TITLE = "Glowrium-G7_DDEEFF"
-LATITUDE, LONGITUDE = 41.3166, 69.2906
+LATITUDE, LONGITUDE = 12.3456, 65.4321
 SERIAL = "CST-0001"
 # The host's clock when the lamp reported, with the lamp's a minute behind
 # it; and the host's clock five minutes later, when the file is made.
