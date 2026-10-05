@@ -896,28 +896,102 @@ async def test_malformed_frame_is_not_reported_as_trailing_bytes(
 
 
 @pytest.mark.parametrize(
-    "frame",
+    ("frame", "said"),
     [
-        pytest.param("a18000", id="keyed by an array"),
-        pytest.param("ada200", id="keyed by a map that ran out"),
-        pytest.param("a100" * 250 + "00", id="nested as deep as a frame allows"),
+        pytest.param("a18000", "cannot read", id="keyed by an array"),
+        pytest.param("ada200", "cannot read", id="keyed by a map that ran out"),
+        pytest.param(
+            "a100" * 250 + "00", "cannot read", id="nested as deep as a frame allows"
+        ),
+        pytest.param("c000", "Undecodable frame", id="not a map at all"),
+        pytest.param("", "Undecodable frame", id="empty"),
     ],
 )
 async def test_a_frame_the_decoder_refuses_is_dropped_and_nothing_is_raised(
-    hass: HomeAssistant, caplog: pytest.LogCaptureFixture, frame: str
+    hass: HomeAssistant, caplog: pytest.LogCaptureFixture, frame: str, said: str
 ) -> None:
     """No frame can end the notification callback in an exception.
 
-    The callback runs inside the Bluetooth stack's own message handler. These
-    three used to leave it as a TypeError and a RecursionError - a traceback
-    per frame on a local adapter, and on the path that reads the state, an
-    exception that took the whole connect with it.
+    The callback runs inside the Bluetooth stack's own message handler. A map
+    keyed by an array used to leave it as a TypeError - a traceback per frame
+    on a local adapter, and on the path that reads the state, an exception
+    that took the whole connect with it. Nothing of these frames could be
+    read, so nothing is merged; each is named in the log.
     """
     coordinator = GlowriumCoordinator(hass, "AA:BB:CC:DD:EE:FF", "Glowrium-G7")
     with caplog.at_level(logging.DEBUG, logger=coordinator_module.__name__):
         assert coordinator._ingest(bytes.fromhex(frame)) == frozenset()
     assert not coordinator.state
-    assert "Undecodable frame" in caplog.text
+    assert coordinator._reports == 0
+    assert said in caplog.text
+
+
+# {power: on, brightness: 70, 0x09: <a tag, which nothing here can read> ...
+_PARTLY_READABLE = bytes.fromhex("a406f508184609c0000d00")
+
+
+async def test_what_was_read_ahead_of_an_unreadable_item_is_kept_and_said_loudly(
+    hass: HomeAssistant, caplog: pytest.LogCaptureFixture
+) -> None:
+    """One item the integration cannot read does not cost the frame around it.
+
+    The properties ahead of it were read as from any other frame, and they
+    are kept. That the rest was not is said once at a level somebody sees,
+    with the bytes it takes to add the missing reading and the caution that
+    goes with posting bytes - and at debug from then on, since a lamp that
+    sends one such frame sends them all day.
+    """
+    coordinator = GlowriumCoordinator(hass, "AA:BB:CC:DD:EE:FF", "Glowrium-G7")
+
+    with caplog.at_level(logging.DEBUG, logger=coordinator_module.__name__):
+        carried = coordinator._ingest(_PARTLY_READABLE)
+
+        assert carried == frozenset({KEY_POWER, KEY_BRIGHTNESS})
+        assert coordinator.state == {KEY_POWER: True, KEY_BRIGHTNESS: 70}
+        assert coordinator._reports == 1
+        warnings = [r for r in caplog.records if r.levelno == logging.WARNING]
+        assert len(warnings) == 1
+        said = warnings[0].getMessage()
+        assert "cannot read" in said
+        assert "unsupported CBOR major type 6" in said
+        assert "2 properties ahead of it were kept" in said
+        assert _PARTLY_READABLE.hex() in said
+        assert "coordinates" in said
+        assert "Undecodable frame" not in caplog.text
+
+        caplog.clear()
+        coordinator._ingest(_PARTLY_READABLE)
+        assert not [r for r in caplog.records if r.levelno == logging.WARNING]
+        assert "cannot be read" in caplog.text  # still recorded, at debug
+
+
+async def test_a_report_read_only_in_part_is_still_the_answer_to_the_request(
+    hass: HomeAssistant, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A lamp that answers with a frame read in part has answered, and is not read.
+
+    Taken for a malformed frame and dropped, the answer counted as silence:
+    the connect fell back on reading the state, and on BlueZ a read of this
+    lamp ends the link two seconds later. A model whose report carries a
+    single item nobody has a reading for would have lost its link on every
+    connect - what 0.2.0 and 0.2.1 did to every lamp.
+    """
+    coordinator, client = _connected_coordinator(hass)
+    monkeypatch.setattr(coordinator_module, "_REPORT_TIMEOUT", 0.05)
+
+    async def _write(uuid: str, _payload: bytes, **_kwargs: object) -> None:
+        if uuid == NOTIFY_UUID:
+            coordinator._on_notify(None, bytearray(_PARTLY_READABLE))
+
+    client.write_gatt_char = AsyncMock(side_effect=_write)
+    client.read_gatt_char = AsyncMock(
+        return_value=bytearray(cbor.encode({KEY_POWER: False}))
+    )
+
+    assert await coordinator._request_state(client) is True
+
+    client.read_gatt_char.assert_not_awaited()
+    assert coordinator.state == {KEY_POWER: True, KEY_BRIGHTNESS: 70}
 
 
 async def test_setup_is_not_held_by_a_connect_that_never_finishes(

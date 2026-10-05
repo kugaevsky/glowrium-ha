@@ -128,6 +128,11 @@ _STACK_FAULT_BACKOFF_MAX = 300.0
 _TROUBLESHOOTING_URL = "https://github.com/kugaevsky/glowrium-ha#troubleshooting"
 # How much of the lamp's name the repair shows (see _as_text).
 _NAME_SHOWN = 48
+# Said wherever the log asks for a frame to be posted.
+_BLANK_COORDINATES = (
+    "A frame can carry the coordinates stored in the lamp (ids 0a and 0b, each "
+    "followed by fb and eight bytes): blank those first"
+)
 # How long BlueZ gets to report a link dropped once it has called it "not
 # connected". Normally two to three seconds (see _REFUSAL_MARKERS). When the
 # report never comes, the client is held with is_connected True and nothing
@@ -404,6 +409,8 @@ class GlowriumCoordinator:
         # Set once a frame has been rejected for trailing bytes, so the warning
         # is raised once per session instead of on every notification.
         self._trailing_warned = False
+        # The same for a frame that was read only in part.
+        self._unreadable_warned = False
         # Set whenever the device reports state, so a command awaiting
         # confirmation wakes on the report instead of polling for it.
         self._state_reported = asyncio.Event()
@@ -1387,14 +1394,45 @@ class GlowriumCoordinator:
             "%s (model %s, firmware %s) sent a frame with %d trailing bytes "
             "and it was dropped: %s. The frame declared less than it carried, "
             "so accepting the remainder could mean acting on a corrupt state. "
-            "Please report this frame - it is exactly the hex dump needed. A "
-            "frame can carry the coordinates stored in the lamp (ids 0a and "
-            "0b, each followed by fb and eight bytes): blank those first",
+            "Please report this frame - it is exactly the hex dump needed. %s",
             self.address,
             self.model_id or "unknown",
             self.sw_version or "unknown",
             count,
             data.hex(),
+            _BLANK_COORDINATES,
+        )
+
+    def _log_unreadable_item(self, data: bytes, err: cbor.UnreadableItemError) -> None:
+        """Report a frame that was read only in part: once loudly, then quietly.
+
+        As with trailing bytes: a lamp that sends one such frame sends them
+        all day, and the first is the one that has to be seen - with the bytes
+        it takes to give the item a reading.
+        """
+        if self._unreadable_warned:
+            _LOGGER.debug(
+                "%s: frame %s again carries an item that cannot be read (%s); "
+                "kept the %d properties ahead of it",
+                self.address,
+                data.hex(),
+                err,
+                len(err.ahead),
+            )
+            return
+        self._unreadable_warned = True
+        _LOGGER.warning(
+            "%s (model %s, firmware %s) sent a frame with an item this "
+            "integration cannot read (%s): %s. The %d properties ahead of it "
+            "were kept; whatever follows it could not be found. Please report "
+            "this frame - it is exactly the hex dump needed. %s",
+            self.address,
+            self.model_id or "unknown",
+            self.sw_version or "unknown",
+            err,
+            data.hex(),
+            len(err.ahead),
+            _BLANK_COORDINATES,
         )
 
     def _ingest(self, data: bytes) -> frozenset[int]:
@@ -1409,8 +1447,17 @@ class GlowriumCoordinator:
         handle a split map, the remembered ramp and the listeners identically.
         """
         self._note_answer()  # whatever it says, the lamp said it
+        short = False
         try:
             decoded, short = cbor.decode_frame(data)
+        except cbor.UnreadableItemError as err:
+            # Kept, as far as it was read. Dropping the frame would cost more
+            # than its properties: a state request answered only by this would
+            # count as unanswered, the connect would fall back on reading, and
+            # on BlueZ a read ends the link (see _request_state). A frame of
+            # which nothing was read is still no report, and takes that way.
+            self._log_unreadable_item(data, err)
+            decoded = err.ahead
         except cbor.TrailingBytesError as err:
             # Reported apart from a merely malformed frame, and loudly the first
             # time: rejecting these is what changed in #5, and on a model whose

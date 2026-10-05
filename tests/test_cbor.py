@@ -216,11 +216,57 @@ def test_only_the_end_of_the_buffer_makes_a_map_short(frame: str) -> None:
 
     Tolerating a split map means accepting a buffer that ends early. It used
     to mean accepting any failure inside a pair, so a frame with one good pair
-    and then garbage decoded to that one pair, flagged short and merged - the
-    short, plausible map the strict path exists to keep out.
+    and then an item nothing here can read decoded to that one pair and was
+    passed off as a map that had been split.
     """
     with pytest.raises(ValueError, match="unsupported"):
         cbor.decode_frame(bytes.fromhex(frame))
+
+
+@pytest.mark.parametrize(
+    ("frame", "ahead"),
+    [
+        ("a206f508c0", {0x06: True}),  # the second value is a tag
+        ("a206f5c000", {0x06: True}),  # the second key is
+        ("a206f5081c", {0x06: True}),  # a length this codec does not read
+        ("a308c006f50919", {}),  # the first value already
+        ("a306f508a101c00919", {0x06: True}),  # inside a nested map: that pair whole
+        ("a206f508818181818100", {0x06: True}),  # nested deeper than any frame is
+        ("a18000", {}),  # keyed by an array
+    ],
+)
+def test_an_item_that_cannot_be_read_says_what_was_read_ahead_of_it(
+    frame: str, ahead: dict[int, object]
+) -> None:
+    """The frame is malformed, and the error hands over the pairs before the item.
+
+    An item with no reading here has no length either, so nothing behind it
+    can be found. What came ahead of it was read exactly as it would have
+    been from a whole frame, and whether that is worth keeping is for the
+    caller to say - which it cannot, unless it is told what there was. The
+    error carries it, the way a read that was cut short carries what it got.
+    """
+    with pytest.raises(cbor.UnreadableItemError) as err:
+        cbor.decode_frame(bytes.fromhex(frame))
+    assert err.value.ahead == ahead
+    assert isinstance(err.value, ValueError)
+    assert not isinstance(err.value, cbor.TrailingBytesError)
+
+
+@pytest.mark.parametrize("frame", ["c000", "8206c0", "81a206f508c0"])
+def test_only_the_properties_of_a_device_frame_are_handed_over(frame: str) -> None:
+    """What is ahead of an item means something only in the outermost map.
+
+    A frame that is not a map has no properties to keep, and a strict decode
+    is of something this integration encoded itself.
+    """
+    with pytest.raises(ValueError, match="unsupported") as err:
+        cbor.decode_frame(bytes.fromhex(frame))
+    assert not isinstance(err.value, cbor.UnreadableItemError)
+
+    with pytest.raises(ValueError, match="unsupported") as err:
+        cbor.decode(bytes.fromhex("a206f508c0"))
+    assert not isinstance(err.value, cbor.UnreadableItemError)
 
 
 def test_a_map_cut_short_inside_a_value_drops_that_pair_whole() -> None:

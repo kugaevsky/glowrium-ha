@@ -208,6 +208,11 @@ messages worth acting on, and two symptoms that come without one.
   what an issue needs — after one look: a frame can hold the coordinates the
   lamp stores. They are the ids `0a` and `0b`, each followed by `fb` and eight
   more bytes; blank those eight before posting.
+- **`sent a frame with an item this integration cannot read`** — the lamp
+  reports something no reading has been written for. What came before it in
+  the frame is kept, so the lamp goes on working; what follows it is lost.
+  The message carries the frame, and an issue with it is how the reading gets
+  written — with the coordinates blanked as above.
 - **A command fails with "out of range or the Bluetooth adapter busy"** — the
   write did not get through. Check that the vendor app is not connected (the
   lamp takes one connection at a time) and that an adapter or a proxy is

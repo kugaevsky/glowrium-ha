@@ -7,8 +7,8 @@ IEEE-754 single/double floats. Validated against the live device.
 What it decodes comes off a radio, so the decoder promises its caller one
 thing: it returns a value or raises ``ValueError``, whatever the bytes. A key
 that is not a property id, a container nested deeper than any real frame, an
-item this subset has no reading for - each is a malformed frame, not an
-exception of its own kind.
+item this subset has no reading for - each is a malformed frame and a
+``ValueError``, never something a caller has to catch besides.
 """
 
 from __future__ import annotations
@@ -29,6 +29,22 @@ class _RanOutError(ValueError):
     Told apart from every other way a frame can be malformed, because it is
     the one a split map is allowed (see ``_Decoder._map``).
     """
+
+
+class UnreadableItemError(ValueError):
+    """The outermost map of a device frame holds an item with no reading here.
+
+    Such an item has no length either, so nothing behind it can be found. The
+    pairs ahead of it were read as from any whole frame, and ``ahead`` hands
+    them over: whether they are worth keeping is for the caller to say. Still
+    a ``ValueError`` - to a caller that only asks whether the frame decoded,
+    it did not.
+    """
+
+    def __init__(self, reason: str, ahead: dict[int, Any]) -> None:
+        """Record why the item could not be read and what came ahead of it."""
+        super().__init__(reason)
+        self.ahead = ahead
 
 
 class TrailingBytesError(ValueError):
@@ -97,9 +113,10 @@ class _Decoder:
         and treating that as garbage discards every property that *did* arrive.
 
         That is all it tolerates. Only the buffer ending counts - a pair that is
-        there and malformed is a malformed frame - and only for the outermost
-        map: one nested inside a value is all or nothing, so the pair it sits in
-        is dropped whole rather than kept with half a value.
+        there and cannot be read is a malformed frame, raised as
+        ``UnreadableItemError`` with the pairs ahead of it - and only for the
+        outermost map: one nested inside a value is all or nothing, so the pair
+        it sits in is dropped whole rather than kept with half a value.
 
         When not tolerant the shortfall raises, so a truncated map in anything
         we encoded ourselves is still surfaced as the bug it is.
@@ -122,6 +139,8 @@ class _Decoder:
                 self._i = start
                 self.short = True
                 break
+            except ValueError as err:
+                raise UnreadableItemError(str(err), out) from err
             out[key] = value
         return out
 
@@ -195,7 +214,9 @@ def decode_frame(data: bytes) -> tuple[Any, bool]:
 
     ``(value, short)``. Use this for device frames, where a split map should
     yield the properties it carried rather than nothing at all. Anything it
-    cannot decode raises ``ValueError``, and nothing else does.
+    cannot decode raises ``ValueError``, and nothing else does; when what it
+    cannot decode is an item inside the outermost map, the error is an
+    ``UnreadableItemError`` and carries the pairs it read first.
     """
     dec = _Decoder(data, tolerant=True)
     value = dec.read()

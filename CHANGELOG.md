@@ -187,10 +187,9 @@ the table is under *Changed*.
   are enough — and maps nested a few hundred deep. In the notification
   callback that was a traceback per frame; on the path that reads the state it
   took the background connect with it. A map key is now read as what it is in
-  this protocol, an unsigned property id, and nesting is bounded. A frame with
-  one good pair followed by garbage is no longer taken for a split map and
-  merged, either. A healthy lamp sends none of this: it was found by fuzzing
-  the decoder, not in the field.
+  this protocol, an unsigned property id, and nesting is bounded. A healthy
+  lamp sends none of this: it was found by fuzzing the decoder, not in the
+  field.
 - **A ramp that was refused, or that never reached the lamp, is not applied
   later.** Setting the ramp on a lamp that has not reported its lighting mode
   is refused, but the ramp was remembered first. The next switch to Circadian
@@ -221,6 +220,14 @@ the table is under *Changed*.
   names a mode: `select.select_option` with `option: Sun SYNC`, a trigger or
   condition on the select's state, a template that compares it. The value the
   select remembered across a restart is converted by itself.
+- **A frame with an item the integration cannot read is said to be one.** It
+  used to be taken for a map split across two notifications: what came ahead
+  of the item was merged, and nothing said that the rest of the frame had not
+  been understood. What came ahead is still kept — a lamp whose report
+  carries one item nobody has written a reading for goes on working, and its
+  report still counts as an answer, so its state is not read instead — but
+  the frame is now named in the log, once as a warning, with the bytes it
+  takes to write that reading.
 - **The lamp's state is asked for, not read, and its clock with it.** The
   request now carries the clock (`0x05`) as well as what the vendor app asks
   for; the lamp answers all of it in one notification. Entities fill in from

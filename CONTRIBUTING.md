@@ -70,9 +70,11 @@ What is worth sending, roughly in order of usefulness:
    link stands, in one file.
 2. **A notify frame the decoder mishandled**, as hex. Turn on debug logging for
    `custom_components.glowrium`; frames that cannot be used are printed with
-   their bytes. One such frame from a G8 turned into a fix and a regression
-   test — the decoder had been throwing away eleven valid properties because
-   the frame promised twelve pairs and carried eleven.
+   their bytes. A frame with trailing bytes, or with an item nothing here can
+   read, is named in a warning without it. One such frame from a G8 turned
+   into a fix and a regression test — the decoder had been throwing away
+   eleven valid properties because the frame promised twelve pairs and
+   carried eleven.
 3. **The debug log of the first few minutes after a restart**, from any model
    other than a G7. Since 0.3.0 a lamp is asked for its state before anything
    is read, and that has only been run on a G7: the log shows whether your

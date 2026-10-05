@@ -290,12 +290,29 @@ So device frames and our own payloads are decoded differently:
 - `decode(data)` stays strict — a short map in a payload we encoded ourselves is
   a bug, not a wire condition.
 
-What is tolerated is the buffer ending, and only that. A pair that is there
-and malformed is a malformed frame - it used to be taken for the end as well,
-so one good pair followed by garbage decoded to that pair and was merged. And
-only the outermost map may end early: a map nested inside a value is all or
-nothing, so the pair it sits in is dropped whole rather than kept with half a
-value.
+What is tolerated is the buffer ending, and only that. And only the
+outermost map may end early: a map nested inside a value is all or nothing,
+so the pair it sits in is dropped whole rather than kept with half a value.
+
+### Frames with an item that cannot be read
+
+A pair that is there and cannot be read - its value a tag, its key anything
+but a property id - is not a pair that did not arrive, and the decoder does
+not pass one off as the other: it raises `cbor.UnreadableItemError`. It used
+to take such a pair for the end of a split map, so the frame was merged as far
+as it went and nothing said that the rest of it had not been understood.
+
+An item with no reading has no length either, so nothing behind it can be
+found. What was ahead of it was read as from any whole frame, and the error
+carries those pairs (`ahead`). The coordinator keeps them (`_ingest`), and
+says so - once per session as a warning that carries the frame, then at debug
+(`_log_unreadable_item`). Dropping the frame instead would cost more than its
+properties. A state request answered only by such a frame would count as
+unanswered; the connect would fall back on reading the state; and on BlueZ a
+read ends the link two seconds later. A model whose report carries a single
+item nobody has given a reading would lose its link on every connect - which
+is what 0.2.0 and 0.2.1 did to every lamp. A frame of which nothing at all
+could be read is still no report, and that lamp is read, as a silent one is.
 
 Trailing bytes are an error on both paths, raised as `cbor.TrailingBytesError`
 (a `ValueError` subclass carrying the byte count). Accepting the remainder would
