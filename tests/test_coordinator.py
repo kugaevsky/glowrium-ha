@@ -1581,6 +1581,25 @@ async def test_going_out_of_reach_and_coming_back_are_each_said_once(
         assert "back in reach" in _info_lines(caplog)[0]
 
 
+async def test_a_lamp_set_up_from_the_list_is_not_named_with_its_address_twice(
+    hass: HomeAssistant, caplog: pytest.LogCaptureFixture
+) -> None:
+    """A lamp picked from the list has its address in its title already."""
+    coordinator, _ = _connected_coordinator(hass)
+    coordinator.name = "Glowrium-G7_DDEEFF (AA:BB:CC:DD:EE:FF)"
+    coordinator._client = None
+    coordinator._present = True
+    coordinator._reconnecting = True  # this is about the log, not about dialling
+
+    with caplog.at_level(logging.INFO, logger=coordinator_module.__name__):
+        coordinator._async_on_unavailable(None)
+        coordinator._async_on_advertisement(None, None)
+
+    gone, back = _info_lines(caplog)
+    assert gone.startswith("Glowrium-G7_DDEEFF (AA:BB:CC:DD:EE:FF) is out of reach")
+    assert back == "Glowrium-G7_DDEEFF (AA:BB:CC:DD:EE:FF) is back in reach"
+
+
 async def test_a_lamp_with_a_link_is_not_out_of_reach_for_being_quiet(
     hass: HomeAssistant, caplog: pytest.LogCaptureFixture
 ) -> None:

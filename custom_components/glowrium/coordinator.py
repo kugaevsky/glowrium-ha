@@ -463,6 +463,17 @@ class GlowriumCoordinator:
         return self.device_info.get("devid")
 
     @property
+    def _plain_name(self) -> str:
+        """The lamp's name without its address after it.
+
+        A lamp picked from the list of discovered devices is titled with its
+        name and its address in brackets. Where the address is said anyway, or
+        where brackets and colons do not survive (see ``_as_text``), the name
+        alone reads better.
+        """
+        return self.name.removesuffix(f" ({self.address})")
+
+    @property
     def _is_connected(self) -> bool:
         """Return True while a live GATT connection is held."""
         return self._client is not None and self._client.is_connected
@@ -604,12 +615,12 @@ class GlowriumCoordinator:
             return
         self._logged_in_reach = in_reach
         if in_reach:
-            _LOGGER.info("%s (%s) is back in reach", self.name, self.address)
+            _LOGGER.info("%s (%s) is back in reach", self._plain_name, self.address)
         else:
             _LOGGER.info(
                 "%s (%s) is out of reach: it is not advertising and there is no "
                 "link to it. Its entities are unavailable until it is heard again",
-                self.name,
+                self._plain_name,
                 self.address,
             )
 
@@ -924,7 +935,7 @@ class GlowriumCoordinator:
             translation_key="bluetooth_stack_stuck",
             translation_placeholders={
                 # As text: the description is rendered as Markdown.
-                "name": _as_text(self.name),
+                "name": _as_text(self._plain_name),
                 "count": str(self._stuck_hang_ups),
             },
         )
