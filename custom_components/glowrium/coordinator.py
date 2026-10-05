@@ -874,7 +874,15 @@ class GlowriumCoordinator:
 
     @property
     def _stack_issue_id(self) -> str:
-        return f"bluetooth_stack_stuck_{self.address}"
+        """Name the repair by the config entry, never by the lamp's address.
+
+        Home Assistant lists the ids of an integration's open repairs in its
+        diagnostics download, which is a file people post. The entry's id
+        tells two lamps apart as well as the address would.
+        """
+        if self._entry is None:
+            return "bluetooth_stack_stuck"
+        return f"bluetooth_stack_stuck_{self._entry.entry_id}"
 
     @callback
     def _async_raise_stack_issue(self) -> None:

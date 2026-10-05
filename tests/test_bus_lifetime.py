@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import asyncio
 from itertools import pairwise
+import json
 from types import SimpleNamespace
 from typing import Any
 from unittest.mock import AsyncMock
@@ -815,9 +816,13 @@ async def test_a_fault_ends_with_the_lamp_and_not_with_a_hang_up(
 
 def _stack_issue(hass: HomeAssistant) -> ir.IssueEntry | None:
     """Return the repair raised for the wedged stack, if one stands."""
-    return ir.async_get(hass).async_get_issue(
-        DOMAIN, "bluetooth_stack_stuck_AA:BB:CC:DD:EE:FF"
-    )
+    raised = [
+        issue
+        for (domain, _id), issue in ir.async_get(hass).issues.items()
+        if domain == DOMAIN
+    ]
+    assert len(raised) <= 1
+    return raised[0] if raised else None
 
 
 async def test_a_wedged_stack_is_put_in_front_of_the_user(
@@ -890,6 +895,50 @@ async def test_the_repair_shows_the_lamps_name_as_text_and_nothing_more(
     assert in_repair
     if shown is not None:
         assert in_repair == shown
+
+
+async def test_the_repair_is_filed_under_the_entry_and_not_under_the_address(
+    hass: HomeAssistant, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A repair's id leaves the host, so the lamp's address must not be in it.
+
+    Home Assistant puts the ids of an integration's open repairs into its
+    diagnostics download - the file this integration tells people to attach
+    to public issues, and takes care to keep the address out of. The config
+    entry's id tells two lamps apart just as well and names neither.
+    """
+    coordinator, _host, clock, _dialled = _on_a_clock(hass, monkeypatch)
+    coordinator._entry = SimpleNamespace(
+        entry_id="01JENTRY",
+        async_create_background_task=lambda _hass, coro, name: hass.async_create_task(
+            coro, name
+        ),
+    )
+
+    await _ticks(coordinator, hass, clock, 3)
+
+    issue = _stack_issue(hass)
+    assert issue is not None
+    assert issue.issue_id == "bluetooth_stack_stuck_01JENTRY"
+    for part in ("AA:BB:CC:DD:EE:FF", "aa:bb", "DDEEFF", "EE:FF"):
+        assert part not in json.dumps(issue.to_json())
+
+    await coordinator.async_stop()
+    assert _stack_issue(hass) is None  # taken down under the same id
+
+
+async def test_the_repair_shows_no_more_of_a_name_than_it_takes_to_know_it(
+    hass: HomeAssistant, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A name is cut at a length that is still a name, not a paragraph."""
+    coordinator, _host, clock, _dialled = _on_a_clock(hass, monkeypatch)
+    coordinator.name = "Glowrium " + "x" * 200
+
+    await _ticks(coordinator, hass, clock, 3)
+
+    issue = _stack_issue(hass)
+    assert issue is not None
+    assert issue.translation_placeholders["name"] == "Glowrium " + "x" * 39
 
 
 async def test_the_repair_goes_when_the_lamp_answers_again(
