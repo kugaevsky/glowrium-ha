@@ -205,14 +205,15 @@ messages worth acting on, and two symptoms that come without one.
   [report the model](CONTRIBUTING.md#sending-protocol-data-for-a-device).
 - **`sent a frame with … trailing bytes and it was dropped`** — a frame the
   decoder would not trust. The message carries it as hex, which is exactly
-  what an issue needs — after one look: a frame can hold the coordinates the
-  lamp stores. They are the ids `0a` and `0b`, each followed by `fb` and eight
-  more bytes; blank those eight before posting.
+  what an issue needs. A frame can hold the coordinates the lamp stores and
+  the sunrise and sunset times it works out from them; in the log both are
+  already replaced by `xx`. Give the line one look all the same before
+  posting it.
 - **`sent a frame with an item this integration cannot read`** — the lamp
   reports something no reading has been written for. What came before it in
   the frame is kept, so the lamp goes on working; what follows it is lost.
-  The message carries the frame, and an issue with it is how the reading gets
-  written — with the coordinates blanked as above.
+  The message carries the frame, blanked the same way, and an issue with it
+  is how the reading gets written.
 - **A command fails with "out of range or the Bluetooth adapter busy"** — the
   write did not get through. Check that the vendor app is not connected (the
   lamp takes one connection at a time) and that an adapter or a proxy is

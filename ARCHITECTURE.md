@@ -317,6 +317,14 @@ item nobody has given a reading would lose its link on every connect - which
 is what 0.2.0 and 0.2.1 did to every lamp. A frame of which nothing at all
 could be read is still no report, and that lamp is read, as a silent one is.
 
+Wherever a frame is printed - this warning, the one for trailing bytes, the
+debug line for a frame that could not be decoded at all - it is printed
+without what says where the lamp is (`_for_the_log`). The coordinates and the
+times the lamp works out from them are found by their bytes and not by
+decoding, since these are the frames that could not be decoded to their end,
+and are put down as `xx`. The lines ask for the frame to be posted; they
+cannot rest on whoever posts it blanking hex by hand.
+
 Trailing bytes are an error on both paths, raised as `cbor.TrailingBytesError`
 (a `ValueError` subclass carrying the byte count). Accepting the remainder would
 let a corrupt frame decode to a short but plausible map — `{0x14: false}` among

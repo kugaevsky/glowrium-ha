@@ -55,13 +55,18 @@ written down, whether or not anything comes of it immediately.
 **Before you post bytes: they can say where you live.** The lamp stores the
 coordinates it was given for its circadian curve, and both a notify frame and
 a read of `facebd02` can carry them. In hex they are the ids `0a` and `0b`,
-each followed by `fb` and eight more bytes — blank those eight. The
-device-info string carries the serial number (`devid`) and the address
-(`mac`); leave both out. A debug log names the lamp by its address, and the
-Bluetooth libraries name the other devices they hear. What the integration
-writes into the diagnostics download (the first item below) has none of this
-in it; Home Assistant adds a header of its own to that file — version, time
-zone, the names of your custom integrations — so look it over all the same.
+each followed by `fb` and eight more bytes — blank those eight. The sunrise
+and sunset times the lamp works out from them (`1834`, then a byte string)
+give the place away as well. Where the integration's own log lines print a
+frame, both are already replaced by `xx`; in a capture, in a read taken with
+another tool, and in what the Bluetooth libraries write into a debug log,
+they are not. The device-info string carries the serial number (`devid`) and
+the address (`mac`); leave both out. A debug log names the lamp by its
+address, and the Bluetooth libraries name the other devices they hear. What
+the integration writes into the diagnostics download (the first item below)
+has none of this in it; Home Assistant adds a header of its own to that file
+— version, time zone, the names of your custom integrations — so look it
+over all the same.
 
 What is worth sending, roughly in order of usefulness:
 

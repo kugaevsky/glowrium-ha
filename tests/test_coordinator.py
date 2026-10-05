@@ -23,7 +23,9 @@ from custom_components.glowrium.const import (
     KEY_CIRCADIAN,
     KEY_DST,
     KEY_INDICATOR,
+    KEY_LATITUDE,
     KEY_LIGHTING_MODE,
+    KEY_LONGITUDE,
     KEY_POWER,
     KEY_RAMP,
     KEY_SCHEDULE,
@@ -42,6 +44,7 @@ from custom_components.glowrium.const import (
 from custom_components.glowrium.coordinator import (
     GlowriumCoordinator,
     _encode_device_time,
+    _for_the_log,
     _parse_device_info,
 )
 
@@ -882,6 +885,109 @@ async def test_trailing_bytes_are_reported_as_themselves(
         coordinator._ingest(frame)
         assert not [r for r in caplog.records if r.levelno == logging.WARNING]
         assert "trailing bytes" in caplog.text  # still recorded, at debug
+
+
+_WHERE = {KEY_LATITUDE: 12.3456, KEY_LONGITUDE: 65.4321}
+_LATITUDE_HEX = cbor.encode(12.3456).hex()[2:]  # the eight bytes after fb
+_LONGITUDE_HEX = cbor.encode(65.4321).hex()[2:]
+_CURVE = bytes(range(0x40, 0x5C))  # 28 bytes of sunrise and sunset times
+
+
+@pytest.mark.parametrize(
+    ("frame", "shown"),
+    [
+        pytest.param(
+            cbor.encode({KEY_POWER: True} | _WHERE | {KEY_BRIGHTNESS: 70}).hex(),
+            "a406f5" + "0afb" + "xx" * 8 + "0bfb" + "xx" * 8 + "081846",
+            id="both coordinates, among other things",
+        ),
+        pytest.param(
+            "a2" + "1834581c" + _CURVE.hex() + "06f5",
+            "a2" + "1834581c" + "xx" * 28 + "06f5",
+            id="the times worked out from them",
+        ),
+        pytest.param(
+            "a1" + "18344c" + _CURVE[:12].hex(),
+            "a1" + "18344c" + "xx" * 12,
+            id="those times, on a lamp that keeps fewer",
+        ),
+        pytest.param(
+            "a1" + "0afa" + "41458794",
+            "a1" + "0afa" + "xx" * 4,
+            id="a coordinate kept as a shorter float",
+        ),
+        pytest.param(
+            "a206f5" + "0bfb" + _LONGITUDE_HEX[:6],
+            "a206f5" + "0bfb" + "xx" * 3,
+            id="a coordinate the frame ends inside",
+        ),
+        pytest.param(
+            "a2" + "1834581c" + _CURVE[:5].hex(),
+            "a2" + "1834581c" + "xx" * 5,
+            id="times the frame ends inside",
+        ),
+        pytest.param(
+            "c0" + "0afb" + _LATITUDE_HEX + "ff",
+            "c0" + "0afb" + "xx" * 8 + "ff",
+            id="behind something that cannot be read",
+        ),
+        pytest.param("a206f5081846", "a206f5081846", id="nothing of the kind"),
+        pytest.param("", "", id="nothing at all"),
+    ],
+)
+def test_a_frame_goes_into_the_log_without_what_says_where_the_lamp_is(
+    frame: str, shown: str
+) -> None:
+    """A frame is logged so that it can be posted, and a frame can say where.
+
+    The lamp stores the coordinates it was given and works the times of
+    sunrise and sunset out from them; either gives the place away. A frame
+    that is being logged is one that could not be read to its end, so they
+    are found by their bytes wherever they stand - an id and the head of its
+    value - and the value is put down as xx. Everything else stays, byte for
+    byte, at the length it had: that is what makes the dump worth posting.
+    """
+    assert _for_the_log(bytes.fromhex(frame)) == shown
+    assert len(shown) == len(frame)
+
+
+@pytest.mark.parametrize(
+    ("frame", "said"),
+    [
+        pytest.param(
+            cbor.encode(_WHERE).hex() + "deadbeef", "trailing bytes", id="trailing"
+        ),
+        pytest.param(
+            "a4" + cbor.encode(_WHERE).hex()[2:] + "09c000" + "0afb" + _LATITUDE_HEX,
+            "cannot read",
+            id="an item that cannot be read, with the place on both sides of it",
+        ),
+        pytest.param(
+            "82" + cbor.encode(_WHERE).hex() + "c0",
+            "Undecodable frame",
+            id="undecodable",
+        ),
+    ],
+)
+async def test_no_line_in_the_log_carries_the_coordinates(
+    hass: HomeAssistant, caplog: pytest.LogCaptureFixture, frame: str, said: str
+) -> None:
+    """Every line that prints a frame prints it blanked, the second time too.
+
+    Two of them are warnings, written without debug logging and with a
+    request to post the frame. The request cannot rest on the reader blanking
+    hex by hand.
+    """
+    coordinator = GlowriumCoordinator(hass, "AA:BB:CC:DD:EE:FF", "Glowrium-G7")
+
+    with caplog.at_level(logging.DEBUG, logger=coordinator_module.__name__):
+        coordinator._ingest(bytes.fromhex(frame))
+        coordinator._ingest(bytes.fromhex(frame))
+
+    assert said in caplog.text
+    assert "xx" * 8 in caplog.text
+    assert _LATITUDE_HEX not in caplog.text
+    assert _LONGITUDE_HEX not in caplog.text
 
 
 async def test_malformed_frame_is_not_reported_as_trailing_bytes(

@@ -128,11 +128,21 @@ _STACK_FAULT_BACKOFF_MAX = 300.0
 _TROUBLESHOOTING_URL = "https://github.com/kugaevsky/glowrium-ha#troubleshooting"
 # How much of the lamp's name the repair shows (see _as_text).
 _NAME_SHOWN = 48
-# Said wherever the log asks for a frame to be posted.
-_BLANK_COORDINATES = (
-    "A frame can carry the coordinates stored in the lamp (ids 0a and 0b, each "
-    "followed by fb and eight bytes): blank those first"
+# Said wherever the log asks for a frame to be posted (see _for_the_log).
+_BLANKED = (
+    "What reads as the coordinates stored in the lamp, or as the sunrise and "
+    "sunset times it works out from them, is shown as xx; look the frame over "
+    "all the same before posting it"
 )
+# The id under which the lamp keeps those times (nothing here reads them), as
+# it stands in a frame: an id above 23 takes a second byte.
+_CURVE_KEY = bytes((0x18, 0x34))
+# How many bytes follow the head of a CBOR float: double, single, half.
+_FLOAT_BYTES = {b"\xfb": 8, b"\xfa": 4, b"\xf9": 2}
+# The head of a CBOR byte string. Up to 23 bytes the length is in the head
+# itself; 0x58 and 0x59 are followed by one and by two bytes of length.
+_BYTES_SHORT = range(0x40, 0x58)
+_BYTES_LONGER = {b"\x58": 1, b"\x59": 2}
 # How long BlueZ gets to report a link dropped once it has called it "not
 # connected". Normally two to three seconds (see _REFUSAL_MARKERS). When the
 # report never comes, the client is held with is_connected True and nothing
@@ -295,6 +305,51 @@ def _encode_device_time(now: datetime | None = None) -> bytes:
             now.second,
         ]
     )
+
+
+def _private_at(frame: bytes, at: int) -> tuple[int, int]:
+    """Tell whether a value that says where the lamp is starts at ``at``.
+
+    ``(head, value)``: how many bytes name it - the id and the head of the
+    value - and how many the value itself takes. ``(1, 0)`` when nothing of
+    the kind starts here.
+    """
+    if frame[at] in (KEY_LATITUDE, KEY_LONGITUDE):
+        value = _FLOAT_BYTES.get(frame[at + 1 : at + 2])
+        return (2, value) if value else (1, 0)
+    if frame[at : at + 2] == _CURVE_KEY:
+        head = frame[at + 2 : at + 3]
+        if head and head[0] in _BYTES_SHORT:
+            return 3, head[0] - _BYTES_SHORT.start
+        more = _BYTES_LONGER.get(head, 0)
+        length = frame[at + 3 : at + 3 + more]
+        if more and len(length) == more:
+            return 3 + more, int.from_bytes(length, "big")
+    return 1, 0
+
+
+def _for_the_log(frame: bytes) -> str:
+    """Return ``frame`` as hex, with what says where the lamp is put down as xx.
+
+    A frame goes into the log so that it can be posted, and a frame can hold
+    the coordinates the lamp was given and the sunrise and sunset times it
+    works out from them, which give the place away as well. Asking whoever
+    posts it to blank hex by hand is asking for it to be forgotten.
+
+    The frame being logged is one that could not be read to its end, so the
+    values are not found by decoding it: they are looked for by their bytes,
+    at every offset - an id and the head of its value. A match that was
+    something else costs a few bytes of the dump. Everything else stays as it
+    is and where it is, which is what makes the dump worth having.
+    """
+    shown: list[str] = []
+    at = 0
+    while at < len(frame):
+        head, value = _private_at(frame, at)
+        hidden = min(value, len(frame) - at - head)
+        shown.append(frame[at : at + head].hex() + "xx" * hidden)
+        at += head + hidden
+    return "".join(shown)
 
 
 def _as_text(name: str) -> str:
@@ -1428,7 +1483,7 @@ class GlowriumCoordinator:
             _LOGGER.debug(
                 "%s: frame %s again carries %d trailing bytes",
                 self.address,
-                data.hex(),
+                _for_the_log(data),
                 count,
             )
             return
@@ -1442,8 +1497,8 @@ class GlowriumCoordinator:
             self.model_id or "unknown",
             self.sw_version or "unknown",
             count,
-            data.hex(),
-            _BLANK_COORDINATES,
+            _for_the_log(data),
+            _BLANKED,
         )
 
     def _log_unreadable_item(self, data: bytes, err: cbor.UnreadableItemError) -> None:
@@ -1458,7 +1513,7 @@ class GlowriumCoordinator:
                 "%s: frame %s again carries an item that cannot be read (%s); "
                 "kept the %d properties ahead of it",
                 self.address,
-                data.hex(),
+                _for_the_log(data),
                 err,
                 len(err.ahead),
             )
@@ -1473,9 +1528,9 @@ class GlowriumCoordinator:
             self.model_id or "unknown",
             self.sw_version or "unknown",
             err,
-            data.hex(),
+            _for_the_log(data),
             len(err.ahead),
-            _BLANK_COORDINATES,
+            _BLANKED,
         )
 
     def _ingest(self, data: bytes) -> frozenset[int]:
@@ -1510,7 +1565,7 @@ class GlowriumCoordinator:
             self._log_trailing_bytes(data, err.count)
             return frozenset()
         except ValueError as err:  # the decoder raises nothing else
-            _LOGGER.debug("Undecodable frame %s: %s", data.hex(), err)
+            _LOGGER.debug("Undecodable frame %s: %s", _for_the_log(data), err)
             return frozenset()
         if not isinstance(decoded, dict) or not decoded:
             return frozenset()
