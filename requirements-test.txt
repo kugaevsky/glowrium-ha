@@ -8,5 +8,5 @@ mypy~=2.4.0
 # integration manifests in HA 2026.10, which is what an unpinned PHACC installs.
 aiousbwatcher==1.1.2
 serialx==1.11.0
-dbus-fast==5.0.22
+dbus-fast==5.2.0
 aioesphomeapi
