@@ -816,7 +816,7 @@ class GlowriumCoordinator:
         try:
             await self._async_ensure_connected()
         except _LINK_ERRORS as err:
-            _LOGGER.debug("Initial connect to %s failed: %s", self.address, err)
+            self._log_connect_ended("Initial connect", err)
 
     @callback
     def _async_stop_watching(self) -> None:
@@ -1235,9 +1235,32 @@ class GlowriumCoordinator:
         try:
             await self._async_ensure_connected()
         except _LINK_ERRORS as err:
-            _LOGGER.debug("Reconnect to %s failed: %s", self.address, err)
+            self._log_connect_ended("Reconnect", err)
         finally:
             self._reconnecting = False
+
+    def _log_connect_ended(self, what: str, err: Exception) -> None:
+        """Say how a background connect ended, when it did not end as meant.
+
+        Time can run out with the link already taken: during its first
+        exchange, during the device-info read after it, or because a command
+        got the lock first and connected. That link is held, and what becomes
+        of it is the poll's business - it primes one that is not primed, drops
+        one that answers nothing, probes one that is. Calling that a failed
+        connect sent whoever read the log looking for a lamp out of range: on
+        the G7's host (2026-10-06) the line was written of a link that was held
+        for ten seconds more, until the radio lost it.
+        """
+        if isinstance(err, TimeoutError) and self._is_connected:
+            _LOGGER.debug(
+                "%s to %s ran out of time, but the link is held (%s); "
+                "it is left to the poll",
+                what,
+                self.address,
+                "primed" if self._client is self._primed_client else "not primed yet",
+            )
+            return
+        _LOGGER.debug("%s to %s failed: %s", what, self.address, err)
 
     def _ble_device(self) -> BLEDevice | None:
         return bluetooth.async_ble_device_from_address(

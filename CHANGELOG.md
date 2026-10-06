@@ -27,6 +27,11 @@ All notable changes to this project are documented here. The format is based on
   repair, only a command failing with words about a connection that would
   not close. The disconnects BlueZ leaves unanswered are counted there too
   ([#20](https://github.com/kugaevsky/glowrium-ha/issues/20)).
+- **A connect that got its link is not logged as failed.** When the time for
+  a connect ran out after the link had been taken - during the first
+  exchange - the debug log said `Reconnect to … failed` of a link the
+  integration went on holding. It says now that the link is held
+  ([#20](https://github.com/kugaevsky/glowrium-ha/issues/20)).
 
 ### Changed
 

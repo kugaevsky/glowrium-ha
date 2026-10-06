@@ -3332,6 +3332,159 @@ async def test_a_connect_that_fails_half_way_hangs_up_outside_its_deadline(
     assert coordinator._client is None
 
 
+# The two ways a connect is started in the background, and what each is called
+# in the log.
+_BACKGROUND_CONNECTS = (
+    ("_async_reconnect", "Reconnect to"),
+    ("_async_initial_connect", "Initial connect to"),
+)
+
+
+async def _never_returns(*_args: object, **_kwargs: object) -> None:
+    """Stand in for a call the deadline finds still waiting."""
+    await asyncio.Event().wait()
+
+
+@pytest.mark.parametrize(("connect", "named"), _BACKGROUND_CONNECTS)
+async def test_a_deadline_that_falls_on_a_held_link_leaves_it_and_calls_it_held(
+    hass: HomeAssistant,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+    connect: str,
+    named: str,
+) -> None:
+    """A connect that got its link and ran out of time after it has not failed.
+
+    Seen on the G7's host under load (2026-10-06): the connect went through
+    late, the ceiling ran out during the first exchange, and the log said
+    "Reconnect to ... failed" of a link the coordinator went on holding. The
+    link is not let go of - the poll primes it on its next tick, without
+    another dial - and the log says that it is held, so whoever reads it is
+    not sent looking for a lamp out of range.
+    """
+    coordinator, _ = _connected_coordinator(hass)
+    coordinator._client = None
+    monkeypatch.setattr(coordinator_module, "_CONNECT_TIMEOUT", 0.05)
+    client = _fresh_client()
+    client.write_gatt_char = AsyncMock(side_effect=_never_returns)
+    dial = _dialling(coordinator, monkeypatch, client)
+    caplog.set_level(logging.DEBUG)
+
+    await getattr(coordinator, connect)()
+
+    assert coordinator._client is client  # taken, and not let go of
+    client.disconnect.assert_not_awaited()
+    assert f"{named} AA:BB:CC:DD:EE:FF ran out of time" in caplog.text
+    assert "the link is held (not primed yet)" in caplog.text
+    assert "failed" not in caplog.text
+
+    _answers(coordinator, client, {KEY_POWER: True, KEY_ACTIVATED: True})
+    coordinator._async_poll_reconnect(None)
+    await hass.async_block_till_done()
+
+    assert coordinator._primed_client is client
+    dial.assert_awaited_once()  # the same link, primed; nothing was redialled
+
+
+async def test_a_deadline_that_falls_after_priming_says_the_link_is_primed(
+    hass: HomeAssistant,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """The device-info read comes last, and can be what the deadline cuts.
+
+    The state has arrived by then and the link is primed; the poll has nothing
+    to add to it, so the line must not promise that it will.
+    """
+    coordinator, _ = _connected_coordinator(hass)
+    coordinator._client = None
+    monkeypatch.setattr(coordinator_module, "_CONNECT_TIMEOUT", 0.05)
+    client = _fresh_client()
+    _answers(coordinator, client, {KEY_POWER: True, KEY_ACTIVATED: True})
+    client.read_gatt_char = AsyncMock(side_effect=_never_returns)
+    _dialling(coordinator, monkeypatch, client)
+    caplog.set_level(logging.DEBUG)
+
+    await coordinator._async_reconnect()
+
+    assert coordinator._primed_client is client
+    assert "the link is held (primed)" in caplog.text
+    assert "failed" not in caplog.text
+
+
+async def test_a_deadline_spent_waiting_behind_a_command_that_connected_is_no_failure(
+    hass: HomeAssistant,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """A command can take the link while the background connect waits its turn.
+
+    The connect then runs out of time without having dialled at all, and the
+    lamp is connected all the same - by the command, which does not prime.
+    """
+    coordinator, client = _connected_coordinator(hass)
+    coordinator._client = None
+    monkeypatch.setattr(coordinator_module, "_CONNECT_TIMEOUT", 0.05)
+    dial = _dialling(coordinator, monkeypatch)
+    caplog.set_level(logging.DEBUG)
+
+    async with coordinator._lock:  # the command's turn
+        waiting = asyncio.create_task(coordinator._async_reconnect())
+        await asyncio.sleep(0)
+        coordinator._client = client  # ...and the link it made, unprimed
+        await waiting
+
+    dial.assert_not_awaited()
+    assert "the link is held (not primed yet)" in caplog.text
+    assert "failed" not in caplog.text
+
+
+@pytest.mark.parametrize(("connect", "named"), _BACKGROUND_CONNECTS)
+async def test_a_connect_that_gets_no_link_is_still_called_a_failed_connect(
+    hass: HomeAssistant,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+    connect: str,
+    named: str,
+) -> None:
+    """The deadline running out with nothing held is the failure it always was."""
+    coordinator, _ = _connected_coordinator(hass)
+    coordinator._client = None
+    monkeypatch.setattr(coordinator_module, "_CONNECT_TIMEOUT", 0.05)
+    monkeypatch.setattr(coordinator_module, "establish_connection", _never_returns)
+    coordinator._ble_device = _in_range
+    caplog.set_level(logging.DEBUG)
+
+    await getattr(coordinator, connect)()
+
+    assert coordinator._client is None
+    assert f"{named} AA:BB:CC:DD:EE:FF failed" in caplog.text
+    assert "the link is held" not in caplog.text
+
+
+async def test_a_connect_that_fails_on_a_held_link_keeps_the_error_it_failed_with(
+    hass: HomeAssistant,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Only running out of time is reworded: an error says what it was."""
+    coordinator, _ = _connected_coordinator(hass)
+    coordinator._client = None
+    client = _fresh_client()
+    _answers(coordinator, client, {KEY_POWER: True, KEY_ACTIVATED: True})
+    _dialling(coordinator, monkeypatch, client)
+    coordinator._async_sync_clock_if_needed = AsyncMock(
+        side_effect=BleakError("the clock would not be set")
+    )
+    caplog.set_level(logging.DEBUG)
+
+    await coordinator._async_reconnect()
+
+    assert coordinator._client is client  # held all the same
+    assert "Reconnect to AA:BB:CC:DD:EE:FF failed: the clock would not" in caplog.text
+    assert "the link is held" not in caplog.text
+
+
 async def test_hanging_up_a_client_we_gave_up_on_leaves_the_one_we_hold(
     hass: HomeAssistant, monkeypatch: pytest.MonkeyPatch
 ) -> None:
