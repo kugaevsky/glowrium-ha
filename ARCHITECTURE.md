@@ -137,10 +137,11 @@ that answers: nothing is read.
 > the very next call answers `Not connected` — and two seconds later, which is
 > BlueZ's own disconnect timer, reports the device disconnected. With a read
 > on every connect that was a link made and lost on every poll tick, about a
-> hundred an hour, and it was taken for a lamp at the edge of range. **Why**
-> BlueZ does it is not established (a `btmon` capture would show it); a read
-> through macOS does no such thing, which is why `tools/bench.py` on a laptop
-> never showed it.
+> hundred an hour, and it was taken for a lamp at the edge of range. **Why:**
+> the lamp answers a read twice — the value, then an error response (`0x1e`)
+> to the same request — and BlueZ closes the ATT channel on a response that
+> answers nothing (controller trace, 2026-10-06). macOS drops the stray
+> response, which is why `tools/bench.py` on a laptop never showed it.
 
 **What the answer covers.** `STATE_KEYS` is what the vendor app asks for, plus
 the clock (`0x05`), which the app does not request and the lamp reports all

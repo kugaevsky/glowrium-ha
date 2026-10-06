@@ -241,7 +241,8 @@ messages worth acting on, and two symptoms that come without one.
 With debug logging on, a Linux host shows one link after every start or
 reload that lasts two seconds — `device info read`, then `disconnected` — and
 is rebuilt on the next 30-second tick. That one is expected: the model and
-firmware can only be had by a read, and through BlueZ a read costs the link.
+firmware can only be had by a read, and through BlueZ a read costs the link —
+the lamp answers a read twice, and BlueZ hangs up on the extra answer.
 
 For anything else, open an issue with two things from the integration's page
 (Settings → Devices & services → Glowrium → ⋮).

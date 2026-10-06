@@ -1440,8 +1440,9 @@ class GlowriumCoordinator:
         read itself succeeds; BlueZ takes the ATT channel down right after it,
         so the very next call answers "Not connected", and two seconds later
         the link follows. That was read as a lamp at the edge of range dropping
-        its link on every poll. It was this method. (Why BlueZ does it is not
-        established; a read through macOS does no such thing.)
+        its link on every poll. It was this method. (The lamp answers a read
+        twice - the value, then an error response to the same request - and
+        BlueZ closes the channel on the stray one; macOS ignores it.)
 
         So the lamp is asked first, and a link whose lamp reports is never
         read. The report is waited for, briefly: on a G7 it arrives inside the
