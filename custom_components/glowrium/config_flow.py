@@ -83,7 +83,7 @@ class GlowriumConfigFlow(ConfigFlow, domain=DOMAIN):
 
         return self.async_show_form(
             step_id="user",
-            data_schema=vol.Schema(
+            data_schema=vol.Schema(  # type: ignore[arg-type, unused-ignore]
                 {vol.Required(CONF_ADDRESS): vol.In(self._discovered_devices)}
             ),
         )
