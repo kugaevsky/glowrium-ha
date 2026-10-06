@@ -44,8 +44,9 @@ All notable changes to this project are documented here. The format is based on
   dial lost in the last second before the cut, and each was tried again
   thirty seconds later at the same odds. A connect now also has three tries
   inside its time where it had two. A lamp that cannot be reached takes ten
-  seconds longer to say so. What this does on that host is being measured;
-  the numbers may move before the release
+  seconds longer to say so. Measured on that host afterwards, through an
+  afternoon of poor reception: 16 dials out of 80 were cut, and more than
+  half of the 64 that got through had needed longer than ten seconds
   ([#20](https://github.com/kugaevsky/glowrium-ha/issues/20)).
 - **A lamp's refusal to report its state is told by the error's code** where
   the Bluetooth library gives one, and by its text only where it does not,

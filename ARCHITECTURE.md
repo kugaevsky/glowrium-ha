@@ -581,8 +581,31 @@ connection made inside the dial was lost in the last second before the cut.
 Cut off, a dial is tried again thirty seconds later with the same odds, so a
 ceiling that close to what a connect takes keeps a lamp away for as long as
 the radio stays marginal. The library has no shorter timeout to be given
-instead: it passes its own to bleak. What the longer ceiling does on that
-host is still to be measured.
+instead: it passes its own to bleak.
+
+Under the longer ceiling, on the same host through an afternoon of poor
+reception and no other load (2026-10-06, 80 dials; the link was dropping by
+itself some twenty-four times an hour), 64 got through and 16 were cut. The
+63 of those whose time the log gives took 10.6 s at the median and 17.4 s at
+the ninetieth percentile, 35 of them more than 10 s. It is not raised
+further. From 4 s up, each two seconds to the ceiling saw 10, 8, 7, 13, 6, 5,
+6 and 5 of them through, which reads as a chance per second of trying that
+does not grow with the wait; if so, what a cut costs in time is the wait for
+the next tick, while every second added here is a second longer before a
+command to a lamp that is not there fails. (What else a cut does - bleak's
+clean-up sending `Disconnect` into a connect in flight - is as before.) A
+dial that runs out of time after the link has been taken keeps that link, and
+the log says that it is held rather than `failed`; what becomes of it is the
+poll's business.
+
+What ended links and connects the same evening was read off the controller.
+An HCI trace of fifteen minutes with no load showed four drops, all `0x08`
+connection timeout, and 23 connects that came to nothing, all `0x3e` failed
+to be established; neither the host nor the lamp asked for a link to end.
+Each link began under a 10 s supervision timeout; about five seconds in, the
+lamp asked for a 50 ms interval and a 5 s timeout and BlueZ granted it - so a
+link older than that was dropped after five seconds in which nothing of the
+lamp's was heard.
 
 Asking a link that is already held - priming one a command made, probing one
 that has gone silent - has a ceiling of its own, `_ASK_TIMEOUT` (10 s): there
