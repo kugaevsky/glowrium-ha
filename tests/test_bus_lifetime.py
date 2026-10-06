@@ -57,7 +57,13 @@ class _Bus:
 
 
 class _Backend:
-    """What sits behind a client: bleak's BlueZ backend, as far as it matters."""
+    """What sits behind a client: bleak's BlueZ backend, as far as it matters.
+
+    By where it lives, too: the coordinator tells BlueZ's client from any other
+    by the module of its class, before it reaches for what is inside.
+    """
+
+    __module__ = "bleak.backends.bluezdbus.client"
 
     def __init__(self, bus: _Bus) -> None:
         self._bus: _Bus | None = bus
@@ -231,6 +237,31 @@ async def test_a_backend_with_no_bus_is_not_held_against_the_lamp(
     await _polls(coordinator, hass, 4)
 
     assert len(host.clients) == 4
+
+
+class _ProxyWithABus:
+    """A proxy's backend that keeps something of its own under bleak's name."""
+
+    def __init__(self, bus: _Bus) -> None:
+        self._bus = bus
+
+
+async def test_a_backend_that_is_not_bluezs_is_left_alone_whatever_it_holds(
+    hass: HomeAssistant, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Whose client it is is told by where its class lives, not by what it holds.
+
+    The reach for the bus goes through bleak's private attributes, and only
+    BlueZ's client is known to keep a connection to the system bus there.
+    Another backend's attribute of the same name is its own affair: it is not
+    closed for it, and a hang-up that fails behind it parks nothing.
+    """
+    coordinator, host = _wedged(hass, monkeypatch, behind=_ProxyWithABus)
+
+    await _polls(coordinator, hass, 4)
+
+    assert len(host.clients) == 4  # nothing was parked: it went on dialling
+    assert host.open_buses == 4  # and what the proxy held was not closed
 
 
 # bleak's BlueZ client by its module, but without the attribute this
@@ -750,6 +781,74 @@ async def test_a_proxy_that_times_out_is_not_blamed_on_bluez(
 
     assert len(host.clients) == 6
     assert not [r for r in caplog.records if r.levelname == "WARNING"]
+
+
+@pytest.mark.parametrize("out_of_reach", ["bleak rearranged", "the bus refuses"])
+async def test_a_stack_is_no_less_stuck_for_a_bus_that_cannot_be_closed(
+    hass: HomeAssistant,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+    out_of_reach: str,
+) -> None:
+    """BlueZ leaving disconnects unanswered is the fault, wherever the bus is.
+
+    When the bus behind such a client cannot be closed either, the client is
+    kept and nothing is dialled over it. That used to be all: the unanswered
+    disconnects were only counted where the bus had been closed, so this owner
+    had a stuck stack, no warning and no repair - and a command that failed
+    with words about a connection that would not close.
+    """
+    rearranged = out_of_reach == "bleak rearranged"
+    coordinator, host = _wedged(
+        hass,
+        monkeypatch,
+        behind=_MovedBackend if rearranged else _Backend,
+        backs_off=True,
+    )
+    clock = _Clock()
+    monkeypatch.setattr(coordinator_module, "monotonic", clock)
+
+    async def _dial_a_stuck_one(*_args: object, **_kwargs: object) -> _WedgedClient:
+        client = await host.dial()
+        client._backend._bus = host.bus_of[client] = _StuckBus()
+        return client
+
+    if not rearranged:
+        monkeypatch.setattr(
+            coordinator_module, "establish_connection", _dial_a_stuck_one
+        )
+
+    await _ticks(coordinator, hass, clock, 4)
+
+    assert len(host.clients) == 1  # kept, and nothing dialled over it
+    warnings = [r for r in caplog.records if r.levelname == "WARNING"]
+    assert len(warnings) == 1
+    assert "power-cycled" in warnings[0].getMessage()
+    assert _stack_issue(hass) is not None
+
+
+async def test_a_client_with_no_backend_on_record_is_not_blamed_on_bluez(
+    hass: HomeAssistant,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Kept, since there may be a bus behind it - and nobody's to call BlueZ's.
+
+    The warning and the repair name BlueZ and what clears it. With no backend
+    on record there is no telling whose client it is that went silent, and
+    sending its owner to power-cycle an adapter would be a guess.
+    """
+    coordinator, host = _wedged(
+        hass, monkeypatch, behind=lambda _bus: None, backs_off=True
+    )
+    clock = _Clock()
+    monkeypatch.setattr(coordinator_module, "monotonic", clock)
+
+    await _ticks(coordinator, hass, clock, 6)
+
+    assert len(host.clients) == 1  # kept, and nothing dialled over it
+    assert not [r for r in caplog.records if r.levelname == "WARNING"]
+    assert _stack_issue(hass) is None
 
 
 async def test_unanswered_hang_ups_count_only_in_a_row(

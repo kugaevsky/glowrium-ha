@@ -681,7 +681,11 @@ dials — poll and advertisement alike — back off, doubling from the poll
 interval to five minutes (`_STACK_FAULT_BACKOFF_MAX`), and a warning says
 once what it is and what clears it. Only silence counts: a hang-up answered
 with an error is an answer, one that goes through breaks the run, and a
-proxy's client is not BlueZ's to answer for. A command is never held back.
+proxy's client is not BlueZ's to answer for - whose client it is being told
+by the module its class lives in, not by what it holds. Whether the bus
+behind the client could then be closed does not come into it: where it could
+not, the client is kept and nothing is dialled over it, and the stack is
+every bit as stuck. A command is never held back.
 The first thing the lamp says — a notification, an acknowledged write —
 ends the episode at once, and that is logged at the level it was announced
 at. Seen on the host: three unanswered hang-ups, one warning, dials at

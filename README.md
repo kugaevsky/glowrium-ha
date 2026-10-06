@@ -228,7 +228,8 @@ messages worth acting on, and two symptoms that come without one.
   the host a connection to its system bus. It keeps trying to close it, and a
   restart of Home Assistant lets go of it. If it comes back after the restart,
   the host's Bluetooth stack is holding on to the link: clear it as for the
-  unanswered disconnects above — no repair is raised for it in this case.
+  unanswered disconnects above, which is what the log and the repair say
+  too once three of them have gone unanswered.
   Either way, please open an issue: it means the Bluetooth library has changed
   underneath the integration.
 - **Every entity is `unavailable`** — the lamp is not being heard at all: no

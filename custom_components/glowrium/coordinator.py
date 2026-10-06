@@ -237,6 +237,15 @@ class _Asked(Enum):
     LOST = auto()  # the request met a link that is gone
 
 
+def _is_bluez(backend: Any) -> bool:
+    """Return True if ``backend`` is bleak's own BlueZ client.
+
+    Told by where its class lives, not by what it holds: another backend may
+    keep something of its own under a name bleak also uses.
+    """
+    return backend is not None and "bluezdbus" in type(backend).__module__
+
+
 def _close_bus(backend: Any, address: str) -> _Bus:
     """See that no D-Bus connection is left open behind a client we let go of.
 
@@ -264,12 +273,15 @@ def _close_bus(backend: Any, address: str) -> _Bus:
     ``_async_disconnect``).
     """
     if backend is None:
+        # No backend on record: there may be a bus, and nothing to reach it by.
         return _Bus.OPEN
+    if not _is_bluez(backend):
+        # A Bluetooth proxy's client has no bus of its own, and nothing here
+        # to close - whatever it may hold.
+        return _Bus.CLEAR
     if not hasattr(backend, "_bus"):
-        # A Bluetooth proxy's client has no bus of its own, and nothing to
-        # close. BlueZ's client without one is bleak rearranged.
-        moved = "bluezdbus" in type(backend).__module__
-        return _Bus.OPEN if moved else _Bus.CLEAR
+        # BlueZ's client without one is bleak rearranged.
+        return _Bus.OPEN
     # bleak's own attributes from here on: there is no public way to do this.
     bus = backend._bus  # noqa: SLF001
     if bus is None:
@@ -292,10 +304,9 @@ def _close_bus(backend: Any, address: str) -> _Bus:
         _LOGGER.debug("%s: closing a client's bus failed: %r", address, err)
         return _Bus.OPEN
     backend._bus = None  # noqa: SLF001
-    if not was_up:
-        return _Bus.CLEAR
-    _LOGGER.debug("%s: closed the bus a hang-up left open", address)
-    return _Bus.CLOSED
+    if was_up:
+        _LOGGER.debug("%s: closed the bus a hang-up left open", address)
+    return _Bus.CLOSED if was_up else _Bus.CLEAR
 
 
 def _looks_like_a_refusal(err: Exception) -> bool:
@@ -951,10 +962,13 @@ class GlowriumCoordinator:
                 self._unreleased.discard(client)
             else:
                 self._unreleased.add(client)
-            if unanswered and bus is _Bus.CLOSED:
+            if unanswered and bus is not _Bus.CLEAR and _is_bluez(backend):
                 # BlueZ's own client, its bus still open, and no answer at
                 # all: BlueZ would not hang up. An error would have been an
                 # answer, and a proxy's client is not BlueZ's to answer for.
+                # Whether the bus could then be closed makes no difference to
+                # that: where it could not, the client is kept above, and the
+                # stack is every bit as stuck.
                 self._note_stuck_hang_up()
             elif hung_up and self._stuck_hang_ups < _STACK_FAULT_AFTER:
                 # "In a row" means in a row. Once it has been called a
