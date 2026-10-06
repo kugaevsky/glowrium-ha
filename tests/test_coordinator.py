@@ -8,7 +8,8 @@ from time import monotonic
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
-from bleak.exc import BleakError
+from bleak.exc import BleakError, BleakGATTProtocolError, BleakGATTProtocolErrorCode
+from bleak_retry_connector import BLEAK_TIMEOUT
 from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import HomeAssistantError
 from homeassistant.util import dt as dt_util
@@ -2330,15 +2331,28 @@ def test_no_path_holds_the_lock_longer_than_a_command_will_wait() -> None:
     attempted nothing at all.
     """
     connect = coordinator_module._CONNECT_TIMEOUT
+    ask = coordinator_module._ASK_TIMEOUT
     command = coordinator_module._COMMAND_TIMEOUT
     hang_up = coordinator_module._HANG_UP_TIMEOUT
     poll = coordinator_module._RECONNECT_INTERVAL.total_seconds()
 
     assert connect < command, "a lock holder outlasting the waiter is an inversion"
+    assert ask < command
     assert connect >= coordinator_module._STOP_TIMEOUT
+    # The library gives one try BLEAK_TIMEOUT before it gives up and tidies up
+    # after itself. A ceiling below that cuts even the first try from outside,
+    # in the middle of a connect - where, measured on a G7 whose connects take
+    # five to ten seconds, they were about to finish. It still covers the wait
+    # for the lock and the later tries, so this is a floor and not a promise.
+    assert connect >= BLEAK_TIMEOUT
+    # Three tries inside one dial: on a weak link a connection is often made
+    # and lost within a second or two, and the next try is what gets through.
+    # Agreed against that measurement; another number wants another one.
+    assert coordinator_module._CONNECT_ATTEMPTS == 3
     # Priming is spawned from the poll and takes the same lock, so it must be
     # finished before the next tick or the ticks pile up on top of each other.
     assert connect < poll
+    assert ask < poll
     # A write retry waits for the hang-up of the client it gave up on, inside
     # the command's budget and before it dials. A hang-up allowed as long as
     # the command leaves the retry no time to happen in exactly the case it is
@@ -2612,6 +2626,65 @@ async def test_only_an_application_level_refusal_silences_the_request(
             await coordinator._request_state(client)
 
         assert coordinator._state_request_muted is should_mute, message
+
+
+@pytest.mark.parametrize(
+    ("code", "wording", "is_a_refusal"),
+    [
+        (
+            BleakGATTProtocolErrorCode.INSUFFICIENT_AUTHORIZATION,
+            "GATT Protocol Error: put some other way",
+            True,
+        ),
+        (
+            BleakGATTProtocolErrorCode.INSUFFICIENT_AUTHENTICATION,
+            "GATT Protocol Error: put some other way",
+            True,
+        ),
+        (
+            BleakGATTProtocolErrorCode.WRITE_NOT_PERMITTED,
+            "GATT Protocol Error: put some other way",
+            True,
+        ),
+        (
+            BleakGATTProtocolErrorCode.READ_NOT_PERMITTED,
+            "GATT Protocol Error: put some other way",
+            True,
+        ),
+        (
+            BleakGATTProtocolErrorCode.UNLIKELY_ERROR,
+            "GATT Protocol Error: nothing to do with authorization",
+            False,
+        ),
+    ],
+)
+async def test_a_protocol_error_is_judged_by_its_code_and_not_by_its_wording(
+    hass: HomeAssistant,
+    code: BleakGATTProtocolErrorCode,
+    wording: str,
+    is_a_refusal: bool,
+) -> None:
+    """Which ATT error it was is in the code bleak gives; the words render it.
+
+    Told by the text, a refusal lasts as long as the wording does, and an
+    error that only mentions authorization in passing is taken for one. The
+    text is still what there is to go by where the error is not bleak's own -
+    a Bluetooth proxy's, say.
+    """
+    coordinator = GlowriumCoordinator(hass, "AA:BB:CC:DD:EE:FF", "Glowrium-G7")
+    client = MagicMock()
+    client.is_connected = True
+    client.read_gatt_char = AsyncMock(
+        return_value=bytearray(cbor.encode({KEY_POWER: True}))
+    )
+    error = BleakGATTProtocolError(code)
+    error.args = (int(code), wording)  # the code as a number, the words reworded
+    client.write_gatt_char = AsyncMock(side_effect=error)
+
+    for _ in range(coordinator_module._STATE_REQUEST_ATTEMPTS):
+        await coordinator._request_state(client)
+
+    assert coordinator._state_request_muted is is_a_refusal
 
 
 async def test_the_request_is_repeated_on_every_connect(hass: HomeAssistant) -> None:
@@ -3783,6 +3856,63 @@ async def test_a_lamp_the_scanner_has_lost_is_still_said_to_be_out_of_range(
     assert err.value.translation_key == "cannot_connect"
     assert err.value.translation_placeholders == {"name": "Glowrium-G7"}
     assert len(asked) == 2
+
+
+async def test_a_command_that_runs_out_of_time_inside_a_write_lets_go_of_the_link(
+    hass: HomeAssistant, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A write that has not come back by the deadline is a link not to keep.
+
+    The caller is told the command failed. Left held, the link gets the next
+    command too, which waits just as long and fails the same way - until the
+    probe, minutes later, finds it dead. Let go of, it is hung up, and the
+    next command dials.
+    """
+    coordinator, client = _connected_coordinator(hass)
+    monkeypatch.setattr(coordinator_module, "_COMMAND_TIMEOUT", 0.05)
+    monkeypatch.setattr(coordinator_module, "_CONFIRM_TIMEOUT", 0.01)
+    never = asyncio.Event()
+
+    async def _never_comes_back(*_a: object, **_kw: object) -> None:
+        await never.wait()
+
+    client.write_gatt_char = AsyncMock(side_effect=_never_comes_back)
+
+    with pytest.raises(HomeAssistantError) as err:
+        await coordinator.async_set_power(True)
+    await hass.async_block_till_done()
+
+    assert err.value.translation_key == "cannot_connect"
+    assert coordinator._client is None
+    client.disconnect.assert_awaited_once()
+
+
+async def test_a_link_reported_lost_while_a_write_waits_is_hung_up_once(
+    hass: HomeAssistant, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The stack may report the link gone while the write is still waiting.
+
+    Then it has been let go of already, by the callback, and the deadline
+    finds nothing of it left to take: one hang-up, not a second one for a
+    client that is no longer the coordinator's.
+    """
+    coordinator, client = _connected_coordinator(hass)
+    monkeypatch.setattr(coordinator_module, "_COMMAND_TIMEOUT", 0.05)
+    monkeypatch.setattr(coordinator_module, "_CONFIRM_TIMEOUT", 0.01)
+    never = asyncio.Event()
+
+    async def _dropped_and_never_back(*_a: object, **_kw: object) -> None:
+        coordinator._async_on_disconnect(client)
+        await never.wait()
+
+    client.write_gatt_char = AsyncMock(side_effect=_dropped_and_never_back)
+
+    with pytest.raises(HomeAssistantError):
+        await coordinator.async_set_power(True)
+    await hass.async_block_till_done()
+
+    assert coordinator._client is None
+    client.disconnect.assert_awaited_once()
 
 
 async def test_shutting_down_does_not_hold_home_assistant_up(

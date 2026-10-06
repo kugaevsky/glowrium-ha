@@ -1490,7 +1490,7 @@ async def test_a_question_that_is_never_answered_drops_the_link_too(
     line, the same question would be put on every poll tick for ever, each
     time holding the lock for as long as the deadline allows.
     """
-    monkeypatch.setattr(coordinator_module, "_CONNECT_TIMEOUT", 0.05)
+    monkeypatch.setattr(coordinator_module, "_ASK_TIMEOUT", 0.05)
     coordinator, client, clock = _holding(hass, monkeypatch)
 
     async def _never(*_args: object, **_kwargs: object) -> None:
@@ -1514,7 +1514,7 @@ async def test_a_question_that_could_not_be_put_proves_nothing(
     A command may hold it for its whole budget. The link is fine then, and
     the question simply waits for the next tick.
     """
-    monkeypatch.setattr(coordinator_module, "_CONNECT_TIMEOUT", 0.05)
+    monkeypatch.setattr(coordinator_module, "_ASK_TIMEOUT", 0.05)
     coordinator, client, clock = _holding(hass, monkeypatch)
     await coordinator._lock.acquire()  # somebody is at work on the link
 

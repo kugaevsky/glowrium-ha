@@ -12,7 +12,7 @@ from time import monotonic
 from typing import Any
 
 from bleak.backends.device import BLEDevice
-from bleak.exc import BleakError
+from bleak.exc import BleakError, BleakGATTProtocolError, BleakGATTProtocolErrorCode
 from bleak_retry_connector import BleakClientWithServiceCache, establish_connection
 from homeassistant.components import bluetooth
 from homeassistant.config_entries import ConfigEntry
@@ -70,26 +70,48 @@ _WRITE_ATTEMPTS = 2  # the initial write plus one reconnect-and-retry
 # bleak-retry-connector defaults to 4 connect attempts, each of which can sit
 # through a 20 s bleak timeout plus a backoff. Against an unreachable device
 # that adds up to minutes while _lock is held, so a queued command cannot even
-# start. Two attempts is enough: the reconnect poll comes round again in 30 s.
-_CONNECT_ATTEMPTS = 2
+# start. It is the ceiling below that bounds a dial; the attempts are for the
+# ones that fail fast. On a weak link a connect is often made and lost within
+# a second or two, and the next try inside the same dial is what gets through.
+_CONNECT_ATTEMPTS = 3
 # Ceiling on getting one user-facing command out, so a button reports a clear
-# failure in seconds instead of appearing to hang while the retries stack up.
-# A failed command may then spend up to _CONFIRM_TIMEOUT more deciding whether
-# it failed after all, so the worst a user waits is the sum of the two.
-_COMMAND_TIMEOUT = 15.0
-# Ceiling on a background connect, including the wait for _lock. Without it a
-# connect to an unreachable device holds the lock indefinitely, and everything
-# else that needs the lock waits behind it with no deadline of its own.
+# failure instead of appearing to hang while the retries stack up. It has to
+# outlast a background connect (see _CONNECT_TIMEOUT). A failed command may
+# then spend up to _CONFIRM_TIMEOUT more deciding whether it failed after all,
+# so the worst a user waits is the sum of the two.
+_COMMAND_TIMEOUT = 25.0
+# Ceiling on a background connect: the wait for _lock, the dial, the
+# subscription and the priming. Without it a connect to an unreachable device
+# holds the lock indefinitely, and everything else that needs the lock waits
+# behind it with no deadline of its own.
 #
 # It is deliberately SHORTER than _COMMAND_TIMEOUT, and the relationship is the
 # point rather than the number: a background connect holds the lock while a
 # command waits for it inside its own budget, so a holder allowed longer than
 # the waiter means pressing a switch during a background connect reports
 # failure on a reachable lamp, having attempted nothing. It is also shorter
-# than _RECONNECT_INTERVAL, so priming spawned by one poll tick is finished
-# before the next. test_no_path_holds_the_lock_longer_than_a_command_will_wait
-# pins both.
-_CONNECT_TIMEOUT = 10.0
+# than _RECONNECT_INTERVAL, so the connect spawned by one poll tick is over
+# before the next.
+#
+# And it is no shorter than what the library gives one try of its own
+# (BLEAK_TIMEOUT, 20 s), where it used to be 10 s. That does not hand the
+# library the whole dial - the ceiling also covers the wait for the lock and
+# every try after the first, so a slow try can still be cut from outside. It
+# moves the cut away from where connects on a weak link finish. Measured on a
+# G7 at the edge of range (2026-10-06, one host, 517 dials): the ones that
+# got through took 6.9 s at the median and 9.7 s at the ninetieth percentile,
+# piled up against the ceiling; 426 were cut off by it, and in 181 of those a
+# connection made inside the dial was lost in the last second before the
+# cut. A ceiling that close to what a connect takes turns a slow connect into
+# a failed one, again thirty seconds later, for as long as the radio stays
+# marginal. What the longer one does on that host is still to be measured.
+# test_no_path_holds_the_lock_longer_than_a_command_will_wait pins all three.
+_CONNECT_TIMEOUT = 20.0
+# Ceiling on asking a link that is already held for its state - priming one a
+# command made, probing one that has gone silent - including the wait for
+# _lock. There is no dial in it, so it need not be as long as a connect, and a
+# probe that is slow to give its verdict keeps a dead link held meanwhile.
+_ASK_TIMEOUT = 10.0
 # How long a failed command waits for the device to report the state it asked
 # for before the failure is believed. A write-with-response on a marginal link
 # can reach the lamp and be acted on while the acknowledgement is lost, which
@@ -200,6 +222,15 @@ _LINK_ERRORS = (BleakError, TimeoutError, EOFError, OSError)
 # silently costs it every property a read of the state does not carry; asking
 # an exotic device once too often costs a reconnect.
 _REFUSAL_MARKERS = ("authorization", "authentication", "not permitted")
+# The same, where the error is bleak's own and says which ATT error it was.
+_REFUSAL_CODES = frozenset(
+    {
+        BleakGATTProtocolErrorCode.READ_NOT_PERMITTED,
+        BleakGATTProtocolErrorCode.WRITE_NOT_PERMITTED,
+        BleakGATTProtocolErrorCode.INSUFFICIENT_AUTHENTICATION,
+        BleakGATTProtocolErrorCode.INSUFFICIENT_AUTHORIZATION,
+    }
+)
 
 
 class _NoNewLinkError(BleakError):
@@ -315,7 +346,13 @@ def _looks_like_a_refusal(err: Exception) -> bool:
     Deliberately narrow: an unrecognised error is treated as the link, because
     the cost of guessing wrong that way is one more request on the next connect,
     while guessing wrong the other way silences a working lamp for the session.
+
+    bleak's own protocol error carries the ATT error code, and is judged by
+    that alone: its wording is bleak's to change. Any other error - a
+    Bluetooth proxy's, for one - has only its text to be told by.
     """
+    if isinstance(err, BleakGATTProtocolError):
+        return err.code in _REFUSAL_CODES
     text = str(err).lower()
     return any(marker in text for marker in _REFUSAL_MARKERS)
 
@@ -1140,7 +1177,7 @@ class GlowriumCoordinator:
     async def _async_prime(self) -> None:
         """Fetch device properties for a link that was established by a command."""
         try:
-            async with asyncio.timeout(_CONNECT_TIMEOUT), self._lock:
+            async with asyncio.timeout(_ASK_TIMEOUT), self._lock:
                 client = self._client
                 if client is None or client is self._primed_client:
                     return
@@ -1176,7 +1213,7 @@ class GlowriumCoordinator:
         client: BleakClientWithServiceCache | None = None
         alive = False
         try:
-            async with asyncio.timeout(_CONNECT_TIMEOUT), self._lock:
+            async with asyncio.timeout(_ASK_TIMEOUT), self._lock:
                 held = self._client
                 if held is None or (monotonic() - self._last_answer < _PROBE_INTERVAL):
                     return
@@ -1729,14 +1766,19 @@ class GlowriumCoordinator:
         reports_before, writes_before = self._reports, self._writes_sent
         # The client the last attempt failed on, if it got as far as having one.
         failed: BleakClientWithServiceCache | None = None
+        # The client a write is being waited on, for as long as it is.
+        writing_to: BleakClientWithServiceCache | None = None
         try:
             async with asyncio.timeout(_COMMAND_TIMEOUT), self._lock:
                 for attempt in range(1, _WRITE_ATTEMPTS + 1):
                     try:
                         await self._connect_locked(prime=False)
+                        writing_to = self._client
                         await self._write_raw(payload)
+                        writing_to = None
                         break
                     except _LINK_ERRORS as err:
+                        writing_to = None
                         client, self._client = self._client, None
                         if attempt == _WRITE_ATTEMPTS or isinstance(
                             err, _NoNewLinkError
@@ -1759,6 +1801,13 @@ class GlowriumCoordinator:
                             # deadline ends the wait and not the hang-up.
                             await asyncio.shield(self._hang_up(client))
         except _LINK_ERRORS as err:
+            if writing_to is not None and writing_to is self._client:
+                # The deadline ran out inside the write. The handler above
+                # never saw it - a deadline arrives as a cancellation - so the
+                # link is still held, and a link that has kept a write waiting
+                # this long is not one to hand the next command. Unless it has
+                # been let go of meanwhile: then it is no longer ours to take.
+                failed, self._client = writing_to, None
             try:
                 if (
                     self._writes_sent > writes_before

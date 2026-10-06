@@ -179,6 +179,9 @@ A refusal is **non-fatal**, and it is told by what the error says — an
 authorization or permission error — not by anything having worked before
 it: a link that is gone answers `Not connected` to everything, and counting
 that muted the request on a perfectly good G7 forty seconds after start-up.
+Where the error is bleak's own it says which ATT error it was
+(`BleakGATTProtocolError.code`), and that code alone decides; the text is
+what is left to go by for anything else, a Bluetooth proxy's error for one.
 After `_STATE_REQUEST_ATTEMPTS` (3) refusals in a row the coordinator warns
 once and pauses the request for `_STATE_REQUEST_COOLDOWN` (10 minutes); a
 model that refuses again once that expires is not asked again this session.
@@ -557,13 +560,33 @@ Establishing a connection (`_async_ensure_connected`, serialized by an
 notifications, primes state by asking the lamp for `STATE_KEYS` — reading
 `facebd02` only when it will not report — runs activation if needed, corrects
 a clock that has drifted, and last of all, once per session, reads the
-device-info string. **The whole thing is capped at `_CONNECT_TIMEOUT` (10 s),
+device-info string. **The whole thing is capped at `_CONNECT_TIMEOUT` (20 s),
 including the wait for the lock**, and deliberately shorter than
 `_COMMAND_TIMEOUT`: a background connect holds the lock while a command waits
 for it inside its own budget, so a holder allowed longer than the waiter makes
 a switch press fail on a reachable lamp. It is shorter than
-`_RECONNECT_INTERVAL` too, so priming spawned by one poll tick finishes before
-the next.
+`_RECONNECT_INTERVAL` too, so the connect spawned by one poll tick is over
+before the next.
+
+And it is no shorter than what the library gives one try of its own (20 s).
+That does not hand the library the whole dial: the ceiling also covers the
+wait for the lock and every try after the first, so a slow try can still be
+cut from outside. What it does is move the cut away from where connects on a
+weak link finish. It was 10 s until that was measured, on the G7's host over a
+night of poor reception (2026-10-06, 517 dials). The dials that got through
+took 6.9 s at the median and 9.7 s at the ninetieth percentile - piled up
+against the ceiling - and 426 were cut off by it; in 181 of those a
+connection made inside the dial was lost in the last second before the cut.
+Cut off, a dial is tried again thirty seconds later with the same odds, so a
+ceiling that close to what a connect takes keeps a lamp away for as long as
+the radio stays marginal. The library has no shorter timeout to be given
+instead: it passes its own to bleak. What the longer ceiling does on that
+host is still to be measured.
+
+Asking a link that is already held - priming one a command made, probing one
+that has gone silent - has a ceiling of its own, `_ASK_TIMEOUT` (10 s): there
+is no dial in it, and a probe that is slow to give its verdict keeps a dead
+link held meanwhile.
 
 **Setup does not wait for any of this.** The first connect is a background task
 tied to the config entry, so `async_setup_entry` returns in milliseconds whether
@@ -578,10 +601,16 @@ registration when it already knows the device — every reload, for a lamp that
 advertises all the time — and the reconnect the replay starts needs an entry to
 be put on, or it lands on `hass` and outlives the unload.
 
-A connect caps `establish_connection` at `_CONNECT_ATTEMPTS` (2) rather than the
+A connect caps `establish_connection` at `_CONNECT_ATTEMPTS` (3) rather than the
 library default of 4: against an unreachable device each attempt can burn a 20 s
 bleak timeout plus a backoff, all while the lock is held — and the poll above
-comes round again in 30 s anyway.
+comes round again in 30 s anyway. It is the ceiling that bounds a dial; the
+attempts are for the ones that fail fast, which on a weak link is most of
+them - a connection made and lost within a second or two, and the next try
+inside the same dial getting through. The library is given no
+`ble_device_callback`: it takes the argument and never calls it (4.6 and 4.7
+alike), and Home Assistant's client picks the best adapter and device for
+itself at every try.
 
 **Commands are serialized on the same lock** and retried once: `_async_write`
 holds the lock across connect-and-write, so a command cannot race the periodic
@@ -720,7 +749,8 @@ command failed. Two checks close that:
   asked for its state again (`_async_probe`). The lamp only speaks when
   something changes, so a dead link and an idle one look the same until
   asked; the answer refreshes the mirror for free. A link that does not
-  answer, or keeps the question waiting until the deadline, is dropped.
+  answer, or keeps the question waiting until the deadline (`_ASK_TIMEOUT`),
+  is dropped.
   Asked, not read — a read would end the very link it was checking.
 
 **Closing the bus under a call in flight looks like nothing bleak documents.**
@@ -787,12 +817,15 @@ mode command also carries fixed parameters (`0x2c`, `0x32`) the device never
 reports back. The cost is that a command which really did fail takes those
 2 s longer to say so.
 
-**A command is capped at `_COMMAND_TIMEOUT` (15 s)**, covering the wait for the
+**A command is capped at `_COMMAND_TIMEOUT` (25 s)**, covering the wait for the
 lock as well as the connect-and-write itself; a command that fails may then
 spend up to `_CONFIRM_TIMEOUT` more deciding whether it failed after all, so
 the longest a user waits is the sum. Without that ceiling an unreachable
 device lets bleak's own retries stack up for minutes, and the button in the UI
-looks like it has hung. Any failure — timeout or `BleakError` — is re-raised as a
+looks like it has hung. A command whose deadline runs out inside the write
+itself lets go of the link it was writing to: left held, that link would be
+handed the next command, to wait as long and fail the same way, until the
+probe found it dead. Any failure — timeout or `BleakError` — is re-raised as a
 `HomeAssistantError` carrying the translated `cannot_connect` message, so the user
 sees "out of range or adapter busy; try a Bluetooth proxy" instead of a stack
 trace. Except where it was the coordinator itself that said no: it has been

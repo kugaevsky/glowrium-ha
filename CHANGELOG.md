@@ -16,6 +16,35 @@ All notable changes to this project are documented here. The format is based on
   the radio did, and a proxy mends neither. Each now has a message of its
   own, in all six languages, and is no longer tried a second time first
   ([#22](https://github.com/kugaevsky/glowrium-ha/issues/22)).
+- **A command that runs out of time inside a write lets go of the link.**
+  The link was kept, so the next command was written into the same silence
+  and failed the same way, until the five-minute check found the link dead.
+  It is hung up now, and the next command connects afresh
+  ([#20](https://github.com/kugaevsky/glowrium-ha/issues/20)).
+- **A Bluetooth stack that will not hang up is reported when the connection
+  behind it cannot be closed either.** In that case the integration kept
+  the client and connected no further, and that was all: no warning and no
+  repair, only a command failing with words about a connection that would
+  not close. The disconnects BlueZ leaves unanswered are counted there too
+  ([#20](https://github.com/kugaevsky/glowrium-ha/issues/20)).
+
+### Changed
+
+- **A background connect has twenty seconds where it had ten, and a command
+  twenty-five where it had fifteen.** Ten had to cover everything - the
+  connect's turn, the connect itself, the subscription and the first
+  exchange - and on a lamp at the edge of range a connect alone takes five
+  to ten. On a G7, over a night of poor reception, 426 dials out of 517 were
+  cut off by that ceiling, in 181 of them with a connection made inside the
+  dial lost in the last second before the cut, and each was tried again
+  thirty seconds later at the same odds. A connect now also has three tries
+  inside its time where it had two. A lamp that cannot be reached takes ten
+  seconds longer to say so. What this does on that host is being measured;
+  the numbers may move before the release
+  ([#20](https://github.com/kugaevsky/glowrium-ha/issues/20)).
+- **A lamp's refusal to report its state is told by the error's code** where
+  the Bluetooth library gives one, and by its text only where it does not,
+  as with a Bluetooth proxy.
 
 ## [0.3.0] - 2026-10-06
 
