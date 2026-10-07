@@ -4,7 +4,8 @@
 [![Test](https://github.com/kugaevsky/glowrium-ha/actions/workflows/test.yml/badge.svg)](https://github.com/kugaevsky/glowrium-ha/actions/workflows/test.yml)
 [![HACS Custom](https://img.shields.io/badge/HACS-Custom-41BDF5.svg)](https://github.com/hacs/integration)
 
-Local **Bluetooth** control of the **INLEDCO Glowrium G7** BLE grow light from
+Local **Bluetooth** control of the
+**INLEDCO [Glowrium](https://www.glowrium.com/) G7** BLE grow light from
 Home Assistant — **no cloud, no vendor app**. The BLE protocol was
 reverse-engineered from the official `com.inledco.glowrium` app and verified on
 real hardware.
@@ -14,6 +15,28 @@ real hardware.
 > lamp without ever touching the vendor app.
 
 ![Glowrium G7 device page in Home Assistant](docs/screenshot.png)
+
+## What it is for
+
+With the lamp in Home Assistant it is one more device of the house, not an app
+of its own:
+
+- **Switch and dim it** from a dashboard, a scene or an automation — on a
+  timetable of your own, or by something the lamp knows nothing of, such as
+  whether anyone is home.
+- **Hand it to its own program, and take it back.** The lamp can run itself by
+  the sun (Circadian) or by an on and an off time (Schedule). Which of the
+  two, and with which preset, ramp and times, is set from an automation like
+  anything else.
+- **Reach its settings without the app**: the indicator light, daylight saving
+  time, the location it works sunrise and sunset out from.
+- **See what it did.** The lamp reports what changes on it, the doing of its
+  own program included, so its history is kept with the rest of the house's.
+- **Bring up a factory-reset lamp** with no vendor app and no account (see
+  [Provisioning](#provisioning)).
+
+Three of these are written out under
+[Automation examples](#automation-examples).
 
 ## Features
 
@@ -42,6 +65,7 @@ it stores, and what `select.select_option` takes, is a key: `sun_sync`,
 `before_sunrise`, `sunrise_sync`, `sunset_sync`, `after_sunset`, `two_phase`,
 `balance`, `enhanced_two_phase`. Before 0.3.0 the names themselves were the
 options — the [changelog](CHANGELOG.md) has the table if you are upgrading.
+A call is shown under [Automation examples](#automation-examples).
 
 ## Supported devices
 
@@ -180,6 +204,129 @@ performed. This integration performs that handshake itself — **entirely locall
 with no cloud** — so a freshly reset device is brought up and controllable
 without the vendor app. The **Activated** binary sensor reports this status; a
 device already paired via the app stays activated across restarts.
+
+## Automation examples
+
+Each block is one automation, as the automation editor shows it in YAML mode.
+The entity ids are placeholders: a real one carries the name the lamp
+advertises (`light.glowrium_g7_xxxxxx`), and the device page lists them.
+Nothing else needs changing. The integration adds no actions of its own; these
+are Home Assistant's, for the kind of entity each one is.
+
+**Switch the light on a timetable of your own** — on at seven, at 80 %; a
+second automation with `light.turn_off` ends the day. This suits a lamp in
+**Manual**: in Circadian and Schedule the lamp is run by its own program.
+
+```yaml
+alias: Grow lamp on in the morning
+triggers:
+  - trigger: time
+    at: "07:00:00"
+actions:
+  - action: light.turn_on
+    target:
+      entity_id: light.glowrium_g7
+    data:
+      brightness_pct: 80
+```
+
+**Hand the lamp to its circadian program when the last person leaves.** The
+operating mode goes first: a lighting mode can only be chosen in Circadian,
+and a call made in another mode does nothing. And the lighting mode is named
+by its key, `sunrise_sync`, not by the name the select shows (see
+[Features](#features)).
+
+```yaml
+alias: Grow lamp runs itself while nobody is home
+triggers:
+  - trigger: numeric_state
+    entity_id: zone.home
+    below: 1
+actions:
+  - action: select.select_option
+    target:
+      entity_id: select.glowrium_g7_operating_mode
+    data:
+      option: circadian
+  - action: select.select_option
+    target:
+      entity_id: select.glowrium_g7_lighting_mode
+    data:
+      option: sunrise_sync
+```
+
+**Put the indicator light out for the night.** `switch.turn_on` brings it back
+in the morning.
+
+```yaml
+alias: Grow lamp indicator off at night
+triggers:
+  - trigger: time
+    at: "22:00:00"
+actions:
+  - action: switch.turn_off
+    target:
+      entity_id: switch.glowrium_g7_indicator_light
+```
+
+The other controls go the same way: `number.set_value` for *Ramp time* and the
+two schedule numbers, `time.set_value` for *Schedule start* and *end*,
+`button.press` for *Sync location*.
+
+## How state is updated
+
+The lamp pushes its state. Over the Bluetooth link the integration holds, the
+lamp reports each change as it happens — one its own program made as much as
+one made from Home Assistant — and the entities follow. State is not polled.
+The lamp is asked for it once, when a link is made, which is also how a
+setting changed from the vendor app while Home Assistant was not connected is
+picked up. (A lamp that refuses to be asked is read instead: see
+`refused the batched state request` under [Troubleshooting](#troubleshooting).)
+
+The link does not last, and is rebuilt in the background: when the lamp is
+next heard advertising, and on a 30-second tick besides. The same tick asks a
+link that has said nothing for five minutes whether it is still there. None of
+this shows on the entities. Availability follows the lamp's advertisements,
+not the link, so they stay available for as long as the lamp is heard; between
+links each shows the last value it had, and a command sent then makes its own
+connection first.
+
+After a restart of Home Assistant the settings — operating mode, lighting
+mode, ramp, schedule, indicator, daylight saving time — show what they showed
+before it, until the lamp reports. The light does not: a lamp said to be on
+while it is off is worse than `unknown`, so the light, like the diagnostic
+entities, reads `unknown` until the lamp has spoken. On a first start nothing
+is remembered yet, and the settings read `unknown` as well. A remembered value
+is only shown, never written from. Changing the ramp or a part of the schedule
+before the lamp has reported what the change builds on — its lighting mode,
+its schedule — is therefore refused, with a message that says so.
+
+## Known limitations
+
+What the integration cannot do, as distinct from what it gets wrong.
+
+- **One Bluetooth connection at a time.** The lamp takes a single connection,
+  so the vendor app has to stay disconnected while Home Assistant is in
+  control (see [Requirements](#requirements)).
+- **No firmware update.** The firmware version on the device page is read from
+  the lamp; nothing here can change it.
+- **Only the lamp, not the rest of the vendor app.** The integration talks to
+  the lamp over Bluetooth and to nothing else: there is no vendor account in
+  it, and none of what the app offers beyond the lamp's own controls, such as
+  its plant assistant and its watering reminders.
+- **The lamp's location can only be set to Home Assistant's own.** *Sync
+  location* writes the home coordinates Home Assistant is set to, and there is
+  no giving it others. *Latitude* and *Longitude* show what the lamp holds and
+  cannot be set.
+- **The circadian presets are confirmed for one model, the G7.** A model
+  without a profile of its own is offered the G7's presets and sends the G7's
+  indices until its own are known (see
+  [Supported devices](#supported-devices)).
+- **A Linux host, and the G8.** Both are described where they show, and not
+  again here: through BlueZ a read of the lamp ends the link, which costs one
+  two-second link after every start or reload (see
+  [Troubleshooting](#troubleshooting)); and what is and is not confirmed on a
+  G8 is under [Supported devices](#supported-devices).
 
 ## Troubleshooting
 

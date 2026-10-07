@@ -101,6 +101,15 @@ All notable changes to this project are documented here. The format is based on
 - **A lamp's refusal to report its state is told by the error's code** where
   the Bluetooth library gives one, and by its text only where it does not,
   as with a Bluetooth proxy.
+- **The README says what the integration is for, shows automations, and
+  collects what it cannot do.** Four sections are new: what one does with
+  the lamp once it is in Home Assistant; three automations in YAML, one of
+  them choosing a lighting mode by its key; how state reaches Home Assistant
+  and what an entity shows before the lamp has reported; and the known
+  limitations in one place. The vendor's site is linked. A test reads the
+  examples out of the README, and fails on one that does not parse or that
+  names an option the selects do not offer
+  ([#32](https://github.com/kugaevsky/glowrium-ha/issues/32)).
 
 ## [0.3.0] - 2026-10-06
 
