@@ -10,8 +10,15 @@ from bleak.exc import BleakError
 from homeassistant.components.logger.helpers import get_integration_loggers
 from homeassistant.config_entries import ConfigEntryState
 from homeassistant.const import CONF_ADDRESS, CONF_MODEL_ID, EVENT_HOMEASSISTANT_STOP
-from homeassistant.core import HomeAssistant, State
+from homeassistant.core import (
+    Event,
+    EventStateChangedData,
+    HomeAssistant,
+    State,
+    callback,
+)
 from homeassistant.helpers import device_registry as dr, entity_registry as er
+from homeassistant.helpers.event import async_track_state_change_event
 from homeassistant.helpers.icon import async_get_icons
 import pytest
 from pytest_homeassistant_custom_component.common import (
@@ -1100,6 +1107,13 @@ def test_the_select_itself_does_not_offer_a_mode_the_lamp_does_not_have() -> Non
     select._restored = "balance"
     assert select.current_option == "balance"
 
+    # And once the lamp has named an index, the remembered mode has had its say.
+    select._coordinator.state[KEY_LIGHTING_MODE] = 7  # no preset of the G7
+    assert select.current_option is None
+    # Whatever it named: a report of nothing at all is a report too.
+    select._coordinator.state[KEY_LIGHTING_MODE] = None
+    assert select.current_option is None
+
 
 async def test_the_lighting_mode_shown_is_the_one_the_lamp_reports(
     hass: HomeAssistant,
@@ -1124,6 +1138,51 @@ async def test_the_lighting_mode_shown_is_the_one_the_lamp_reports(
     coordinator._ingest(cbor.encode({KEY_LIGHTING_MODE: 32}))
     await hass.async_block_till_done()
     assert hass.states.get(select).state == "enhanced_two_phase"
+
+
+@pytest.mark.parametrize(
+    "model_id",
+    [
+        pytest.param(None, id="model not read yet"),
+        pytest.param("Glowrium-C051", id="a model with a profile"),
+        pytest.param("Glowrium-C064", id="a model without one"),
+    ],
+)
+async def test_an_index_the_model_does_not_have_is_not_the_remembered_mode(
+    hass: HomeAssistant, model_id: str | None
+) -> None:
+    """The lamp has spoken, and what it said is no preset known here: unknown.
+
+    The remembered mode stands in while nothing has been read. Falling back on
+    it for an index that maps to nothing showed whatever the select had shown
+    before the last restart - and Home Assistant recorded the change to it,
+    for an automation to act on. With the presets of a model that has no
+    profile of its own, which are a guess, that is the likelier case.
+    """
+    select = "select.glowrium_g7_1234_lighting_mode"
+    mock_restore_cache(hass, (State(select, "balance"),))
+    entry = _entry(**({CONF_MODEL_ID: model_id} if model_id else {}))
+    entry.add_to_hass(hass)
+    await _setup_without_bluetooth(hass, entry)
+    coordinator = entry.runtime_data
+    assert hass.states.get(select).state == "balance"  # nothing read yet
+    shown: list[str] = []
+
+    @callback
+    def _changed(event: Event[EventStateChangedData]) -> None:
+        new = event.data["new_state"]
+        assert new is not None
+        shown.append(new.state)
+
+    async_track_state_change_event(hass, select, _changed)
+
+    coordinator._ingest(cbor.encode({KEY_LIGHTING_MODE: 5}))
+    await hass.async_block_till_done()
+    coordinator._ingest(cbor.encode({KEY_LIGHTING_MODE: 7}))  # no preset has it
+    await hass.async_block_till_done()
+
+    assert hass.states.get(select).state == "unknown"
+    assert shown == ["sunrise_sync", "unknown"]  # and never back to "balance"
 
 
 async def test_a_string_that_names_no_model_leaves_the_one_on_record(

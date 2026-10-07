@@ -63,6 +63,14 @@ All notable changes to this project are documented here. The format is based on
   another shape is therefore not named in such a warning; its device page
   still shows it
   ([#23](https://github.com/kugaevsky/glowrium-ha/issues/23)).
+- **A lighting mode the lamp reports and this integration does not know is
+  shown as unknown.** The select fell back on the mode remembered from
+  before the last restart - meant for a lamp that has not been read yet -
+  whenever the reported preset was none of the model's own. So it showed
+  whatever it had shown before the restart, and Home Assistant recorded
+  the change to it, for an automation to act on. The remembered mode now
+  stands in only until the lamp has said something
+  ([#30](https://github.com/kugaevsky/glowrium-ha/issues/30)).
 
 ### Changed
 
