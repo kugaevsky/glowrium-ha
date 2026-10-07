@@ -11,6 +11,7 @@ from custom_components.glowrium.const import (
     KEY_DST,
     KEY_RAMP,
     KEY_TIME,
+    KEY_TIME_SYNCED,
     KEY_TIMER,
     TIMER_DEFAULT,
 )
@@ -138,15 +139,15 @@ def test_dst_is_read_from_the_flag_byte() -> None:
 def test_setting_dst_keeps_the_offset_the_lamp_reported() -> None:
     """A fixed hour would turn a half-hour region into a full one at a touch."""
     half_hour = bytes.fromhex("0000000708")  # off, 1800 s
-    assert protocol.dst_slot({KEY_DST: half_hour}, True) == bytes.fromhex("0100000708")
-    assert protocol.dst_slot({KEY_DST: DST_ON}, False) == DST_OFF
+    assert protocol.with_dst({KEY_DST: half_hour}, True) == bytes.fromhex("0100000708")
+    assert protocol.with_dst({KEY_DST: DST_ON}, False) == DST_OFF
 
 
 def test_setting_dst_on_a_lamp_that_has_not_reported_uses_the_hour() -> None:
     """One field with a near-universal default: the switch works before priming."""
-    assert protocol.dst_slot({}, True) == DST_ON
-    assert protocol.dst_slot({}, False) == DST_OFF
-    assert protocol.dst_slot({KEY_DST: b"\x01"}, False) == DST_OFF  # not a whole slot
+    assert protocol.with_dst({}, True) == DST_ON
+    assert protocol.with_dst({}, False) == DST_OFF
+    assert protocol.with_dst({KEY_DST: b"\x01"}, False) == DST_OFF  # not a whole slot
 
 
 def test_the_device_clock_is_year_month_day_hour_minute_second() -> None:
@@ -154,6 +155,15 @@ def test_the_device_clock_is_year_month_day_hour_minute_second() -> None:
     stamp = datetime.datetime(2026, 7, 18, 21, 24, 35)
     assert protocol.encode_device_time(stamp).hex() == "07ea0712151823"
     assert protocol.device_time({KEY_TIME: bytes.fromhex("07ea0712151823")}) == stamp
+
+
+def test_the_clock_is_set_together_with_the_flag_that_says_so() -> None:
+    """One write carries the time and 0x31, as the vendor app sends them."""
+    stamp = datetime.datetime(2026, 7, 18, 21, 24, 35)
+    assert protocol.clock_command(stamp) == {
+        KEY_TIME: bytes.fromhex("07ea0712151823"),
+        KEY_TIME_SYNCED: 1,
+    }
 
 
 def test_a_clock_the_lamp_has_not_reported_is_not_a_clock() -> None:

@@ -233,6 +233,16 @@ async def test_set_dst(hass: HomeAssistant) -> None:
     assert coordinator.state[KEY_DST] == bytes.fromhex("0100000e10")
 
 
+async def test_dst_enabled_property(hass: HomeAssistant) -> None:
+    """The switch asks the coordinator, which knows nothing until the lamp says."""
+    coordinator, _ = _connected_coordinator(hass)
+    assert coordinator.dst_enabled is None
+    await coordinator.async_set_dst(True)
+    assert coordinator.dst_enabled is True
+    await coordinator.async_set_dst(False)
+    assert coordinator.dst_enabled is False
+
+
 async def test_sync_location(hass: HomeAssistant) -> None:
     """Sync writes HA's home coordinates as float64 to keys 0x0a/0x0b."""
     coordinator, client = _connected_coordinator(hass)
@@ -307,6 +317,23 @@ async def test_async_activate_sequence(hass: HomeAssistant) -> None:
     assert payloads[1][0x31] == 1
     assert payloads[2] == {0x14: True}
     assert coordinator.state[0x14] is True
+
+
+async def test_the_bring_up_sets_the_clock_to_local_time(hass: HomeAssistant) -> None:
+    """The lamp keeps wall-clock time, so the bring-up writes the local hour.
+
+    UTC would run a new lamp's schedule and its circadian curve hours off.
+    """
+    await hass.config.async_set_time_zone("Asia/Kolkata")  # 5 h 30 min from UTC
+    coordinator, client = _connected_coordinator(hass)
+
+    await coordinator._async_activate()
+
+    written = cbor.decode(client.write_gatt_char.await_args_list[1].args[1])
+    clock = protocol.device_time(written)
+    assert clock is not None
+    local = dt_util.now().replace(tzinfo=None)
+    assert abs((clock - local).total_seconds()) < 5
 
 
 async def test_activated_property(hass: HomeAssistant) -> None:
@@ -2710,6 +2737,7 @@ async def test_a_stale_device_clock_is_corrected(hass: HomeAssistant) -> None:
     it had then - one reporter's was six months out (issue #4). Nothing
     surfaces it either, because the clock is not an entity.
     """
+    await hass.config.async_set_time_zone("Asia/Kolkata")  # 5 h 30 min from UTC
     coordinator, client = _connected_coordinator(hass)
     stale = bytes.fromhex("07ea02010f0e2c")  # 2026-02-01 15:14:44
     coordinator.state[KEY_TIME] = stale
@@ -2719,8 +2747,10 @@ async def test_a_stale_device_clock_is_corrected(hass: HomeAssistant) -> None:
     written = cbor.decode(client.write_gatt_char.await_args.args[1])
     assert written[KEY_TIME] != stale
     assert written[KEY_TIME_SYNCED] == 1
-    year = (written[KEY_TIME][0] << 8) | written[KEY_TIME][1]
-    assert year == dt_util.now().year
+    corrected = protocol.device_time(written)
+    assert corrected is not None
+    local = dt_util.now().replace(tzinfo=None)  # wall-clock time, not UTC
+    assert abs((corrected - local).total_seconds()) < 5
 
 
 async def test_a_clock_that_is_near_enough_is_left_alone(

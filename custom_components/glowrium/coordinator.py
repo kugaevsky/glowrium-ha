@@ -42,7 +42,6 @@ from .const import (
     KEY_RAMP,
     KEY_SCHEDULE,
     KEY_TIME,
-    KEY_TIME_SYNCED,
     KEY_TIMER,
     MODE_CIRCADIAN,
     MODE_MANUAL,
@@ -88,11 +87,11 @@ _COMMAND_TIMEOUT = 25.0
 # And it is no shorter than what the library gives one try of its own
 # (BLEAK_TIMEOUT, 20 s): a ceiling close to what a connect takes on a weak
 # link turns a slow connect into a failed one, tick after tick, for as long as
-# the radio stays marginal. That does not hand the library the whole dial -
-# the ceiling also covers the wait for the lock and every try after the
-# first, so a slow try can still be cut from outside. What was measured under
-# 10 s and under 20 s, and why it is not raised further: ARCHITECTURE.md,
-# "Reconnect".
+# the radio stays marginal. Being no shorter than one try does not hand the
+# library the whole dial - the ceiling also covers the wait for the lock and
+# every try after the first, so a slow try can still be cut from outside. What
+# was measured under 10 s and under 20 s, and why it is not raised further:
+# ARCHITECTURE.md, "Reconnect".
 # test_no_path_holds_the_lock_longer_than_a_command_will_wait pins all three.
 _CONNECT_TIMEOUT = 20.0
 # Ceiling on asking a link that is already held for its state - priming one a
@@ -654,6 +653,11 @@ class GlowriumCoordinator:
         """Schedule gradual-fade duration in minutes, or None if not yet read."""
         return protocol.schedule_gradual_minutes(self.state)
 
+    @property
+    def dst_enabled(self) -> bool | None:
+        """Whether daylight saving is on, or None if not yet read."""
+        return protocol.dst_enabled(self.state)
+
     def diagnostics(self) -> dict[str, Any]:
         """Describe the lamp and the link, for a diagnostics download.
 
@@ -788,7 +792,11 @@ class GlowriumCoordinator:
 
     @callback
     def _spawn(self, coro: Coroutine[Any, Any, None], what: str) -> None:
-        """Run ``coro`` in the background, for no longer than the entry lives."""
+        """Run ``coro`` in the background, for no longer than the entry lives.
+
+        Without Home Assistant there is no entry to end it and nothing else to
+        hold the task: the coordinator keeps it itself (``_run_without_hass``).
+        """
         name = f"glowrium {what} {self.address}"
         if self.hass is None:
             self._run_without_hass(coro, name)
@@ -797,6 +805,7 @@ class GlowriumCoordinator:
         else:
             self._entry.async_create_background_task(self.hass, coro, name)
 
+    @callback
     def _run_without_hass(
         self, coro: Coroutine[Any, Any, None], name: str
     ) -> asyncio.Task[None]:
@@ -1949,13 +1958,12 @@ class GlowriumCoordinator:
         try:
             reported = protocol.device_time(self.state)
         except ValueError:  # a nonsense date is itself a reason to correct it
-            reported = None
+            _LOGGER.debug("%s reported an impossible clock; correcting", self.address)
         else:
             if reported is None:
                 return
-        # Naive, like the clock itself: the lamp keeps local wall-clock time.
-        now = dt_util.now().replace(tzinfo=None)
-        if reported is not None:
+            # Naive, like the clock itself: the lamp keeps local wall-clock time.
+            now = dt_util.now().replace(tzinfo=None)
             drift = abs((reported - now).total_seconds())
             if drift < _CLOCK_TOLERANCE:
                 return
@@ -1965,11 +1973,11 @@ class GlowriumCoordinator:
                 reported.isoformat(sep=" "),
                 drift,
             )
-        else:
-            _LOGGER.debug("%s reported an impossible clock; correcting", self.address)
-        await self._write_raw(
-            {KEY_TIME: protocol.encode_device_time(dt_util.now()), KEY_TIME_SYNCED: 1}
-        )
+        await self._write_raw(self._clock_command())
+
+    def _clock_command(self) -> dict[int, Any]:
+        """Return the command that sets the lamp's clock to now, local time."""
+        return protocol.clock_command(dt_util.now())
 
     async def _async_activate(self) -> None:
         """Bring up a factory-reset device: clock + flags + enable light output.
@@ -1984,9 +1992,7 @@ class GlowriumCoordinator:
         ``_async_activate_if_needed``, on the priming path.
         """
         await self._write_raw({KEY_ACTIVATE_MISC: ACTIVATE_MISC_VALUE})
-        await self._write_raw(
-            {KEY_TIME: protocol.encode_device_time(dt_util.now()), KEY_TIME_SYNCED: 1}
-        )
+        await self._write_raw(self._clock_command())
         await self._write_raw({KEY_ACTIVATED: True})
         _LOGGER.info("Brought up (activated) %s", self.address)
 
@@ -2086,15 +2092,10 @@ class GlowriumCoordinator:
     async def async_set_dst(self, is_on: bool) -> None:
         """Enable or disable daylight-saving-time handling.
 
-        The 0x35 slot is a flag plus the offset to apply, written together, so
-        only the flag is ours to change. Sending a fixed hour would turn a
-        half-hour region into a full one the moment the switch is touched,
-        discarding a value the lamp had been reporting correctly all along.
-        Unlike the schedule slot this is a single field with a near-universal
-        default, so a lamp that has not reported yet gets the hour rather than
-        a refusal - that keeps the switch usable before priming.
+        Only the flag is changed; what is written with it, and why a lamp that
+        has not reported yet is not refused, is ``protocol.with_dst``.
         """
-        await self._async_write({KEY_DST: protocol.dst_slot(self.state, is_on)})
+        await self._async_write({KEY_DST: protocol.with_dst(self.state, is_on)})
 
     async def async_sync_location(self) -> None:
         """Push HA's home coordinates; the device recomputes its circadian curve."""

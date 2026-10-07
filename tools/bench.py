@@ -45,7 +45,6 @@ from custom_components.glowrium.const import (
     KEY_DST,
     KEY_POWER,
     KEY_TIME,
-    KEY_TIME_SYNCED,
     NAME_PREFIX,
     NOTIFY_UUID,
     STATE_KEYS,
@@ -362,10 +361,7 @@ async def _ensure_clock_right(coordinator: GlowriumCoordinator) -> bool:
         try:
             async with coordinator._lock:  # noqa: SLF001
                 await coordinator._write_raw(  # noqa: SLF001
-                    {
-                        KEY_TIME: protocol.encode_device_time(dt_util.now()),
-                        KEY_TIME_SYNCED: 1,
-                    }
+                    protocol.clock_command(dt_util.now())
                 )
         except Exception as err:
             print(f"    write failed: {err!r}")
@@ -418,12 +414,10 @@ async def _probe_clock(coordinator: GlowriumCoordinator) -> bool:
     seconds = int(_INDUCED_DRIFT.total_seconds())
     print(f"\n  inducing a {seconds}s drift - ten times the tolerance, and not")
     print("  an hour, so it cannot be read as a daylight-saving offset")
-    wrong = protocol.encode_device_time(dt_util.now() - _INDUCED_DRIFT)
+    wrong = protocol.clock_command(dt_util.now() - _INDUCED_DRIFT)
     try:
         async with coordinator._lock:  # noqa: SLF001
-            await coordinator._write_raw(  # noqa: SLF001
-                {KEY_TIME: wrong, KEY_TIME_SYNCED: 1}
-            )
+            await coordinator._write_raw(wrong)  # noqa: SLF001
     except Exception as err:
         print(f"  could not write the wrong clock: {err!r}")
         await _ensure_clock_right(coordinator)
@@ -603,7 +597,7 @@ async def _probe_curve(coordinator: GlowriumCoordinator, tap: _Tap) -> bool:
     print("\n  C. clock write, same date and time it already believes")
     after_same = await _write(
         "after 0x05 (unchanged)",
-        {KEY_TIME: protocol.encode_device_time(dt_util.now()), KEY_TIME_SYNCED: 1},
+        protocol.clock_command(dt_util.now()),
     )
 
     print(f"\n  D. clock write, date moved {_CURVE_DATE_SHIFT.days} days on")
@@ -611,14 +605,14 @@ async def _probe_curve(coordinator: GlowriumCoordinator, tap: _Tap) -> bool:
     print(f"     the lamp will believe it is {shifted:%Y-%m-%d %H:%M}")
     after_date = await _write(
         "after 0x05 (date moved)",
-        {KEY_TIME: protocol.encode_device_time(shifted), KEY_TIME_SYNCED: 1},
+        protocol.clock_command(shifted),
     )
     moved_curve = coordinator.state.get(_CURVE_KEY)
 
     print("\n  E. clock restored")
     after_restore = await _write(
         "after 0x05 (restored)",
-        {KEY_TIME: protocol.encode_device_time(dt_util.now()), KEY_TIME_SYNCED: 1},
+        protocol.clock_command(dt_util.now()),
     )
 
     _settle_curve(

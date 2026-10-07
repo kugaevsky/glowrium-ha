@@ -7,10 +7,11 @@ units the entities use.
 
 Keeping every byte offset and minute/second conversion here means the layout of
 the 0x11 schedule slot, the 0x2f ramp, the 0x35 daylight-saving slot and the
-0x05 clock lives in exactly one place - read and written - instead of being
-re-derived in each platform and again in the coordinator. The coordinator
-exposes thin typed accessors that delegate here, so entities never touch raw
-bytes or the state dict.
+0x05 clock is read and written in one place, instead of being re-derived in
+each platform and again in the coordinator. The coordinator exposes thin typed
+accessors and setters that delegate here, and the platforms go through those.
+(``diagnostics.py`` keeps readers of its own, stricter and on purpose: it
+judges what the lamp sent rather than using it.)
 """
 
 from __future__ import annotations
@@ -24,6 +25,7 @@ from .const import (
     KEY_DST,
     KEY_RAMP,
     KEY_TIME,
+    KEY_TIME_SYNCED,
     KEY_TIMER,
     TIMER_BRIGHTNESS,
     TIMER_DEFAULT,
@@ -126,16 +128,25 @@ def _slot_with(state: dict[int, Any], at: int, field: bytes) -> bytes | None:
     return bytes(slot)
 
 
+def _slot_with_time(
+    state: dict[int, Any], hour_i: int, minute_i: int, hour: int, minute: int
+) -> bytes | None:
+    """Return the 0x11 slot with a time at its two offsets; None if never read."""
+    slot = editable_timer_slot(state)
+    if slot is None:
+        return None
+    slot[hour_i], slot[minute_i] = hour, minute
+    return bytes(slot)
+
+
 def with_schedule_start(state: dict[int, Any], hour: int, minute: int) -> bytes | None:
     """Return the 0x11 slot with a new start (on) time, the rest carried over."""
-    assert TIMER_START_M == TIMER_START_H + 1  # noqa: S101 - the layout this relies on
-    return _slot_with(state, TIMER_START_H, bytes([hour, minute]))
+    return _slot_with_time(state, TIMER_START_H, TIMER_START_M, hour, minute)
 
 
 def with_schedule_end(state: dict[int, Any], hour: int, minute: int) -> bytes | None:
     """Return the 0x11 slot with a new end (off) time, the rest carried over."""
-    assert TIMER_END_M == TIMER_END_H + 1  # noqa: S101 - the layout this relies on
-    return _slot_with(state, TIMER_END_H, bytes([hour, minute]))
+    return _slot_with_time(state, TIMER_END_H, TIMER_END_M, hour, minute)
 
 
 def with_schedule_brightness(state: dict[int, Any], percent: int) -> bytes | None:
@@ -159,8 +170,8 @@ def dst_enabled(state: dict[int, Any]) -> bool | None:
     return None
 
 
-def dst_slot(state: dict[int, Any], enabled: bool) -> bytes:
-    """Return the 0x35 slot to write for ``enabled``.
+def with_dst(state: dict[int, Any], enabled: bool) -> bytes:
+    """Return the 0x35 slot with daylight saving switched on or off.
 
     The flag and the offset are written together, so only the flag is ours to
     change: a fixed hour would turn a half-hour region into a full one the
@@ -180,19 +191,28 @@ def dst_slot(state: dict[int, Any], enabled: bool) -> bytes:
 _CLOCK_LENGTH = 7
 
 
-def encode_device_time(now: datetime.datetime) -> bytes:
-    """Encode local wall-clock time as the device keeps it."""
+def encode_device_time(when: datetime.datetime) -> bytes:
+    """Encode a local wall-clock time as the device keeps it."""
     return bytes(
         [
-            now.year >> 8,
-            now.year & 0xFF,
-            now.month,
-            now.day,
-            now.hour,
-            now.minute,
-            now.second,
+            when.year >> 8,
+            when.year & 0xFF,
+            when.month,
+            when.day,
+            when.hour,
+            when.minute,
+            when.second,
         ]
     )
+
+
+def clock_command(when: datetime.datetime) -> dict[int, Any]:
+    """Return the command that sets the lamp's clock to ``when``.
+
+    The time goes with the flag that says it has been set, in one write, as
+    the vendor app sends them.
+    """
+    return {KEY_TIME: encode_device_time(when), KEY_TIME_SYNCED: 1}
 
 
 def device_time(state: dict[int, Any]) -> datetime.datetime | None:

@@ -689,7 +689,9 @@ released the lock, so one more dial can get in first.
 
 **A hang-up is the one piece of background work not tied to the config entry.**
 Everything else dies with the entry, because a connect that outlives its
-coordinator claims the lamp's single slot for nobody. A hang-up is the
+coordinator claims the lamp's single slot for nobody. (Where there is no `hass`
+there is no entry to die with either: the coordinator keeps those tasks itself,
+as it keeps a hang-up there.) A hang-up is the
 opposite: cancelled part-way, it has asked BlueZ to drop the link and left the
 bus open, which is the leak again. So it runs as a task on `hass` — or, in
 `tools/bench.py`, where there is no `hass`, as a task the coordinator keeps
