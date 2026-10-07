@@ -290,7 +290,7 @@ see **[ARCHITECTURE.md](ARCHITECTURE.md)**.
 
 ```bash
 python3.14 -m venv .venv
-.venv/bin/python tools/test_stack.py oldest   # or: newest
+.venv/bin/python tools/stack.py oldest   # or: newest
 .venv/bin/ruff check . && .venv/bin/ruff format --check .
 .venv/bin/mypy
 .venv/bin/pytest

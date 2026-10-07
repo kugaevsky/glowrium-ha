@@ -5,11 +5,8 @@ report is what one looks at next to a lamp, and what gets shown to somebody
 else when the lamp does something nobody expected.
 """
 
-import importlib.util
 import io
 import logging
-from pathlib import Path
-import sys
 from types import ModuleType
 
 import pytest
@@ -25,6 +22,8 @@ from custom_components.glowrium.coordinator import (
     _parse_device_info,
 )
 
+from .conftest import load_tool
+
 _CURVE_KEY = 0x34
 # Seven times, seconds from midnight: 06:00 ... 18:00.
 _CURVE = b"".join(
@@ -38,19 +37,8 @@ _IN_INFO = "A1B2C3D4E5F6"
 
 @pytest.fixture(scope="module")
 def bench() -> ModuleType:
-    """Load tools/bench.py, which is a script and not part of any package."""
-    path = Path(__file__).resolve().parent.parent / "tools" / "bench.py"
-    spec = importlib.util.spec_from_file_location("glowrium_bench", path)
-    assert spec is not None
-    assert spec.loader is not None
-    module = importlib.util.module_from_spec(spec)
-    # A dataclass looks its own module up by name while it is being defined.
-    sys.modules[spec.name] = module
-    try:
-        spec.loader.exec_module(module)
-    finally:
-        del sys.modules[spec.name]
-    return module
+    """Return tools/bench.py as a module."""
+    return load_tool("bench")
 
 
 def _a_lamp() -> GlowriumCoordinator:

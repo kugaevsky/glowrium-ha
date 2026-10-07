@@ -1,12 +1,12 @@
-# Installed by tools/test_stack.py, not by hand: it adds what cannot be
-# written here.
+# Installed by tools/stack.py, not by hand: it adds what cannot be written
+# here.
 #
 # The test plugin carries Home Assistant itself, one exact release per release
 # of its own. Left unpinned it is the newest, pre-releases included;
 # constraints-oldest.txt names the release for the oldest Home Assistant this
 # project supports. Home Assistant's Bluetooth and USB integrations then
-# require libraries at versions Home Assistant dictates - the script reads
-# those from the Home Assistant it has just installed.
+# require libraries at exact versions - the script reads those from the Home
+# Assistant it has just installed, and installs them as Home Assistant would.
 pytest-homeassistant-custom-component
 ruff~=0.16.10
 mypy~=2.4.0

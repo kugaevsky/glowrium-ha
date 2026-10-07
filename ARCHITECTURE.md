@@ -1049,10 +1049,11 @@ Unit tests live in `tests/` and **never touch real Bluetooth**:
 - `test_bench.py` — what `tools/bench.py` prints, and what it leaves out.
 - `test_translations.py` — every translation carries exactly the keys and
   placeholders of `strings.json`. hassfest checks the same in CI, on a push.
-- `test_test_stack.py` — the script that installs what all of the above run
-  on: how it reads the versions Home Assistant dictates and what it says when
-  one is not met, and that the workflows and the dependabot configuration
-  agree with it.
+- `test_stack.py` — `tools/stack.py`, which installs what all of the above run
+  on: how it reads what Home Assistant's integrations require and what it
+  says when that is not what is installed, that the environment the tests
+  are running in is such a one, and that the workflows and the dependabot
+  configuration agree with it.
 
 Run the checks:
 
@@ -1067,10 +1068,12 @@ in strict mode over the integration (both configured in `pyproject.toml`). CI
 runs the same and holds coverage of the integration to 95 %, and runs it on
 two stacks: the oldest Home Assistant supported, held to one release, and the
 newest, which is whatever the test plugin tracks that day, betas included.
-`tools/test_stack.py` installs either, here as in CI, and with it the
-Bluetooth libraries at the versions that Home Assistant dictates - read from
-the Home Assistant under test and written nowhere here, so that the tests
-run on what a user of that release has. The newest leg is why CI also runs
+`tools/stack.py` installs either, here as in CI, and with it what Home
+Assistant's Bluetooth and USB integrations require, the way Home Assistant
+installs it: each library at the version the manifest names, within Home
+Assistant's own constraints - both read from the Home Assistant under test
+and written nowhere here, so that the tests run on what a user of that
+release has. The newest leg is why CI also runs
 once a week with nothing pushed: what it tests moves by itself, and
 `_close_bus` reaches into bleak's private attributes.
 Verification against live hardware is separate and not part

@@ -4,12 +4,12 @@ on:
   push:
   pull_request:
   schedule:
-    # Once a week with nothing pushed, for the newest leg. The Home Assistant
-    # it tests is whatever the test plugin tracks that day, and the
-    # integration reaches into bleak's private attributes to close a client's
-    # bus (see _close_bus): a release that moves them has to fail here before
-    # it reaches anybody's host. The oldest leg moves only when
-    # constraints-oldest.txt does.
+    # Once a week with nothing pushed. The newest leg tests whatever the
+    # test plugin tracks that day, and the integration reaches into bleak's
+    # private attributes to close a client's bus (see _close_bus): a release
+    # that moves them has to fail here before it reaches anybody's host. The
+    # oldest leg holds Home Assistant still, but not the linters, which
+    # float within their ranges, nor what the package index serves.
     - cron: "0 5 * * 1"
   workflow_dispatch:
 
@@ -25,8 +25,10 @@ jobs:
     if: >-
       github.event_name != 'pull_request' ||
       github.event.pull_request.head.repo.full_name != github.repository
-    name: test (${{ matrix.stack }} Home Assistant)
     runs-on: ubuntu-latest
+    env:
+      # Read by the tests: the oldest leg must be the declared minimum.
+      GLOWRIUM_STACK: ${{ matrix.stack }}
     strategy:
       # Each leg answers a question of its own: one failing says nothing
       # about the other, and both answers are wanted.
@@ -44,8 +46,8 @@ jobs:
         with:
           python-version: "3.14"
       # Writes which Home Assistant this leg got into the run's summary, and
-      # fails if a library is not at the version that Home Assistant dictates.
-      - run: python tools/test_stack.py ${{ matrix.stack }}
+      # fails if a library is not at the version that Home Assistant requires.
+      - run: python tools/stack.py ${{ matrix.stack }}
       - run: ruff check .
       - run: ruff format --check .
       - run: mypy

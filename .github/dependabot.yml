@@ -14,16 +14,9 @@ updates:
       prefix: "deps"
     # Not dependabot's to move. The test plugin is Home Assistant under
     # another number: unpinned it follows the newest by itself, and its one
-    # pin (constraints-oldest.txt) is the oldest release this project
-    # supports. The others are libraries whose versions Home Assistant
-    # dictates; tools/test_stack.py reads them from the Home Assistant under
-    # test, and the newest of each on the package index is the wrong answer.
+    # pin (constraints-oldest.txt, which dependabot reads as a requirements
+    # file) is the oldest release this project supports. The libraries Home
+    # Assistant requires need no entry: their versions are written nowhere
+    # here - tools/stack.py reads them from the Home Assistant under test.
     ignore:
       - dependency-name: "pytest-homeassistant-custom-component"
-      - dependency-name: "aiousbwatcher"
-      - dependency-name: "serialx"
-      - dependency-name: "dbus-fast"
-      - dependency-name: "bleak"
-      - dependency-name: "bleak-retry-connector"
-      - dependency-name: "habluetooth"
-      - dependency-name: "aioesphomeapi"
