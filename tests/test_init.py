@@ -341,6 +341,7 @@ async def test_settings_survive_a_restart_but_the_light_does_not(
         hass,
         (
             State("switch.glowrium_g7_1234_indicator_light", "on"),
+            State("switch.glowrium_g7_1234_daylight_saving_time", "on"),
             State("number.glowrium_g7_1234_ramp_time", "45"),
             State("select.glowrium_g7_1234_lighting_mode", "sunrise_sync"),
             State("light.glowrium_g7_1234", "on"),
@@ -349,6 +350,7 @@ async def test_settings_survive_a_restart_but_the_light_does_not(
     await _setup_without_bluetooth(hass)
 
     assert hass.states.get("switch.glowrium_g7_1234_indicator_light").state == "on"
+    assert hass.states.get("switch.glowrium_g7_1234_daylight_saving_time").state == "on"
     assert hass.states.get("number.glowrium_g7_1234_ramp_time").state == "45.0"
     assert (
         hass.states.get("select.glowrium_g7_1234_lighting_mode").state == "sunrise_sync"

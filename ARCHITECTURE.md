@@ -43,7 +43,7 @@ Home Assistant entities are stateless views over that coordinator.
 | `config_flow.py` | Bluetooth auto-discovery + manual picker for `Glowrium-*` devices |
 | `coordinator.py` | BLE transport, reconnect, activation, state mirror, all command methods |
 | `cbor.py` | Minimal CBOR encoder/decoder (only the subset the device uses) — the *wire* format |
-| `protocol.py` | Semantic codec — byte layouts (`0x11` slot, `0x2f` ramp) ↔ values; the coordinator's typed accessors delegate here |
+| `protocol.py` | Semantic codec — byte layouts (`0x11` slot, `0x2f` ramp, `0x35` daylight saving, `0x05` clock) ↔ values, read and written; the coordinator's typed accessors and setters delegate here |
 | `const.py` | GATT UUIDs, CBOR property keys, byte-layout offsets, mode constants |
 | `models.py` | Per-model registry (name, lighting-mode presets) keyed by `pkey` |
 | `diagnostics.py` | The diagnostics download: what the coordinator knows, rebuilt from what it read, with nothing in it the lamp chose |
@@ -404,7 +404,8 @@ select in HA (`Manual` = both off, `Circadian`, `Schedule`) — see
 
 The schedule ("Pro" timer) is an 11-byte struct. A setter edits a field in place
 and rewrites the whole slot, preserving the other bytes; the slot's byte offsets
-live in `protocol.py` (`editable_timer_slot` plus the `schedule_*` decoders).
+live in `protocol.py` (the `schedule_*` decoders and the `with_schedule_*`
+encoders, which return the whole slot with one field changed).
 
 | Byte(s) | Field | Notes |
 | --- | --- | --- |
@@ -996,8 +997,9 @@ log prints the ones it could not use in full.
 Unit tests live in `tests/` and **never touch real Bluetooth**:
 
 - `test_cbor.py` — the codec, checked against exact bytes from btsnoop captures.
-- `test_protocol.py` — the byte layouts behind the typed values: the `0x11`
-  schedule slot and the `0x2f` ramp.
+- `test_protocol.py` — the byte layouts behind the typed values, read and
+  written: the `0x11` schedule slot, the `0x2f` ramp, the `0x35` daylight-saving
+  slot and the `0x05` clock.
 - `test_coordinator.py` — command encoding (power, brightness, lighting mode,
   operating mode, indicator, DST, schedule) checked against real device bytes,
   and the connection logic around it: priming by asking, the fallbacks to a

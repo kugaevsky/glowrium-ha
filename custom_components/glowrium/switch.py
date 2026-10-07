@@ -8,8 +8,8 @@ from homeassistant.components.switch import SwitchEntity
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 
-from . import GlowriumConfigEntry
-from .const import KEY_DST, KEY_INDICATOR
+from . import GlowriumConfigEntry, protocol
+from .const import KEY_INDICATOR
 from .coordinator import GlowriumCoordinator
 from .entity import GlowriumSettingEntity
 
@@ -70,10 +70,8 @@ class GlowriumDstSwitch(GlowriumSettingEntity, SwitchEntity):
     @property
     def is_on(self) -> bool | None:
         """Return whether DST is enabled."""
-        value = self._coordinator.state.get(KEY_DST)
-        if isinstance(value, (bytes, bytearray)) and len(value) >= 1:
-            return value[0] == 1
-        return self._restored_bool()
+        enabled = protocol.dst_enabled(self._coordinator.state)
+        return enabled if enabled is not None else self._restored_bool()
 
     async def async_turn_on(self, **kwargs: Any) -> None:
         """Enable DST."""

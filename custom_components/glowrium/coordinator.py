@@ -28,8 +28,6 @@ from . import cbor, protocol
 from .const import (
     ACTIVATE_MISC_VALUE,
     DOMAIN,
-    DST_OFF,
-    DST_ON,
     INFO_UUID,
     KEY_ACTIVATE_MISC,
     KEY_ACTIVATED,
@@ -54,12 +52,6 @@ from .const import (
     NOTIFY_UUID,
     RAMP_DEFAULT,
     STATE_KEYS,
-    TIMER_BRIGHTNESS,
-    TIMER_END_H,
-    TIMER_END_M,
-    TIMER_GRADUAL,
-    TIMER_START_H,
-    TIMER_START_M,
     WRITE_UUID,
 )
 from .models import GlowriumModel, resolve_model
@@ -190,8 +182,6 @@ _REPORT_TIMEOUT = 3.0
 # is actually wrong. A minute is far below anything the schedule resolves and
 # far above normal drift between connects.
 _CLOCK_TOLERANCE = 60.0
-# 0x05 is year_BE(2), month, day, hour, minute, second.
-_CLOCK_LENGTH = 7
 
 # The batched state request is muted after this many consecutive refusals. One
 # failure means nothing on a weak link - a dropped connection surfaces as the
@@ -357,22 +347,6 @@ def _looks_like_a_refusal(err: Exception) -> bool:
         return err.code in _REFUSAL_CODES
     text = str(err).lower()
     return any(marker in text for marker in _REFUSAL_MARKERS)
-
-
-def _encode_device_time(now: datetime | None = None) -> bytes:
-    """Encode local time as the device clock: year_be(2), month, day, H, M, S."""
-    now = now or dt_util.now()
-    return bytes(
-        [
-            now.year >> 8,
-            now.year & 0xFF,
-            now.month,
-            now.day,
-            now.hour,
-            now.minute,
-            now.second,
-        ]
-    )
 
 
 def _private_at(frame: bytes, at: int) -> tuple[int, int]:
@@ -1959,17 +1933,14 @@ class GlowriumCoordinator:
         when the lamp has not reported one: there is no drift to judge, and a
         blind write would be guessing at what it currently believes.
         """
-        raw = self.state.get(KEY_TIME)
-        if not isinstance(raw, (bytes, bytearray)) or len(raw) < _CLOCK_LENGTH:
-            return
         try:
-            # Naive on purpose: the lamp keeps local wall-clock time and has
-            # no notion of a zone, and it is compared with local time below.
-            reported = datetime(  # noqa: DTZ001
-                (raw[0] << 8) | raw[1], raw[2], raw[3], raw[4], raw[5], raw[6]
-            )
+            reported = protocol.device_time(self.state)
         except ValueError:  # a nonsense date is itself a reason to correct it
             reported = None
+        else:
+            if reported is None:
+                return
+        # Naive, like the clock itself: the lamp keeps local wall-clock time.
         now = dt_util.now().replace(tzinfo=None)
         if reported is not None:
             drift = abs((reported - now).total_seconds())
@@ -1983,7 +1954,9 @@ class GlowriumCoordinator:
             )
         else:
             _LOGGER.debug("%s reported an impossible clock; correcting", self.address)
-        await self._write_raw({KEY_TIME: _encode_device_time(), KEY_TIME_SYNCED: 1})
+        await self._write_raw(
+            {KEY_TIME: protocol.encode_device_time(dt_util.now()), KEY_TIME_SYNCED: 1}
+        )
 
     async def async_activate(self) -> None:
         """Bring up a factory-reset device: clock + flags + enable light output.
@@ -1994,7 +1967,9 @@ class GlowriumCoordinator:
         and its front-panel LEDs blink until this runs. Idempotent when already on.
         """
         await self._write_raw({KEY_ACTIVATE_MISC: ACTIVATE_MISC_VALUE})
-        await self._write_raw({KEY_TIME: _encode_device_time(), KEY_TIME_SYNCED: 1})
+        await self._write_raw(
+            {KEY_TIME: protocol.encode_device_time(dt_util.now()), KEY_TIME_SYNCED: 1}
+        )
         await self._write_raw({KEY_ACTIVATED: True})
         _LOGGER.info("Brought up (activated) %s", self.address)
 
@@ -2102,14 +2077,7 @@ class GlowriumCoordinator:
         default, so a lamp that has not reported yet gets the hour rather than
         a refusal - that keeps the switch usable before priming.
         """
-        reported = self.state.get(KEY_DST)
-        default = DST_ON if is_on else DST_OFF
-        if not isinstance(reported, (bytes, bytearray)) or len(reported) != len(
-            default
-        ):
-            await self._async_write({KEY_DST: default})
-            return
-        await self._async_write({KEY_DST: bytes([int(is_on)]) + bytes(reported[1:])})
+        await self._async_write({KEY_DST: protocol.dst_slot(self.state, is_on)})
 
     async def async_sync_location(self) -> None:
         """Push HA's home coordinates; the device recomputes its circadian curve."""
@@ -2124,31 +2092,27 @@ class GlowriumCoordinator:
     async def async_set_timer_start(self, hour: int, minute: int) -> None:
         """Set the schedule start time."""
         slot = self._require_read(
-            protocol.editable_timer_slot(self.state), "schedule_not_read"
+            protocol.with_schedule_start(self.state, hour, minute), "schedule_not_read"
         )
-        slot[TIMER_START_H], slot[TIMER_START_M] = hour, minute
-        await self._async_write({KEY_TIMER: bytes(slot)})
+        await self._async_write({KEY_TIMER: slot})
 
     async def async_set_timer_end(self, hour: int, minute: int) -> None:
         """Set the schedule end time."""
         slot = self._require_read(
-            protocol.editable_timer_slot(self.state), "schedule_not_read"
+            protocol.with_schedule_end(self.state, hour, minute), "schedule_not_read"
         )
-        slot[TIMER_END_H], slot[TIMER_END_M] = hour, minute
-        await self._async_write({KEY_TIMER: bytes(slot)})
+        await self._async_write({KEY_TIMER: slot})
 
     async def async_set_timer_brightness(self, value: int) -> None:
         """Set the schedule brightness (0..100)."""
         slot = self._require_read(
-            protocol.editable_timer_slot(self.state), "schedule_not_read"
+            protocol.with_schedule_brightness(self.state, value), "schedule_not_read"
         )
-        slot[TIMER_BRIGHTNESS] = max(0, min(100, value))
-        await self._async_write({KEY_TIMER: bytes(slot)})
+        await self._async_write({KEY_TIMER: slot})
 
     async def async_set_timer_gradual(self, minutes: int) -> None:
         """Set the schedule gradual on/off fade duration in minutes."""
         slot = self._require_read(
-            protocol.editable_timer_slot(self.state), "schedule_not_read"
+            protocol.with_schedule_gradual(self.state, minutes), "schedule_not_read"
         )
-        slot[TIMER_GRADUAL : TIMER_GRADUAL + 2] = protocol.be2_minutes_to_bytes(minutes)
-        await self._async_write({KEY_TIMER: bytes(slot)})
+        await self._async_write({KEY_TIMER: slot})

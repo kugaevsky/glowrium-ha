@@ -1,7 +1,6 @@
 """Tests for the Glowrium coordinator's command encoding."""
 
 import asyncio
-from datetime import datetime
 import logging
 import random
 from time import monotonic
@@ -15,7 +14,11 @@ from homeassistant.exceptions import HomeAssistantError
 from homeassistant.util import dt as dt_util
 import pytest
 
-from custom_components.glowrium import cbor, coordinator as coordinator_module
+from custom_components.glowrium import (
+    cbor,
+    coordinator as coordinator_module,
+    protocol,
+)
 from custom_components.glowrium.const import (
     DST_OFF,
     DST_ON,
@@ -45,7 +48,6 @@ from custom_components.glowrium.const import (
 )
 from custom_components.glowrium.coordinator import (
     GlowriumCoordinator,
-    _encode_device_time,
     _for_the_log,
     _parse_device_info,
 )
@@ -292,12 +294,6 @@ async def test_presence_callbacks_notify(hass: HomeAssistant) -> None:
     coordinator._async_on_unavailable(MagicMock())
     assert coordinator._present is False
     assert updates == [1, 1]  # notified on the present flip and on going away
-
-
-def test_encode_device_time() -> None:
-    """Local time encodes as year_be(2), month, day, hour, minute, second."""
-    stamp = datetime(2026, 7, 18, 21, 24, 35)
-    assert _encode_device_time(stamp).hex() == "07ea0712151823"
 
 
 async def test_async_activate_sequence(hass: HomeAssistant) -> None:
@@ -2740,7 +2736,7 @@ async def test_a_clock_that_is_near_enough_is_left_alone(
     resource here.
     """
     coordinator, client = _connected_coordinator(hass)
-    coordinator.state[KEY_TIME] = _encode_device_time()
+    coordinator.state[KEY_TIME] = protocol.encode_device_time(dt_util.now())
 
     await coordinator._async_sync_clock_if_needed()
 
@@ -2757,6 +2753,21 @@ async def test_an_unreadable_clock_is_not_corrected_blind(
     await coordinator._async_sync_clock_if_needed()
 
     client.write_gatt_char.assert_not_awaited()
+
+
+async def test_a_clock_that_is_no_date_is_corrected(
+    hass: HomeAssistant,
+) -> None:
+    """Thirteen months is a report, and a wrong one: it is set right, not left."""
+    coordinator, client = _connected_coordinator(hass)
+    coordinator.state[KEY_TIME] = bytes.fromhex("07ea0d12151823")
+
+    await coordinator._async_sync_clock_if_needed()
+
+    client.write_gatt_char.assert_awaited_once()
+    written = cbor.decode(client.write_gatt_char.await_args.args[1])
+    assert protocol.device_time(written) is not None  # a date the lamp can keep
+    assert written[KEY_TIME_SYNCED] == 1
 
 
 def _in_range() -> object:
