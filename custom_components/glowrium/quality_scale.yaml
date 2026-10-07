@@ -1,0 +1,150 @@
+# Where this integration stands on each rule of Home Assistant's Integration
+# Quality Scale:
+# https://developers.home-assistant.io/docs/core/integration-quality-scale/
+#
+# The rules were read on 2026-10-07: the 54 that were published that day. A
+# rule the scale has gained since is not here until somebody reads it.
+#
+# This is a self-assessment, and nobody outside this project has reviewed
+# it. The scale is kept for the integrations Home Assistant ships. Of a
+# custom integration Home Assistant reports the tier `custom`, whatever the
+# integration does, and hassfest does not read this file. A test holds the
+# file's form (tests/test_quality_scale.py); what the entries claim, only a
+# reader checks.
+#
+# The manifest carries no `quality_scale` key, deliberately: a tier written
+# there would be a claim that nobody has reviewed, and Home Assistant would
+# report `custom` all the same.
+#
+# Where a rule speaks of the documentation, the README is meant.
+rules:
+  # Bronze
+  action-setup:
+    status: exempt
+    comment: Registers no service actions of its own.
+  appropriate-polling:
+    status: exempt
+    comment: Nothing is polled for data; the lamp pushes its state.
+  brands:
+    status: done
+    comment: |
+      Shipped in the integration's `brand` directory, which Home Assistant
+      serves since 2026.3.
+  common-modules: done
+  config-flow-test-coverage: done
+  config-flow: done
+  dependency-transparency: done
+  docs-actions:
+    status: exempt
+    comment: Provides no service actions of its own.
+  docs-conditions:
+    status: exempt
+    comment: Provides no conditions.
+  docs-high-level-description: done
+  docs-installation-instructions: done
+  docs-removal-instructions: done
+  docs-triggers:
+    status: exempt
+    comment: Provides no triggers.
+  entity-event-setup: done
+  entity-unique-id: done
+  has-entity-name: done
+  runtime-data: done
+  test-before-configure:
+    status: todo
+    comment: |
+      The flow offers only lamps heard advertising and does not connect
+      before the entry is made. Waits for the link code to stand on its own
+      (#21); not an exemption.
+  test-before-setup:
+    status: done
+    comment: |
+      Setup continues without the lamp, as the rule allows: entities are
+      unavailable until it is heard, and what it says about itself is read
+      once it is reached. Raises none of the setup exceptions hassfest looks
+      for in core.
+  unique-config-entry: done
+
+  # Silver
+  action-exceptions: done
+  config-entry-unloading: done
+  docs-configuration-parameters:
+    status: exempt
+    comment: There is no options flow.
+  docs-installation-parameters: done
+  entity-unavailable:
+    status: done
+    comment: |
+      Available means the lamp is heard advertising or a link is held. The
+      link is rebuilt in the background, and tying availability to it made
+      every entity flicker on each reconnect.
+  integration-owner: done
+  log-when-unavailable: done
+  parallel-updates: done
+  reauthentication-flow:
+    status: exempt
+    comment: The lamp asks for no authentication.
+  test-coverage: done
+
+  # Gold
+  devices: done
+  diagnostics: done
+  discovery-update-info:
+    status: exempt
+    comment: |
+      There is no network address to update; the entry is keyed by the
+      lamp's Bluetooth address.
+  discovery: done
+  docs-data-update: done
+  docs-examples: done
+  docs-known-limitations: done
+  docs-supported-devices: done
+  docs-supported-functions: done
+  docs-troubleshooting: done
+  docs-use-cases: done
+  dynamic-devices:
+    status: exempt
+    comment: One lamp per config entry, for the life of the entry.
+  entity-category:
+    status: todo
+    comment: |
+      Indicator light, DST and Sync location are in the default category and
+      fit the definition of `config`. Whether they move there is undecided.
+  entity-device-class:
+    status: todo
+    comment: |
+      The two numbers that hold minutes have no `duration` class (#33). The
+      class lets a unit of time be chosen for the entity, and the value
+      remembered from before a restart would then be read as minutes whatever
+      unit it was shown in. Whether to take the class so, or mend that first,
+      is undecided. No class fits what the other entities are.
+  entity-disabled-by-default:
+    status: todo
+    comment: Whether the two coordinate sensors start disabled is undecided.
+  entity-translations:
+    status: done
+    comment: |
+      The lighting-mode names are the vendor's English ones in every
+      language, on purpose.
+  exception-translations: done
+  icon-translations: done
+  reconfiguration-flow:
+    status: exempt
+    comment: |
+      The only thing the flow asks is the lamp's address, which is the
+      entry's unique id; changing it means a new entry.
+  repair-issues: done
+  stale-devices:
+    status: exempt
+    comment: One lamp per config entry; it goes with the entry.
+
+  # Platinum
+  async-dependency: done
+  inject-websession:
+    status: exempt
+    comment: Bluetooth; no HTTP requests.
+  strict-typing:
+    status: done
+    comment: |
+      Checked with `mypy --strict` in CI; core's `.strict-typing` list has no
+      counterpart for a custom integration.

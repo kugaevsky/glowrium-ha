@@ -43,6 +43,12 @@ requires.
 - **Translations:** `strings.json` is the source of truth; `translations/{en,ru,zh-Hans,es,de,fr}.json`
   must stay key-for-key in sync (hassfest checks this).
 - **Manifest:** key order follows hassfest; bump `version` when cutting a release.
+- **Quality scale:** `custom_components/glowrium/quality_scale.yaml` records where the
+  integration stands on each rule of Home Assistant's
+  [Integration Quality Scale](https://developers.home-assistant.io/docs/core/integration-quality-scale/),
+  in the form core integrations use. It is a self-assessment - neither Home Assistant nor
+  hassfest reads it for a custom integration, and a test holds only its form - so a change that
+  alters where a rule stands updates the file with it.
 - **No blocking I/O in the event loop.**
 
 ## Adding a device model
