@@ -17,6 +17,7 @@ from homeassistant.core import (
     State,
     callback,
 )
+from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers import device_registry as dr, entity_registry as er
 from homeassistant.helpers.event import async_track_state_change_event
 from homeassistant.helpers.icon import async_get_icons
@@ -826,6 +827,41 @@ async def test_every_control_reaches_the_command_it_stands_for(
     await hass.services.async_call(domain, service, data, blocking=True)
 
     getattr(coordinator, method).assert_awaited_once_with(*args)
+
+
+async def test_syncing_a_home_that_was_never_set_writes_nothing_and_says_why(
+    hass: HomeAssistant,
+) -> None:
+    """Zero and zero is what Home Assistant holds when it was given no home.
+
+    It holds both coordinates as numbers, always, so the check for a missing
+    one never fired: the press went through, the lamp was told it stands where
+    the equator meets the prime meridian, and its Circadian program followed
+    the sun of that place - with nothing to say so but two zeros on the
+    diagnostic sensors.
+    """
+    entry = await _setup_without_bluetooth(hass)
+    coordinator = entry.runtime_data
+    client = MagicMock()
+    client.is_connected = True
+    client.write_gatt_char = AsyncMock()
+    client.disconnect = AsyncMock()
+    coordinator._client = client
+    hass.config.latitude = 0
+    hass.config.longitude = 0
+    domain, service, data = _call("button", "press", "_sync_location")
+
+    with pytest.raises(HomeAssistantError) as err:
+        await hass.services.async_call(domain, service, data, blocking=True)
+
+    assert err.value.translation_domain == DOMAIN
+    assert err.value.translation_key == "home_location_not_set"
+    # What the user is shown is the message, with the lamp named in it - not
+    # the key, which is what Home Assistant falls back on for one it lacks.
+    assert "Glowrium-G7_1234" in str(err.value)
+    client.write_gatt_char.assert_not_awaited()
+    assert KEY_LATITUDE not in coordinator.state
+    assert KEY_LONGITUDE not in coordinator.state
 
 
 async def test_a_value_remembered_in_a_shape_it_no_longer_has_is_let_go(

@@ -2143,13 +2143,28 @@ class GlowriumCoordinator:
         await self._async_write({KEY_DST: protocol.with_dst(self.state, is_on)})
 
     async def async_sync_location(self) -> None:
-        """Push HA's home coordinates; the device recomputes its circadian curve."""
+        """Push HA's home coordinates; the device recomputes its circadian curve.
+
+        Home Assistant holds a latitude and a longitude always, as numbers:
+        there is no missing one to look for, and both are zero when it was
+        given no position. Zero and zero is therefore refused, and the user
+        told to set a home first - written, it puts the lamp where the equator
+        meets the prime meridian and its Circadian program under the sun of
+        that place, after a press that said it had worked. One zero is a real
+        place, on the equator or on the prime meridian, and is written.
+
+        Without Home Assistant (``tools/bench.py``) there is no home to push.
+        """
         if self.hass is None:
             return
         lat = self.hass.config.latitude
         lon = self.hass.config.longitude
-        if lat is None or lon is None:
-            return
+        if lat == 0 and lon == 0:
+            raise HomeAssistantError(
+                translation_domain=DOMAIN,
+                translation_key="home_location_not_set",
+                translation_placeholders={"name": self.name},
+            )
         await self._async_write({KEY_LATITUDE: float(lat), KEY_LONGITUDE: float(lon)})
 
     async def async_set_timer_start(self, hour: int, minute: int) -> None:

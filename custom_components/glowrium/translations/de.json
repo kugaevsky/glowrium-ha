@@ -92,6 +92,9 @@
     "cannot_connect": {
       "message": "Der Befehl konnte nicht über Bluetooth an {name} gesendet werden. Das Gerät ist möglicherweise außer Reichweite oder der Bluetooth-Adapter ist ausgelastet; ein Bluetooth-Proxy in der Nähe des Geräts hilft meistens."
     },
+    "home_location_not_set": {
+      "message": "Der Standort konnte nicht an {name} gesendet werden: In Home Assistant ist kein Standort des Zuhauses festgelegt (Breiten- und Längengrad sind beide null). Zuerst den Standort des Zuhauses in den Einstellungen von Home Assistant festlegen, dann erneut versuchen."
+    },
     "lighting_mode_not_read": {
       "message": "Änderung noch nicht möglich: {name} hat seinen aktuellen Lichtmodus noch nicht gemeldet. Er erscheint, sobald die Lampe verbunden ist."
     },

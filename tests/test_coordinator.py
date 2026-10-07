@@ -255,6 +255,70 @@ async def test_sync_location(hass: HomeAssistant) -> None:
     )
 
 
+@pytest.mark.parametrize("zero", [0, 0.0], ids=["whole numbers", "floats"])
+async def test_sync_location_refuses_a_home_that_was_never_set(
+    hass: HomeAssistant, zero: float
+) -> None:
+    """Zero and zero is no position: nothing is written, and the user is told.
+
+    Home Assistant holds a latitude and a longitude always, and both are zero
+    when it was given neither - the whole number it starts out with, or the
+    float a configuration that says zero is read as. Written, they are a
+    place - where the equator meets the prime meridian - and the lamp works
+    its sunrise and sunset out for it.
+    """
+    coordinator, client = _connected_coordinator(hass)
+    hass.config.latitude = zero
+    hass.config.longitude = zero
+    with pytest.raises(HomeAssistantError) as err:
+        await coordinator.async_sync_location()
+    assert err.value.translation_key == "home_location_not_set"
+    assert err.value.translation_placeholders == {"name": "Glowrium-G7"}
+    client.write_gatt_char.assert_not_awaited()
+    assert KEY_LATITUDE not in coordinator.state
+    assert KEY_LONGITUDE not in coordinator.state
+
+
+@pytest.mark.parametrize(
+    ("latitude", "longitude"),
+    [(0, 65.4321), (12.3456, 0), (0.25, -0.25)],
+    ids=["on the equator", "on the prime meridian", "a quarter of a degree off both"],
+)
+async def test_sync_location_writes_any_home_but_zero_and_zero(
+    hass: HomeAssistant, latitude: float, longitude: float
+) -> None:
+    """Only zero and zero is no position; anything else is a place, and written.
+
+    One zero is on the equator or on the prime meridian, and a home close to
+    where the two cross is a home. Each goes out as a float64, whole number
+    or not: the zero here is the whole number Home Assistant starts out with.
+    """
+    coordinator, client = _connected_coordinator(hass)
+    hass.config.latitude = latitude
+    hass.config.longitude = longitude
+    await coordinator.async_sync_location()
+    client.write_gatt_char.assert_awaited_once_with(
+        WRITE_UUID,
+        cbor.encode({0x0A: float(latitude), 0x0B: float(longitude)}),
+        response=True,
+    )
+
+
+async def test_sync_location_writes_nothing_without_home_assistant() -> None:
+    """The bench has no home to hand over, and the command says nothing of it.
+
+    tools/bench.py builds the real coordinator with ``hass=None``; the command
+    returns there as it always did, whatever else it now refuses.
+    """
+    coordinator = GlowriumCoordinator(None, "AA:BB:CC:DD:EE:FF", "bench")
+    client = MagicMock()
+    client.is_connected = True
+    client.write_gatt_char = AsyncMock()
+    coordinator._client = client
+    await coordinator.async_sync_location()
+    client.write_gatt_char.assert_not_awaited()
+
+
 async def test_set_timer_start(hass: HomeAssistant) -> None:
     """Setting the schedule start edits only the start bytes of the 0x11 slot."""
     coordinator, client = _connected_coordinator(hass)

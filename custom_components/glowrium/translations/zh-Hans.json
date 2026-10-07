@@ -92,6 +92,9 @@
     "cannot_connect": {
       "message": "无法通过蓝牙向 {name} 发送命令。设备可能超出范围，或蓝牙适配器繁忙；在设备附近部署蓝牙代理通常可以解决此问题。"
     },
+    "home_location_not_set": {
+      "message": "无法向 {name} 发送位置：Home Assistant 尚未设置家庭位置（纬度和经度均为零）。请先在 Home Assistant 的设置中设置家庭位置，然后重试。"
+    },
     "lighting_mode_not_read": {
       "message": "暂时无法更改：{name} 尚未报告当前的照明模式。灯具连接后即会显示。"
     },

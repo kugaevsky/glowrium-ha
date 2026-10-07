@@ -71,6 +71,17 @@ All notable changes to this project are documented here. The format is based on
   the change to it, for an automation to act on. The remembered mode now
   stands in only until a lighting mode has been reported or set
   ([#30](https://github.com/kugaevsky/glowrium-ha/issues/30)).
+- **Sync location writes nothing when Home Assistant holds no home
+  position.** Home Assistant holds a latitude and a longitude always, and
+  both are zero when it was given neither - so the check for a missing
+  coordinate never fired. The press succeeded, and the lamp was told it
+  stands where the equator meets the prime meridian: its Circadian program
+  then followed the sun of that place. With both at zero the press now
+  fails, with a message in all six languages that asks for the home
+  location to be set in Home Assistant first. A home with one coordinate
+  at zero - on the equator, or on the prime meridian - is a real place, and
+  is written as before
+  ([#34](https://github.com/kugaevsky/glowrium-ha/issues/34)).
 
 ### Changed
 
