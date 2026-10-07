@@ -43,23 +43,24 @@ class GlowriumConfigFlow(ConfigFlow, domain=DOMAIN):
         """Confirm a device discovered by Bluetooth.
 
         The dialog is rendered as Markdown and the name comes off the air,
-        so the question is asked with the name as text and nothing more.
-        A lamp that advertises no name goes by its address, which is what
-        the Bluetooth stack made of it and stays as it is; so does the
-        title, which names the entry and is not Markdown.
+        so the question - and the lamp's line among the discovered devices -
+        names it as text and nothing more. The entry itself is titled with
+        the name as advertised: that is what the lamp is recognised by
+        afterwards.
         """
         address = self._discovery_info.address
         title = self._discovery_info.name or address
+        # A lamp that advertises no name is given its address for one, and an
+        # address is what the Bluetooth stack made of it: cleaned, it would
+        # only lose its colons.
+        shown = title if title == address else identity.as_text(title)
         if user_input is not None:
             return self.async_create_entry(title=title, data={CONF_ADDRESS: address})
 
         self._set_confirm_only()
-        self.context["title_placeholders"] = {"name": title}
+        self.context["title_placeholders"] = {"name": shown}
         return self.async_show_form(
-            step_id="bluetooth_confirm",
-            description_placeholders={
-                "name": title if title == address else identity.as_text(title)
-            },
+            step_id="bluetooth_confirm", description_placeholders={"name": shown}
         )
 
     async def async_step_user(

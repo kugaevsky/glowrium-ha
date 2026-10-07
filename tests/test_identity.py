@@ -43,7 +43,7 @@ def test_a_model_id_is_the_family_a_dash_a_letter_and_three_digits(
     claimed: object, is_one: bool
 ) -> None:
     """From end to end: a field with something glued to it is not a model id."""
-    assert identity.model_id(claimed) == (claimed if is_one else None)
+    assert identity.as_model_id(claimed) == (claimed if is_one else None)
 
 
 @pytest.mark.parametrize(
@@ -65,4 +65,25 @@ def test_a_firmware_is_one_to_three_small_numbers(
     claimed: object, is_one: bool
 ) -> None:
     """From end to end, with dots between them and nothing else."""
-    assert identity.firmware(claimed) == (claimed if is_one else None)
+    assert identity.as_firmware(claimed) == (claimed if is_one else None)
+
+
+@pytest.mark.parametrize(
+    ("model", "firmware", "said"),
+    [
+        ("Glowrium-C051", "4", "model Glowrium-C051, firmware 4"),
+        (None, None, "model unknown, firmware unknown"),  # not read yet
+        ("", "", "model unknown, firmware unknown"),
+        ("Glowrium-C051", None, "model Glowrium-C051, firmware unknown"),
+        (
+            "Glowrium-C051;devid:CST-0001",
+            "4,mac:A1B2C3",
+            "model not as expected, firmware not as expected",
+        ),
+    ],
+)
+def test_a_line_meant_for_posting_says_three_things_of_a_model_or_a_firmware(
+    model: str | None, firmware: str | None, said: str
+) -> None:
+    """What it is, that it is not known yet, or that it is not what it claims."""
+    assert identity.described(model, firmware) == said

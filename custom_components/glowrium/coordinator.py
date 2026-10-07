@@ -392,13 +392,6 @@ def _for_the_log(frame: bytes) -> str:
     )
 
 
-def _said(read: Callable[[object], str | None], claimed: str | None) -> str:
-    """Return what the log says of a model id or a firmware version."""
-    if not claimed:
-        return "unknown"
-    return read(claimed) or "not as expected"
-
-
 def _named(listener: Callable[[], None]) -> str:
     """Return what to call ``listener`` in the log: its entity, if it has one."""
     entity_id = getattr(getattr(listener, "__self__", None), "entity_id", None)
@@ -574,18 +567,15 @@ class GlowriumCoordinator:
         """Device id (serial) from the device-info string."""
         return self.device_info.get("devid")
 
-    def _model_and_firmware(self) -> tuple[str, str]:
+    def _model_and_firmware(self) -> str:
         """Return the model id and the firmware as a warning may say them.
 
         A warning that asks to be reported gets posted. So each is said only
-        when it is what it claims to be (see ``identity``): a lamp that glues
-        the fields of its device-info string together would otherwise put
-        its serial number here.
+        when it is what it claims to be (``identity.described``): a lamp that
+        glues the fields of its device-info string together would otherwise
+        put its serial number here.
         """
-        return (
-            _said(identity.model_id, self.model_id),
-            _said(identity.firmware, self.sw_version),
-        )
+        return identity.described(self.model_id, self.sw_version)
 
     @property
     def _plain_name(self) -> str:
@@ -643,6 +633,11 @@ class GlowriumCoordinator:
 
     # Decoded read accessors - the byte layouts they wrap live in protocol.py,
     # so entities read meaningful values instead of the raw state dict.
+
+    @property
+    def brightness_percent(self) -> float | None:
+        """Brightness as a level from 0 to 100, or None if not read or no level."""
+        return protocol.brightness_percent(self.state)
 
     @property
     def ramp_minutes(self) -> int | None:
@@ -740,18 +735,26 @@ class GlowriumCoordinator:
             try:
                 update_callback()
             except Exception:  # whatever it raised, the rest are still told
-                if update_callback in self._listeners_failing:
+                again = update_callback in self._listeners_failing
+                # The round is told from a copy: one that left during it is
+                # still called, and is not to be remembered.
+                if update_callback in self._listeners:
+                    self._listeners_failing.add(update_callback)
+                if again:
+                    # With its trace: it may not be the failure that was said.
                     _LOGGER.debug(
                         "%s: %s failed again to take in a change",
                         self.address,
                         _named(update_callback),
+                        exc_info=True,
                     )
                     continue
-                self._listeners_failing.add(update_callback)
                 _LOGGER.exception(
                     "%s: %s failed to take in a change and shows what it showed "
                     "before; the others were told. Said once, until it has "
-                    "managed again. Please report this with the trace below",
+                    "managed again. Please report this with the trace below. "
+                    "Look the trace over before posting it: its wording is not "
+                    "this integration's, and it may quote a value",
                     self.address,
                     _named(update_callback),
                 )
@@ -1587,12 +1590,12 @@ class GlowriumCoordinator:
             self._state_request_given_up = served_a_cooldown
             self._state_request_muted_until = monotonic() + _STATE_REQUEST_COOLDOWN
             _LOGGER.warning(
-                "%s (model %s, firmware %s) refused the batched state request "
+                "%s (%s) refused the batched state request "
                 "%d times in a row, most recently: %s. %s "
                 "Commands still work; properties a read of the state does not "
                 "carry stay unknown. Please report this model",
                 self.address,
-                *self._model_and_firmware(),
+                self._model_and_firmware(),
                 _STATE_REQUEST_ATTEMPTS,
                 err,
                 "Not asking again this session."
@@ -1636,12 +1639,12 @@ class GlowriumCoordinator:
             return
         self._trailing_warned = True
         _LOGGER.warning(
-            "%s (model %s, firmware %s) sent a frame with %d trailing bytes "
+            "%s (%s) sent a frame with %d trailing bytes "
             "and it was dropped: %s. The frame declared less than it carried, "
             "so accepting the remainder could mean acting on a corrupt state. "
             "Please report this frame - it is exactly the hex dump needed. %s",
             self.address,
-            *self._model_and_firmware(),
+            self._model_and_firmware(),
             count,
             _for_the_log(data),
             _BLANKED,
@@ -1666,12 +1669,12 @@ class GlowriumCoordinator:
             return
         self._unreadable_warned = True
         _LOGGER.warning(
-            "%s (model %s, firmware %s) sent a frame with an item this "
+            "%s (%s) sent a frame with an item this "
             "integration cannot read (%s): %s. The %d properties ahead of it "
             "were kept; whatever follows it could not be found. Please report "
             "this frame - it is exactly the hex dump needed. %s",
             self.address,
-            *self._model_and_firmware(),
+            self._model_and_firmware(),
             err,
             _for_the_log(data),
             len(err.ahead),

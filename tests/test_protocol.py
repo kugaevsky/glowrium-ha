@@ -8,6 +8,7 @@ from custom_components.glowrium import protocol
 from custom_components.glowrium.const import (
     DST_OFF,
     DST_ON,
+    KEY_BRIGHTNESS,
     KEY_DST,
     KEY_RAMP,
     KEY_TIME,
@@ -177,3 +178,26 @@ def test_a_clock_that_is_no_date_says_so() -> None:
     """Thirteen months is a report, and a wrong one: the caller corrects it."""
     with pytest.raises(ValueError, match="month"):
         protocol.device_time({KEY_TIME: bytes.fromhex("07ea0d12151823")})
+
+
+def test_a_brightness_is_a_number_from_zero_to_a_hundred() -> None:
+    """Whole or not - and nothing else is a level at all."""
+    for level in (0, 70, 100, 12.5, 70.0):
+        assert protocol.brightness_percent({KEY_BRIGHTNESS: level}) == level
+    not_a_level = (
+        float("inf"),
+        float("-inf"),
+        float("nan"),
+        100.5,
+        101,
+        -1,
+        True,
+        False,
+        "70",
+        b"\x46",
+        [70],
+        None,
+    )
+    for odd in not_a_level:
+        assert protocol.brightness_percent({KEY_BRIGHTNESS: odd}) is None
+    assert protocol.brightness_percent({}) is None

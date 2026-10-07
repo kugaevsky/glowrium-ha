@@ -42,15 +42,16 @@ All notable changes to this project are documented here. The format is based on
 - **A brightness that is no percentage is not shown as one.** A lamp - or
   whatever answers at its address - that reported `inf` or `nan` made the
   light raise, and 150 came out as a level Home Assistant has no such thing
-  as. A level is a whole number from 0 to 100; anything else leaves the
-  light's brightness unknown
+  as. A level is a number from 0 to 100; anything else leaves the light's
+  brightness unknown
   ([#23](https://github.com/kugaevsky/glowrium-ha/issues/23)).
 - **The dialog for a discovered lamp shows its name as text.** The question
   "Do you want to set up …?" is rendered as Markdown, and the name in it is
   whatever the lamp advertised - so a name could carry a link or an image
   into a question Home Assistant itself is asking. It goes in now as the
-  repair for a stuck Bluetooth stack already puts it: letters, digits,
-  spaces, dashes and underscores
+  repair for a stuck Bluetooth stack already puts it - letters, digits,
+  spaces, dashes and underscores - and so does the lamp's line among the
+  discovered devices. The entry is still titled with the name as advertised
   ([#23](https://github.com/kugaevsky/glowrium-ha/issues/23)).
 - **A warning names the model and the firmware only when they are what they
   claim to be.** The three warnings that ask to be reported - a refused
@@ -58,7 +59,9 @@ All notable changes to this project are documented here. The format is based on
   cannot be read - said both as the lamp gave them. A lamp that glues the
   fields of its device-info string together would have put its serial
   number there. Each is now held to the shape the diagnostics file already
-  holds it to, and is `not as expected` otherwise
+  holds it to, and is `not as expected` otherwise. A model whose id has
+  another shape is therefore not named in such a warning; its device page
+  still shows it
   ([#23](https://github.com/kugaevsky/glowrium-ha/issues/23)).
 
 ### Changed

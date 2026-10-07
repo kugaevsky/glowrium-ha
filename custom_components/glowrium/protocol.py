@@ -22,6 +22,7 @@ from typing import Any
 from .const import (
     DST_OFF,
     DST_ON,
+    KEY_BRIGHTNESS,
     KEY_DST,
     KEY_RAMP,
     KEY_TIME,
@@ -47,6 +48,27 @@ def be2_minutes_to_bytes(minutes: int) -> bytes:
 
 def _be2_to_minutes(raw: bytes) -> int:
     return int.from_bytes(raw[:2], "big") // 60
+
+
+# --- brightness (0x08) ---
+
+_PERCENT = 100
+
+
+def brightness_percent(state: dict[int, Any]) -> float | None:
+    """Decode the brightness (0x08) as a level from 0 to 100, or None.
+
+    None when it was never read, and when what was reported is no level: a
+    flag, a string, a number out of range - or ``inf`` or ``nan``, which a
+    float can hold and which cannot even be rounded. A level need not be a
+    whole number: the G7 reports one, and nothing says every model does.
+    """
+    value = state.get(KEY_BRIGHTNESS)
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    if not 0 <= value <= _PERCENT:  # false for nan, and for both infinities
+        return None
+    return value
 
 
 # --- ramp (0x2f) ---

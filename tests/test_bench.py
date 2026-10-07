@@ -6,7 +6,10 @@ else when the lamp does something nobody expected.
 """
 
 import importlib.util
+import io
+import logging
 from pathlib import Path
+import sys
 from types import ModuleType
 
 import pytest
@@ -41,7 +44,12 @@ def bench() -> ModuleType:
     assert spec is not None
     assert spec.loader is not None
     module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
+    # A dataclass looks its own module up by name while it is being defined.
+    sys.modules[spec.name] = module
+    try:
+        spec.loader.exec_module(module)
+    finally:
+        del sys.modules[spec.name]
     return module
 
 
@@ -73,8 +81,8 @@ def test_the_report_leaves_out_what_places_or_identifies_the_lamp(
     """A report can be shown to somebody else as it is.
 
     Where the lamp is, the sunrise and sunset times it works out from that,
-    its serial number and its address are not in it. That they are there is:
-    whoever reads the report can see the lamp has them.
+    and its serial number are not in it. That they are there is: whoever
+    reads the report can see the lamp has them.
     """
     bench._report(_a_lamp(), None)
     bench._settle_curve({}, _CURVE, _CURVE)
@@ -96,7 +104,7 @@ def test_the_report_shows_everything_when_asked_to(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Next to one's own lamp, the coordinates are what one came to see."""
-    monkeypatch.setattr(bench._Private, "shown", True)
+    monkeypatch.setattr(bench._PRIVACY, "show", True)
 
     bench._report(_a_lamp(), None)
     bench._settle_curve({}, _CURVE, _CURVE)
@@ -111,22 +119,81 @@ def test_an_address_is_printed_by_its_end(
 ) -> None:
     """Enough to tell two lamps apart in a scan, and not the address."""
     assert bench._address(_ADDRESS) == "…EE:FF"
-    monkeypatch.setattr(bench._Private, "shown", True)
+    monkeypatch.setattr(bench._PRIVACY, "show", True)
     assert bench._address(_ADDRESS) == _ADDRESS
 
 
-def test_a_model_or_firmware_with_something_glued_to_it_is_not_printed(
-    bench: ModuleType, capsys: pytest.CaptureFixture[str]
+@pytest.mark.parametrize(
+    ("info", "said"),
+    [
+        (
+            f"pkey:Glowrium-C051,devid:{_SERIAL};version:4,mac:{_IN_INFO};;",
+            "model not as expected, firmware not as expected",
+        ),
+        # The lamp said nothing of its firmware: that is not the same thing.
+        ("pkey:Glowrium-C051;;", "model Glowrium-C051, firmware unknown"),
+    ],
+)
+def test_a_model_and_a_firmware_are_printed_as_the_log_says_them(
+    bench: ModuleType, capsys: pytest.CaptureFixture[str], info: str, said: str
 ) -> None:
     """The device-info string is the lamp's, and so is where its fields end."""
     coordinator = _a_lamp()
-    coordinator.device_info = _parse_device_info(
-        f"pkey:Glowrium-C051,devid:{_SERIAL};version:4,mac:{_IN_INFO};;".encode()
-    )
+    coordinator.device_info = _parse_device_info(info.encode())
 
     bench._report(coordinator, None)
 
     printed = capsys.readouterr().out
     assert _SERIAL not in printed
     assert _IN_INFO not in printed
-    assert "model not as expected, firmware not as expected" in printed
+    assert said in printed
+
+
+def test_nothing_that_is_printed_carries_the_lamps_whole_address(
+    bench: ModuleType, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Not the bench's own lines, and not the ones it did not word.
+
+    The integration names the lamp by its address in every line of its log -
+    "is out of reach" comes at the end of every run - and the Bluetooth stack
+    puts it into its errors. Both go through the streams the bench prints to,
+    so that is where the address is taken out.
+    """
+    monkeypatch.setattr(bench._PRIVACY, "address", _ADDRESS)
+    printed = io.StringIO()
+    out = bench._Masked(printed)
+    handler = logging.StreamHandler(out)
+    logger = logging.getLogger("custom_components.glowrium.test_bench")
+    logger.addHandler(handler)
+    logger.setLevel(logging.INFO)
+    try:
+        logger.info("bench (%s) is out of reach", _ADDRESS)
+        out.write(f"connect failed: BleakError('{_ADDRESS} was not found')\n")
+        # BlueZ names the device by a path, and not every line shouts.
+        out.write("/org/bluez/hci0/dev_AA_BB_CC_DD_EE_FF is gone\n")
+        out.write(f"no route to {_ADDRESS.lower()}\n")
+    finally:
+        logger.removeHandler(handler)
+
+    said = printed.getvalue()
+    assert _ADDRESS.lower() not in said.lower()
+    assert "AA_BB_CC" not in said
+    assert said.count("…EE:FF") == 3
+    assert "dev_…EE_FF is gone" in said
+
+    # Asked for everything, a line goes out exactly as it came.
+    monkeypatch.setattr(bench._PRIVACY, "show", True)
+    out.write(f"connecting to bench ({_ADDRESS})\n")
+    out.write(f"no route to {_ADDRESS.lower()}\n")
+    assert _ADDRESS in printed.getvalue()
+    assert _ADDRESS.lower() in printed.getvalue()
+
+
+def test_before_the_lamp_is_found_there_is_no_address_to_take_out(
+    bench: ModuleType,
+) -> None:
+    """An empty address would match everywhere."""
+    assert bench._PRIVACY.address == ""
+    printed = io.StringIO()
+    bench._Masked(printed).write("scanning 10s…\n")
+    assert printed.getvalue() == "scanning 10s…\n"

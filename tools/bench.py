@@ -9,12 +9,12 @@ the characteristic carry every key" get answered without guessing.
     .venv/bin/python tools/bench.py --watch 5  # ...then follow notifications
     .venv/bin/python tools/bench.py --clock    # verify the clock resync, both branches
 
-Its own report can be shown to somebody else as it is: where the lamp is, the
-sunrise and sunset times it works out from that, its serial number and its
-address are left out, and --show-private puts them back. Not so the lines
-around it: an error is printed as the Bluetooth stack worded it, and the
-integration's own log (--debug) names the lamp by its address as it always
-does.
+What it prints can be shown to somebody else as it is: where the lamp is, the
+sunrise and sunset times it works out from that and its serial number are
+left out, and its address is printed by its last characters only - in the
+bench's own lines, in the integration's log and in the errors of the
+Bluetooth stack alike. The name the lamp advertises is printed as it is.
+--show-private puts everything back.
 
 It never writes a setting of its own accord. The bring-up sequence is disabled
 outright rather than relied upon not to trigger: a bench should not be able to
@@ -36,10 +36,13 @@ from __future__ import annotations
 import argparse
 import asyncio
 import contextlib
+from dataclasses import dataclass
 from datetime import datetime, timedelta
 import logging
 from pathlib import Path
+import re
 import sys
+from typing import TextIO
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
@@ -97,31 +100,66 @@ _PRIVATE_KEYS = frozenset({KEY_LATITUDE, KEY_LONGITUDE, _CURVE_KEY})
 _NOT_SHOWN = "not shown; --show-private prints it"
 
 
-class _Private:
-    """Whether what places or identifies the lamp is printed.
+@dataclass
+class _Privacy:
+    """What of the lamp's is printed.
 
-    Not by default: a report is what gets shown to somebody else when the
-    lamp does something nobody expected. Set from --show-private.
+    Not what places or identifies it, by default: a report is what gets
+    shown to somebody else when the lamp does something nobody expected.
     """
 
-    shown = False
+    show: bool = False  # --show-private
+    address: str = ""  # the lamp's, once it is found
 
 
-def _value(key: int, raw: object) -> object:
+_PRIVACY = _Privacy()
+
+
+def _as_printed(key: int, raw: object) -> object:
     """Return the value under ``key`` as it is printed."""
-    if key in _PRIVATE_KEYS and not _Private.shown:
+    if key in _PRIVATE_KEYS and not _PRIVACY.show:
         return f"({_NOT_SHOWN})"
     return raw.hex() if isinstance(raw, (bytes, bytearray)) else raw
 
 
-def _keyed(key: int, raw: object) -> str:
+def _state_line(key: int, raw: object) -> str:
     """Return one line of a listing of the state: the id, its name, its value."""
-    return f"0x{key:02x} {_KEY_NAMES.get(key, '?'):<14} {_value(key, raw)}"
+    return f"0x{key:02x} {_KEY_NAMES.get(key, '?'):<14} {_as_printed(key, raw)}"
 
 
 def _address(address: str) -> str:
-    """Return ``address`` as it is printed: by its end, unless asked for whole."""
-    return address if _Private.shown else f"…{address[-5:]}"
+    """Return ``address`` as it is printed: by its end, unless asked for whole.
+
+    The end is enough to tell two lamps apart in a scan, and is no more
+    than the name a lamp advertises usually ends with.
+    """
+    return address if _PRIVACY.show else f"…{address[-5:]}"
+
+
+class _Masked:
+    """A stream on which the lamp's address is printed by its end.
+
+    Everything the bench prints goes through one - its own lines, the
+    integration's log, which names the lamp by its address in every line,
+    and the errors of the Bluetooth stack, which were worded elsewhere. The
+    address is taken out here because no line can be trusted to leave it
+    out: BlueZ also spells it with underscores, in the path of the device.
+    """
+
+    def __init__(self, stream: TextIO) -> None:
+        self._stream = stream
+
+    def write(self, text: str) -> int:
+        whole = _PRIVACY.address
+        if whole and not _PRIVACY.show:
+            for spelt in (whole, whole.replace(":", "_")):
+                text = re.sub(
+                    re.escape(spelt), _address(spelt), text, flags=re.IGNORECASE
+                )
+        return self._stream.write(text)
+
+    def __getattr__(self, name: str) -> object:
+        return getattr(self._stream, name)
 
 
 def _device_info(coordinator: GlowriumCoordinator) -> str:
@@ -134,11 +172,10 @@ def _device_info(coordinator: GlowriumCoordinator) -> str:
     info = coordinator.device_info
     if not info:
         return "(none)"
-    if _Private.shown:
+    if _PRIVACY.show:
         return str(info)
-    model = identity.model_id(coordinator.model_id) or "not as expected"
-    firmware = identity.firmware(coordinator.sw_version) or "not as expected"
-    return f"model {model}, firmware {firmware}; {len(info)} fields ({_NOT_SHOWN})"
+    said = identity.described(coordinator.model_id, coordinator.sw_version)
+    return f"{said}; {len(info)} fields ({_NOT_SHOWN})"
 
 
 async def _find(seconds: float) -> object | None:
@@ -171,7 +208,7 @@ def _report(coordinator: GlowriumCoordinator, from_read: set[int] | None) -> Non
     print(f"\ndevice-info: {_device_info(coordinator)}")
     print(f"keys reported: {len(state)}")
     for key in sorted(state):
-        print(f"  {_keyed(key, state[key])}")
+        print(f"  {_state_line(key, state[key])}")
     if from_read is not None:
         gap = [k for k in STATE_KEYS if k not in from_read]
         print(f"\na read of facebd02 alone carried {len(from_read)} keys")
@@ -326,7 +363,7 @@ async def _probe_dst(coordinator: GlowriumCoordinator) -> None:
     if moved:
         print("  other keys the lamp recomputed while the flag moved:")
         for key, value in sorted(moved.items()):
-            print(f"    {_keyed(key, value)}")
+            print(f"    {_state_line(key, value)}")
     else:
         print(
             "  nothing else the lamp reports changed - the flag is stored, not applied"
@@ -516,7 +553,7 @@ _CURVE_DATE_SHIFT = timedelta(days=91)
 def _curve(raw: object) -> str:
     """Render 0x34 as wall-clock times - or as how many, unless asked for them."""
     readable = isinstance(raw, (bytes, bytearray)) and raw and not len(raw) % 4
-    if not _Private.shown:
+    if not _PRIVACY.show:
         if not readable:
             return "(unreadable)"
         return f"({len(raw) // 4} times, {_NOT_SHOWN})"
@@ -732,7 +769,9 @@ def _parse_args() -> argparse.Namespace:
 async def main() -> int:
     """Connect once, prime, report, and optionally follow notifications."""
     args = _parse_args()
-    _Private.shown = args.show_private
+    _PRIVACY.show = args.show_private
+    # Before logging is set up: its handler keeps the stream it finds.
+    sys.stdout, sys.stderr = _Masked(sys.stdout), _Masked(sys.stderr)
 
     logging.basicConfig(
         level=logging.DEBUG if args.debug else logging.INFO,
@@ -753,6 +792,7 @@ async def main() -> int:
         print("no Glowrium advertising - move closer, or check the vendor app is off")
         return 1
 
+    _PRIVACY.address = device.address
     coordinator = GlowriumCoordinator(None, device.address, device.name)
     coordinator._ble_device = lambda: device  # noqa: SLF001
     # The bench never provisions anything. Saying so here beats trusting that
@@ -798,7 +838,7 @@ async def main() -> int:
         changed = {k: v for k, v in coordinator.state.items() if before.get(k) != v}
         print(f"changed while watching: {len(changed)}")
         for key, raw in sorted(changed.items()):
-            print(f"  {_keyed(key, raw)}")
+            print(f"  {_state_line(key, raw)}")
 
     if args.commands:
         await _exercise_commands(coordinator)

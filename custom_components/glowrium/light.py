@@ -9,7 +9,7 @@ from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 
 from . import GlowriumConfigEntry
-from .const import KEY_BRIGHTNESS, KEY_POWER
+from .const import KEY_POWER
 from .coordinator import GlowriumCoordinator
 from .entity import GlowriumEntity
 
@@ -57,17 +57,12 @@ class GlowriumLight(GlowriumEntity, LightEntity):
     def brightness(self) -> int | None:
         """Return brightness on HA's 0-255 scale (device uses 0-100).
 
-        A level is a whole number from 0 to 100, which is also how the
-        diagnostics read it. Anything else under the id is no level: a float
-        can be ``inf`` or ``nan``, which cannot be rounded at all, and 150
-        would come out as a brightness Home Assistant has no such thing as.
+        None for what is no level at all (``protocol.brightness_percent``):
+        ``inf`` cannot be rounded, and 150 would come out as a brightness
+        Home Assistant has no such thing as.
         """
-        value = self._coordinator.state.get(KEY_BRIGHTNESS)
-        if isinstance(value, bool) or not isinstance(value, int):
-            return None
-        if not 0 <= value <= 100:  # noqa: PLR2004 - a percentage
-            return None
-        return round(value * 255 / 100)
+        level = self._coordinator.brightness_percent
+        return None if level is None else round(level * 255 / 100)
 
     async def async_turn_on(self, **kwargs: Any) -> None:
         """Turn the lamp on, optionally at a brightness - in one BLE write."""

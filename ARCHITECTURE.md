@@ -334,7 +334,8 @@ The same warnings name the lamp's model and firmware, and so does the one for
 a refused state request. Both come out of the device-info string with the
 serial number beside them, so each is said only when it is what it claims to
 be (`identity.model_id`, `identity.firmware` - the shapes the diagnostics
-hold them to as well) and as `not as expected` otherwise. A model whose id
+hold them to as well), as `unknown` while the lamp has not been read, and as
+`not as expected` otherwise. A model whose id
 has another shape is therefore not named in its own report; the device page
 still shows it.
 
@@ -552,6 +553,13 @@ available = self._is_connected or self._present
   answer, and by a command that failed, whose caller gets an error and whose
   entities would otherwise go on reading as available. A coordinator that is
   stopping lets go of its link and says nothing.
+- Each listener is told on its own. A listener is an entity writing its
+  state, and one that raises does not keep the news from the rest, nor does
+  its exception reach whoever brought the news - a notification, or a
+  command that in fact went through. It is named in the log by its entity
+  with its trace, once: the lamp reports all day, and what failed an entity
+  once fails it on every report until the value changes. Until it has
+  managed a round its failures go to DEBUG, trace included.
 
 ### Reconnect
 
@@ -771,7 +779,8 @@ coordinator's. It is not persistent - the next start finds out for itself.
 The lamp's name goes into it through `identity.as_text`: a repair is rendered
 as Markdown, and the name is whatever the lamp advertised when it was set up.
 The dialog that asks whether to set up a discovered lamp is Markdown too, and
-asks about it by the same cleaned name.
+names it the same way - as does its line among the discovered devices. (A
+lamp that advertises no name goes by its address there, colons and all.)
 
 **`is_connected` is a claim; an answer is evidence.** In that same incident
 the last exchange before the fault was a request that failed with `Not

@@ -860,12 +860,12 @@ async def test_a_brightness_that_is_not_a_number_is_not_a_brightness(
 
 
 @pytest.mark.parametrize(
-    "reported", [float("inf"), float("-inf"), float("nan"), 150, -1, 2**40, 12.5, True]
+    "reported", [float("inf"), float("-inf"), float("nan"), 150, -1, 2**40, 100.5, True]
 )
 async def test_a_brightness_that_is_no_percentage_is_not_a_brightness(
     hass: HomeAssistant, reported: float
 ) -> None:
-    """A level is a whole number from 0 to 100, or it is not shown.
+    """A level is a number from 0 to 100, or it is not shown.
 
     ``inf`` and ``nan`` are what a lamp - or whatever answers at its address -
     can put in a float, and rounding either raises; 150 would be shown as a
@@ -879,6 +879,24 @@ async def test_a_brightness_that_is_no_percentage_is_not_a_brightness(
     light = hass.states.get("light.glowrium_g7_1234")
     assert light.state == "on"
     assert light.attributes["brightness"] is None
+
+
+@pytest.mark.parametrize(("reported", "shown"), [(70.0, 178), (12.5, 32), (0, 0)])
+async def test_a_level_that_is_not_a_whole_number_is_still_a_level(
+    hass: HomeAssistant, reported: float, shown: int
+) -> None:
+    """A lamp that reports 70.0 has a brightness, as it had before.
+
+    The G7 reports whole numbers. Nothing says every model does, and a light
+    that lost its level over the kind of number would be a poor exchange for
+    one that no longer raises.
+    """
+    entry = await _setup_without_bluetooth(hass)
+
+    entry.runtime_data._ingest(cbor.encode({KEY_POWER: True, KEY_BRIGHTNESS: reported}))
+    await hass.async_block_till_done()
+
+    assert hass.states.get("light.glowrium_g7_1234").attributes["brightness"] == shown
 
 
 # A lamp as it reports when all is well; its three modes are below.

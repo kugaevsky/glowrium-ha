@@ -181,6 +181,9 @@ async def test_the_dialog_shows_a_discovered_lamps_name_as_text_and_nothing_more
         assert len(in_dialog) <= 48
         if shown is not None:
             assert in_dialog == shown
+        # The same name stands in the list of discovered devices.
+        progress = hass.config_entries.flow.async_progress_by_handler(DOMAIN)
+        assert progress[0]["context"]["title_placeholders"] == {"name": in_dialog}
 
         result = await hass.config_entries.flow.async_configure(
             result["flow_id"], user_input={}

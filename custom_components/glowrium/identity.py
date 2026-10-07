@@ -8,12 +8,14 @@ as Markdown. So it passes through here first, and both show the same thing.
 The model id and the firmware come out of the device-info string, where the
 serial number and the address sit beside them. They end up in warnings that
 ask to be reported and in the diagnostics file, both of which get posted.
-Each is passed on only when it is what it claims to be; what to say of one
-that is not is up to whoever shows it.
+Each is passed on only when it is what it claims to be. A line of prose says
+of one that is not that it is not as expected (``described``); the
+diagnostics put their own placeholder there.
 """
 
 from __future__ import annotations
 
+from collections.abc import Callable
 import re
 from typing import Final
 
@@ -49,11 +51,27 @@ def _wholly(pattern: re.Pattern[str], claimed: object) -> str | None:
     return None
 
 
-def model_id(claimed: object) -> str | None:
+def as_model_id(claimed: object) -> str | None:
     """Return ``claimed`` if it is a model id of this family and nothing else."""
     return _wholly(_MODEL_ID, claimed)
 
 
-def firmware(claimed: object) -> str | None:
+def as_firmware(claimed: object) -> str | None:
     """Return ``claimed`` if it is a firmware version and nothing else."""
     return _wholly(_FIRMWARE, claimed)
+
+
+def _said(read: Callable[[object], str | None], claimed: object) -> str:
+    if not claimed:
+        return "unknown"
+    return read(claimed) or "not as expected"
+
+
+def described(model: object, firmware: object) -> str:
+    """Return "model X, firmware Y" for a line that is meant to be posted.
+
+    Each is said when it is what it claims to be, is ``unknown`` when the
+    lamp has not said it, and is ``not as expected`` otherwise - so that a
+    serial number glued to either never goes out with a report.
+    """
+    return f"model {_said(as_model_id, model)}, firmware {_said(as_firmware, firmware)}"

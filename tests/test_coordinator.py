@@ -1561,6 +1561,73 @@ async def test_a_listener_that_keeps_failing_is_named_once(
     assert _errors_while_told() == 1  # it had recovered: this is a new one
 
 
+async def test_a_failure_that_is_not_news_still_leaves_its_trace_at_debug(
+    hass: HomeAssistant, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Said once is said about the first failure; the next may be another.
+
+    A listener that has not recovered can fail differently the second time,
+    and with nothing kept of it there would be no way to learn how.
+    """
+    coordinator, _ = _connected_coordinator(hass)
+    _listeners_that_fail(coordinator, 1)
+    coordinator._ingest(cbor.encode({KEY_POWER: True}))
+
+    caplog.clear()
+    with caplog.at_level(logging.DEBUG, logger=coordinator_module.__name__):
+        coordinator._ingest(cbor.encode({KEY_POWER: False}))
+
+    again = [r for r in caplog.records if "failed again" in r.getMessage()]
+    assert len(again) == 1
+    assert again[0].levelno == logging.DEBUG
+    assert again[0].exc_info
+
+
+async def test_the_request_to_report_a_failure_says_to_look_it_over_first(
+    hass: HomeAssistant, caplog: pytest.LogCaptureFixture
+) -> None:
+    """A trace is the one thing asked for that the integration did not word."""
+    coordinator, _ = _connected_coordinator(hass)
+    _listeners_that_fail(coordinator, 1)
+
+    with caplog.at_level(logging.ERROR):
+        coordinator._ingest(cbor.encode({KEY_POWER: True}))
+
+    (failure,) = [r for r in caplog.records if r.levelno >= logging.ERROR]
+    assert "Please report" in failure.getMessage()
+    assert "before posting" in failure.getMessage()
+
+
+async def test_a_listener_that_left_while_failing_leaves_no_record_behind(
+    hass: HomeAssistant, caplog: pytest.LogCaptureFixture
+) -> None:
+    """One that leaves during a round and then raises is gone, record and all.
+
+    The round is told from a copy of the list, so a listener removed during
+    it is still called. Noted as failing after it had left, it would be
+    quiet about its first failure when it came back.
+    """
+    coordinator, _ = _connected_coordinator(hass)
+    leave: list[Callable[[], None]] = []
+
+    def _listener() -> None:
+        if leave:
+            leave.pop()()
+        raise ValueError("this entity cannot show what it was given")
+
+    def _errors_while_told() -> int:
+        caplog.clear()
+        with caplog.at_level(logging.ERROR):
+            coordinator._ingest(cbor.encode({KEY_POWER: True}))
+        return len([r for r in caplog.records if r.levelno >= logging.ERROR])
+
+    leave.append(coordinator.async_add_listener(_listener))
+    assert _errors_while_told() == 1  # it left, and then it raised
+
+    coordinator.async_add_listener(_listener)  # back, and this time it stays
+    assert _errors_while_told() == 1  # its first failure since it came back
+
+
 async def test_a_listener_added_again_starts_with_a_clean_record(
     hass: HomeAssistant, caplog: pytest.LogCaptureFixture
 ) -> None:

@@ -232,13 +232,13 @@ async def async_get_config_entry_diagnostics(
             "minor_version": entry.minor_version,
             "disabled_by": entry.disabled_by,
             "remembered_model_id": _as_claimed(
-                identity.model_id, entry.data.get(CONF_MODEL_ID)
+                identity.as_model_id, entry.data.get(CONF_MODEL_ID)
             ),
         },
         "device": {
             "model": device["model"],  # from the integration's own table
-            "model_id": _as_claimed(identity.model_id, device["model_id"]),
-            "firmware": _as_claimed(identity.firmware, device["firmware"]),
+            "model_id": _as_claimed(identity.as_model_id, device["model_id"]),
+            "firmware": _as_claimed(identity.as_firmware, device["firmware"]),
             # How many fields the string had. Not which: a field's name is as
             # much the lamp's choice as its value.
             "device_info_fields": len(device["info"]),
