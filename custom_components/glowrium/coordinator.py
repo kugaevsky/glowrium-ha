@@ -24,7 +24,7 @@ from homeassistant.helpers.event import async_track_time_interval
 from homeassistant.helpers.typing import UNDEFINED
 from homeassistant.util import dt as dt_util
 
-from . import cbor, protocol
+from . import cbor, identity, protocol
 from .const import (
     ACTIVATE_MISC_VALUE,
     DOMAIN,
@@ -135,8 +135,6 @@ _STACK_FAULT_AFTER = 3
 _STACK_FAULT_BACKOFF_MAX = 300.0
 # Where the repair raised for that fault sends the reader for what to do.
 _TROUBLESHOOTING_URL = "https://github.com/kugaevsky/glowrium-ha#troubleshooting"
-# How much of the lamp's name the repair shows (see _as_text).
-_NAME_SHOWN = 48
 # Said wherever the log asks for a frame to be posted (see _for_the_log).
 _BLANKED = (
     "What reads as the coordinates stored in the lamp, or as the sunrise and "
@@ -394,19 +392,6 @@ def _for_the_log(frame: bytes) -> str:
     )
 
 
-def _as_text(name: str) -> str:
-    """Return ``name`` with nothing in it that Markdown or HTML would act on.
-
-    For a name that goes into text Home Assistant renders: the lamp's name
-    comes off the air, and whatever advertises one beginning with "Glowrium"
-    can be set up. Letters and digits of any script, spaces, dashes and
-    underscores are kept - enough to recognise the lamp by. Not a dot: that is
-    all it takes to make an address clickable.
-    """
-    kept = "".join(char if char.isalnum() or char in " -_" else " " for char in name)
-    return " ".join(kept.split())[:_NAME_SHOWN] or "the lamp"
-
-
 def _named(listener: Callable[[], None]) -> str:
     """Return what to call ``listener`` in the log: its entity, if it has one."""
     entity_id = getattr(getattr(listener, "__self__", None), "entity_id", None)
@@ -588,7 +573,7 @@ class GlowriumCoordinator:
 
         A lamp picked from the list of discovered devices is titled with its
         name and its address in brackets. Where the address is said anyway, or
-        where brackets and colons do not survive (see ``_as_text``), the name
+        where brackets and colons do not survive (``identity.as_text``), the name
         alone reads better.
         """
         return self.name.removesuffix(f" ({self.address})")
@@ -1124,7 +1109,7 @@ class GlowriumCoordinator:
             translation_key="bluetooth_stack_stuck",
             translation_placeholders={
                 # As text: the description is rendered as Markdown.
-                "name": _as_text(self._plain_name),
+                "name": identity.as_text(self._plain_name),
                 "count": str(self._stuck_hang_ups),
             },
         )

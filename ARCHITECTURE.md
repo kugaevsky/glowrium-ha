@@ -760,8 +760,10 @@ would have nobody left to take it down. Nor does it end one: an episode is
 called over by the coordinator that announced it (`_fault_announced`), since
 the repair standing under the entry's id after a reload is the next
 coordinator's. It is not persistent - the next start finds out for itself.
-The lamp's name goes into it through `_as_text`: a repair is rendered as
-Markdown, and the name is whatever the lamp advertised when it was set up.
+The lamp's name goes into it through `identity.as_text`: a repair is rendered
+as Markdown, and the name is whatever the lamp advertised when it was set up.
+The dialog that asks whether to set up a discovered lamp is Markdown too, and
+asks about it by the same cleaned name.
 
 **`is_connected` is a claim; an answer is evidence.** In that same incident
 the last exchange before the fault was a request that failed with `Not

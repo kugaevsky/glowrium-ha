@@ -45,6 +45,13 @@ All notable changes to this project are documented here. The format is based on
   as. A level is a whole number from 0 to 100; anything else leaves the
   light's brightness unknown
   ([#23](https://github.com/kugaevsky/glowrium-ha/issues/23)).
+- **The dialog for a discovered lamp shows its name as text.** The question
+  "Do you want to set up …?" is rendered as Markdown, and the name in it is
+  whatever the lamp advertised - so a name could carry a link or an image
+  into a question Home Assistant itself is asking. It goes in now as the
+  repair for a stuck Bluetooth stack already puts it: letters, digits,
+  spaces, dashes and underscores
+  ([#23](https://github.com/kugaevsky/glowrium-ha/issues/23)).
 
 ### Changed
 

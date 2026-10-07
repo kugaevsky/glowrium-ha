@@ -9,6 +9,7 @@ from homeassistant.config_entries import SOURCE_BLUETOOTH, SOURCE_USER
 from homeassistant.const import CONF_ADDRESS
 from homeassistant.core import HomeAssistant
 from homeassistant.data_entry_flow import FlowResultType
+import pytest
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
 from custom_components.glowrium.const import DOMAIN
@@ -140,6 +141,53 @@ async def test_a_lamp_that_advertises_no_name_is_shown_by_its_address(
 
     assert result["type"] is FlowResultType.CREATE_ENTRY
     assert result["title"] == GLOWRIUM_ADDRESS
+
+
+@pytest.mark.parametrize(
+    ("name", "shown"),
+    [
+        ("Glowrium [free lamps](https://lamps.example)", None),
+        ("Glowrium ![](https://lamps.example/seen.png)", None),
+        ("Glowrium <img src=//lamps.example/seen>", None),
+        ("Glowrium www.lamps.example", "Glowrium www lamps example"),
+        ("Glowrium **G7** `x`", "Glowrium G7 x"),
+        ("Glowrium-G7_1234 " + "A" * 200, None),
+        ("Glowrium Лампа-7", "Glowrium Лампа-7"),
+    ],
+)
+async def test_the_dialog_shows_a_discovered_lamps_name_as_text_and_nothing_more(
+    hass: HomeAssistant, name: str, shown: str | None
+) -> None:
+    """The lamp's name comes off the air, and the dialog is rendered as Markdown.
+
+    Whatever advertises a name beginning with "Glowrium" is offered for set-up,
+    and the confirmation asks about it by that name. Put in as it is, the name
+    could carry a link or an image - which the browser would fetch - into a
+    question Home Assistant itself is asking. So it goes in as the repair for
+    a stuck Bluetooth stack already puts it: letters, digits, spaces, dashes
+    and underscores, and no more of it than it takes to recognise the lamp.
+
+    The entry is still titled with the name as advertised: a title is shown as
+    text, and it is what the lamp is recognised by afterwards.
+    """
+    with patch("custom_components.glowrium.async_setup_entry", return_value=True):
+        result = await hass.config_entries.flow.async_init(
+            DOMAIN, context={"source": SOURCE_BLUETOOTH}, data=_service_info(name=name)
+        )
+        in_dialog = result["description_placeholders"]["name"]
+        assert not set(in_dialog) & set("[]()!<>`*#|~\\:/=\"'.")
+        assert in_dialog.strip() == in_dialog
+        assert in_dialog.startswith("Glowrium")
+        assert len(in_dialog) <= 48
+        if shown is not None:
+            assert in_dialog == shown
+
+        result = await hass.config_entries.flow.async_configure(
+            result["flow_id"], user_input={}
+        )
+        await hass.async_block_till_done()
+
+    assert result["title"] == name
 
 
 async def test_a_lamp_already_set_up_is_not_discovered_again(

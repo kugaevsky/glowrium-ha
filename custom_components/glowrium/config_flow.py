@@ -12,6 +12,7 @@ from homeassistant.config_entries import ConfigFlow, ConfigFlowResult
 from homeassistant.const import CONF_ADDRESS
 import voluptuous as vol
 
+from . import identity
 from .const import DOMAIN, NAME_PREFIX
 
 
@@ -39,17 +40,26 @@ class GlowriumConfigFlow(ConfigFlow, domain=DOMAIN):
     async def async_step_bluetooth_confirm(
         self, user_input: dict[str, Any] | None = None
     ) -> ConfigFlowResult:
-        """Confirm a device discovered by Bluetooth."""
-        title = self._discovery_info.name or self._discovery_info.address
+        """Confirm a device discovered by Bluetooth.
+
+        The dialog is rendered as Markdown and the name comes off the air,
+        so the question is asked with the name as text and nothing more.
+        A lamp that advertises no name goes by its address, which is what
+        the Bluetooth stack made of it and stays as it is; so does the
+        title, which names the entry and is not Markdown.
+        """
+        address = self._discovery_info.address
+        title = self._discovery_info.name or address
         if user_input is not None:
-            return self.async_create_entry(
-                title=title, data={CONF_ADDRESS: self._discovery_info.address}
-            )
+            return self.async_create_entry(title=title, data={CONF_ADDRESS: address})
 
         self._set_confirm_only()
         self.context["title_placeholders"] = {"name": title}
         return self.async_show_form(
-            step_id="bluetooth_confirm", description_placeholders={"name": title}
+            step_id="bluetooth_confirm",
+            description_placeholders={
+                "name": title if title == address else identity.as_text(title)
+            },
         )
 
     async def async_step_user(
