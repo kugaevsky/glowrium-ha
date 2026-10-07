@@ -283,7 +283,7 @@ actions:
       entity_id: switch.glowrium_g7_xxxxxx_indicator_light
 ```
 
-The other controls go the same way: `number.set_value` for *Ramp time* and the
+The other entities go the same way: `number.set_value` for *Ramp time* and the
 two schedule numbers, `time.set_value` for *Schedule start* and *end*,
 `button.press` for *Sync location*.
 
@@ -305,11 +305,11 @@ not the link, so they stay available for as long as the lamp is heard; between
 links each shows the last value it had, and a command sent then makes its own
 connection first.
 
-After a restart of Home Assistant the settings — operating mode, lighting
-mode, ramp, schedule, indicator, daylight saving time — show the value they
-showed before it, until the lamp reports. One that showed none has none to
-show: a setting of a mode the lamp was not in is unavailable, and comes back
-`unknown`. The light is not remembered at all: a lamp said to be on
+After a restart of Home Assistant everything that can be set, the light apart
+— operating mode, lighting mode, ramp, schedule, indicator, daylight saving
+time — shows the value it showed before it, until the lamp reports. One that
+showed none has none to show: what belongs to a mode the lamp was not in is
+unavailable, and comes back `unknown`. The light is not remembered at all: a lamp said to be on
 while it is off is worse than `unknown`, so the light, like the diagnostic
 entities, reads `unknown` until the lamp has spoken. On a first start nothing
 is remembered yet, and the settings read `unknown` as well. A remembered value

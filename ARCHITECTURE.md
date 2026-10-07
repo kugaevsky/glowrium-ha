@@ -478,16 +478,16 @@ Measured while settling how the DST flag interacts with this: toggling `0x35`
 does **not** move `0x05`. The lamp stores the clock verbatim, so writing local
 wall-clock time is not corrupted by the flag.
 
-What the flag does is move the lamp's **program**, by the offset the slot
-carries. Seen on one G7 with an offset of an hour: the lamp had switched
-itself off for the evening; the flag was set half an hour later, and the lamp
-came on again at once and went off an hour after it first had. The next
-morning it switched on an hour later than the morning before. So the clock is
-read as local time, and the flag tells the lamp that local time runs that
-much ahead of the time its program is reckoned in: local time in the clock,
-plus the flag, is one shift and not two. That is one lamp, over one evening
-and one morning; it has not been repeated on another model, nor looked at
-for each of the two programs apart. The curve the lamp computes (`0x34`) is
+What the flag was seen to do is move the lamp's **program**. On one G7, with
+the hour the slot carries by default: the lamp had switched itself off for
+the evening; the flag was set half an hour later, and the lamp came on again
+at once and went off an hour after it first had. The next morning it switched
+on an hour and a minute later than the morning before. That reads as: the
+clock is local time, and the flag tells the lamp that local time runs an hour
+ahead of the time its program is reckoned in - so local time in the clock,
+plus the flag, is one shift and not two. It is one lamp, one offset, one
+evening and one morning: not repeated on another model, not looked at for
+each of the two programs apart, and no other offset has been tried. The curve the lamp computes (`0x34`) is
 not in the read, and whether it can be asked for by id is open (see *What the
 answer covers* under [Priming state on connect](#priming-state-on-connect)
 before trying).

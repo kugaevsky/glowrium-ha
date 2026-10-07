@@ -231,12 +231,11 @@ async def test_every_platform_produces_entities(hass: HomeAssistant) -> None:
 
     # Asked of the registry, not of the states: an entity that starts
     # disabled is registered and has no state.
-    domains = {
-        registered.domain
-        for registered in er.async_entries_for_config_entry(
-            er.async_get(hass), entry.entry_id
-        )
-    }
+    registered = er.async_entries_for_config_entry(er.async_get(hass), entry.entry_id)
+    domains = {one.domain for one in registered}
+    # And what is not disabled is there to be seen, on every platform.
+    shown = {one.domain for one in registered if hass.states.get(one.entity_id)}
+    assert shown == domains - {"sensor"}
     assert domains == {
         "binary_sensor",
         "button",
@@ -247,6 +246,16 @@ async def test_every_platform_produces_entities(hass: HomeAssistant) -> None:
         "switch",
         "time",
     }
+
+
+def _registered(hass: HomeAssistant, domain: str, unique: str) -> er.RegistryEntry:
+    """Return what the entity registry holds for one of the lamp's entities."""
+    registry = er.async_get(hass)
+    entity_id = registry.async_get_entity_id(domain, DOMAIN, f"{ADDRESS}_{unique}")
+    assert entity_id is not None
+    registered = registry.async_get(entity_id)
+    assert registered is not None
+    return registered
 
 
 def _coordinate_sensors_from_before(
@@ -283,20 +292,22 @@ async def test_an_action_aimed_at_the_lamps_room_reaches_the_light_and_no_settin
     coordinator.async_sync_location = AsyncMock()
     coordinator.async_set_light_state = AsyncMock()
 
-    for domain, service in (
-        ("switch", "turn_on"),
-        ("switch", "turn_off"),
-        ("button", "press"),
-        ("light", "turn_on"),
-    ):
-        await hass.services.async_call(
-            domain, service, {}, target={"area_id": room.id}, blocking=True
-        )
+    # The room, and the lamp as a whole: both are ways of not naming an entity.
+    for target in ({"area_id": room.id}, {"device_id": _device(hass).id}):
+        for domain, service in (
+            ("switch", "turn_on"),
+            ("switch", "turn_off"),
+            ("button", "press"),
+            ("light", "turn_on"),
+        ):
+            await hass.services.async_call(
+                domain, service, {}, target=target, blocking=True
+            )
 
     coordinator.async_set_dst.assert_not_awaited()
     coordinator.async_set_indicator.assert_not_awaited()
     coordinator.async_sync_location.assert_not_awaited()
-    coordinator.async_set_light_state.assert_awaited_once()  # the room's light
+    assert coordinator.async_set_light_state.await_count == 2  # the light, each time
 
 
 @pytest.mark.parametrize(
@@ -308,14 +319,33 @@ async def test_a_setting_of_the_lamp_is_registered_as_a_setting(
 ) -> None:
     """Which is what puts it under Configuration, and out of a room-wide action."""
     await _setup_without_bluetooth(hass)
-    registry = er.async_get(hass)
 
-    entity_id = registry.async_get_entity_id(domain, DOMAIN, f"{ADDRESS}_{unique}")
+    assert _registered(hass, domain, unique).entity_category is EntityCategory.CONFIG
 
-    assert entity_id is not None
-    registered = registry.async_get(entity_id)
-    assert registered is not None
-    assert registered.entity_category is EntityCategory.CONFIG
+
+@pytest.mark.parametrize(
+    ("domain", "unique"),
+    [("switch", "indicator"), ("switch", "dst"), ("button", "sync_location")],
+)
+async def test_a_setting_registered_before_it_was_one_becomes_one(
+    hass: HomeAssistant, domain: str, unique: str
+) -> None:
+    """An installation from before is the one this is for.
+
+    Its registry holds the three with no category. Home Assistant takes the
+    category from the entity each time it registers, so the upgrade alone
+    moves them - nobody has to remove the lamp and set it up again.
+    """
+    entry = _entry()
+    entry.add_to_hass(hass)
+    before = er.async_get(hass).async_get_or_create(
+        domain, DOMAIN, f"{ADDRESS}_{unique}", config_entry=entry
+    )
+    assert before.entity_category is None
+
+    await _setup_without_bluetooth(hass, entry)
+
+    assert _registered(hass, domain, unique).entity_category is EntityCategory.CONFIG
 
 
 async def test_the_coordinate_sensors_start_disabled(hass: HomeAssistant) -> None:
@@ -325,17 +355,13 @@ async def test_the_coordinate_sensors_start_disabled(hass: HomeAssistant) -> Non
     sensors show it. Few ever look; whoever wants to enables them.
     """
     entry = await _setup_without_bluetooth(hass)
-    registry = er.async_get(hass)
     entry.runtime_data._ingest(cbor.encode({KEY_LATITUDE: 12.5, KEY_LONGITUDE: 65.5}))
     await hass.async_block_till_done()
 
     for which in ("latitude", "longitude"):
-        entity_id = registry.async_get_entity_id("sensor", DOMAIN, f"{ADDRESS}_{which}")
-        assert entity_id is not None  # registered, so that it can be enabled
-        registered = registry.async_get(entity_id)
-        assert registered is not None
+        registered = _registered(hass, "sensor", which)  # so it can be enabled
         assert registered.disabled_by is er.RegistryEntryDisabler.INTEGRATION
-        assert hass.states.get(entity_id) is None
+        assert hass.states.get(registered.entity_id) is None
 
 
 async def test_coordinate_sensors_an_installation_has_already_are_left_alone(
@@ -346,19 +372,15 @@ async def test_coordinate_sensors_an_installation_has_already_are_left_alone(
     entry.add_to_hass(hass)
     _coordinate_sensors_from_before(hass, entry)
     await _setup_without_bluetooth(hass, entry)
-    registry = er.async_get(hass)
 
     entry.runtime_data._ingest(cbor.encode({KEY_LATITUDE: 12.5, KEY_LONGITUDE: 65.5}))
     await hass.async_block_till_done()
 
     shown = {}
     for which in ("latitude", "longitude"):
-        entity_id = registry.async_get_entity_id("sensor", DOMAIN, f"{ADDRESS}_{which}")
-        assert entity_id is not None
-        registered = registry.async_get(entity_id)
-        assert registered is not None
+        registered = _registered(hass, "sensor", which)
         assert registered.disabled_by is None
-        shown[which] = hass.states.get(entity_id).state
+        shown[which] = hass.states.get(registered.entity_id).state
     assert shown == {"latitude": "12.5", "longitude": "65.5"}
 
 

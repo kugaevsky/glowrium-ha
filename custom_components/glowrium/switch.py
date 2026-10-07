@@ -66,9 +66,9 @@ class GlowriumIndicatorSwitch(GlowriumSettingEntity, SwitchEntity):
 class GlowriumDstSwitch(GlowriumSettingEntity, SwitchEntity):
     """Daylight-saving-time handling (key 0x35, byte 0).
 
-    A `config` entity, and it matters that it is: the flag moves the lamp's
-    own program by its offset, and "turn on every switch in this room" used
-    to set it with nothing to say why the lamp was an hour out.
+    A `config` entity, and it matters that it is: on the one lamp it was
+    watched on, the flag put the lamp's own program an hour out, and "turn on
+    every switch in this room" used to set it with nothing to say why.
     """
 
     _attr_entity_category = EntityCategory.CONFIG
