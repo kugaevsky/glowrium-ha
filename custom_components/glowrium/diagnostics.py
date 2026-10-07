@@ -25,7 +25,6 @@ from __future__ import annotations
 from collections.abc import Callable
 from datetime import datetime, time, timedelta
 from functools import partial
-import re
 from typing import Any, Final
 
 from homeassistant.components.diagnostics import REDACTED
@@ -33,7 +32,7 @@ from homeassistant.const import CONF_MODEL_ID
 from homeassistant.core import HomeAssistant
 from homeassistant.util import dt as dt_util
 
-from . import GlowriumConfigEntry
+from . import GlowriumConfigEntry, identity
 from .const import (
     KEY_ACTIVATED,
     KEY_BRIGHTNESS,
@@ -48,7 +47,6 @@ from .const import (
     KEY_SCHEDULE,
     KEY_TIME,
     KEY_TIMER,
-    NAME_PREFIX,
     TIMER_BRIGHTNESS,
     TIMER_END_H,
     TIMER_END_M,
@@ -186,27 +184,17 @@ _READ: Final[dict[int, tuple[str, Callable[[Any], Any]]]] = {
 _WHERE: Final = (KEY_LATITUDE, KEY_LONGITUDE)
 _WHERE_NAME: Final = " ".join(f"0x{key:02x}" for key in _WHERE) + " coordinates"
 
-# The model id and the firmware are the two things taken from the device-info
-# string. The serial number and the address are in it as well, and where one
-# field ends is only what the parser made of the string: a lamp that separates
-# its fields differently hands over one long field with the others inside it.
-# So each is shown only when it is, from end to end, what it claims to be - a
-# model id of this family is its name, a dash, a letter and three digits; a
-# version is one to three small numbers with dots between them.
-_MODEL_ID: Final = re.compile(rf"{NAME_PREFIX}-[A-Z][0-9]{{3}}")
-_FIRMWARE: Final = re.compile(r"[0-9]{1,2}(?:\.[0-9]{1,2}){0,2}")
 
+def _as_claimed(read: Callable[[object], str | None], value: Any) -> Any:
+    """Return ``value`` if ``read`` takes it for what it claims to be.
 
-def _matching(pattern: re.Pattern[str], value: Any) -> Any:
-    """Return ``value`` if it is wholly what ``pattern`` describes.
-
-    Nothing is nothing; anything else that does not match is a placeholder.
+    For the model id and the firmware, the two things taken from the
+    device-info string (``identity`` has why they are checked at all).
+    Nothing is nothing; anything else that is not taken is a placeholder.
     """
     if value is None:
         return None
-    if isinstance(value, str) and pattern.fullmatch(value):
-        return value
-    return REDACTED
+    return read(value) or REDACTED
 
 
 def _state(reported: dict[Any, Any], clock_heard_at: datetime | None) -> dict[str, Any]:
@@ -243,12 +231,14 @@ async def async_get_config_entry_diagnostics(
             "version": entry.version,
             "minor_version": entry.minor_version,
             "disabled_by": entry.disabled_by,
-            "remembered_model_id": _matching(_MODEL_ID, entry.data.get(CONF_MODEL_ID)),
+            "remembered_model_id": _as_claimed(
+                identity.model_id, entry.data.get(CONF_MODEL_ID)
+            ),
         },
         "device": {
             "model": device["model"],  # from the integration's own table
-            "model_id": _matching(_MODEL_ID, device["model_id"]),
-            "firmware": _matching(_FIRMWARE, device["firmware"]),
+            "model_id": _as_claimed(identity.model_id, device["model_id"]),
+            "firmware": _as_claimed(identity.firmware, device["firmware"]),
             # How many fields the string had. Not which: a field's name is as
             # much the lamp's choice as its value.
             "device_info_fields": len(device["info"]),

@@ -392,6 +392,13 @@ def _for_the_log(frame: bytes) -> str:
     )
 
 
+def _said(read: Callable[[object], str | None], claimed: str | None) -> str:
+    """Return what the log says of a model id or a firmware version."""
+    if not claimed:
+        return "unknown"
+    return read(claimed) or "not as expected"
+
+
 def _named(listener: Callable[[], None]) -> str:
     """Return what to call ``listener`` in the log: its entity, if it has one."""
     entity_id = getattr(getattr(listener, "__self__", None), "entity_id", None)
@@ -566,6 +573,19 @@ class GlowriumCoordinator:
     def serial_number(self) -> str | None:
         """Device id (serial) from the device-info string."""
         return self.device_info.get("devid")
+
+    def _model_and_firmware(self) -> tuple[str, str]:
+        """Return the model id and the firmware as a warning may say them.
+
+        A warning that asks to be reported gets posted. So each is said only
+        when it is what it claims to be (see ``identity``): a lamp that glues
+        the fields of its device-info string together would otherwise put
+        its serial number here.
+        """
+        return (
+            _said(identity.model_id, self.model_id),
+            _said(identity.firmware, self.sw_version),
+        )
 
     @property
     def _plain_name(self) -> str:
@@ -1572,8 +1592,7 @@ class GlowriumCoordinator:
                 "Commands still work; properties a read of the state does not "
                 "carry stay unknown. Please report this model",
                 self.address,
-                self.model_id or "unknown",
-                self.sw_version or "unknown",
+                *self._model_and_firmware(),
                 _STATE_REQUEST_ATTEMPTS,
                 err,
                 "Not asking again this session."
@@ -1622,8 +1641,7 @@ class GlowriumCoordinator:
             "so accepting the remainder could mean acting on a corrupt state. "
             "Please report this frame - it is exactly the hex dump needed. %s",
             self.address,
-            self.model_id or "unknown",
-            self.sw_version or "unknown",
+            *self._model_and_firmware(),
             count,
             _for_the_log(data),
             _BLANKED,
@@ -1653,8 +1671,7 @@ class GlowriumCoordinator:
             "were kept; whatever follows it could not be found. Please report "
             "this frame - it is exactly the hex dump needed. %s",
             self.address,
-            self.model_id or "unknown",
-            self.sw_version or "unknown",
+            *self._model_and_firmware(),
             err,
             _for_the_log(data),
             len(err.ahead),

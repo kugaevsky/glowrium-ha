@@ -330,6 +330,14 @@ decoding, since these are the frames that could not be decoded to their end,
 and are put down as `xx`. The lines ask for the frame to be posted; they
 cannot rest on whoever posts it blanking hex by hand.
 
+The same warnings name the lamp's model and firmware, and so does the one for
+a refused state request. Both come out of the device-info string with the
+serial number beside them, so each is said only when it is what it claims to
+be (`identity.model_id`, `identity.firmware` - the shapes the diagnostics
+hold them to as well) and as `not as expected` otherwise. A model whose id
+has another shape is therefore not named in its own report; the device page
+still shows it.
+
 Trailing bytes are an error on both paths, raised as `cbor.TrailingBytesError`
 (a `ValueError` subclass carrying the byte count). Accepting the remainder would
 let a corrupt frame decode to a short but plausible map — `{0x14: false}` among

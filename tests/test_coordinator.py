@@ -2681,6 +2681,90 @@ async def test_a_model_that_keeps_refusing_is_left_alone_for_the_session(
     assert client.write_gatt_char.await_count == sent  # never again this session
 
 
+async def _the_three_warnings(
+    coordinator: GlowriumCoordinator, caplog: pytest.LogCaptureFixture
+) -> list[str]:
+    """Draw each warning that names the lamp's model, and return what was said."""
+    with caplog.at_level(logging.WARNING, logger=coordinator_module.__name__):
+        coordinator._ingest(bytes.fromhex("a106f5deadbeef"))  # trailing bytes
+        coordinator._ingest(_PARTLY_READABLE)
+        client = _refusing_client()
+        for _ in range(coordinator_module._STATE_REQUEST_ATTEMPTS):
+            await coordinator._request_state(client)
+    said = [r.getMessage() for r in caplog.records if r.levelno == logging.WARNING]
+    assert len(said) == 3
+    assert "trailing bytes" in said[0]
+    assert "cannot read" in said[1]
+    assert "refused the batched state request" in said[2]
+    return said
+
+
+async def test_no_warning_carries_what_a_lamp_glued_to_its_model_or_firmware(
+    hass: HomeAssistant, caplog: pytest.LogCaptureFixture
+) -> None:
+    """A model id and a firmware are said only when they are what they claim.
+
+    Both come out of the device-info string, where the serial number and the
+    address sit beside them, and where one field ends is only what the parser
+    made of the string. A lamp that separates its fields differently hands
+    over one long field with the others inside it. Three warnings name the
+    model and the firmware, and each of them asks to be reported: the log is
+    held to the shapes the diagnostics file is held to.
+    """
+    coordinator = GlowriumCoordinator(hass, "AA:BB:CC:DD:EE:FF", "Glowrium-G8")
+    coordinator.device_info = _parse_device_info(
+        b"brand:INLEDCO;pkey:Glowrium-C051,devid:CST-0001;version:4,mac:A1B2C3;;"
+    )
+    assert "CST-0001" in coordinator.model_id  # the parser took it for the model
+    assert "A1B2C3" in coordinator.sw_version
+
+    for said in await _the_three_warnings(coordinator, caplog):
+        assert "CST-0001" not in said
+        assert "A1B2C3" not in said
+        assert "(model not as expected, firmware not as expected)" in said
+
+
+@pytest.mark.parametrize(
+    ("info", "named"),
+    [
+        (
+            b"brand:INLEDCO;pkey:Glowrium-C051;devid:CST-0001;mac:x;version:4;;",
+            "(model Glowrium-C051, firmware 4)",
+        ),
+        (b"", "(model unknown, firmware unknown)"),  # not read yet
+        (
+            b"pkey:Glowrium-C064;version:1.10.2;;",
+            "(model Glowrium-C064, firmware 1.10.2)",
+        ),
+    ],
+)
+async def test_a_warning_names_a_model_and_a_firmware_that_are_what_they_claim(
+    hass: HomeAssistant, caplog: pytest.LogCaptureFixture, info: bytes, named: str
+) -> None:
+    """Whoever reads the report needs to know which lamp it came from."""
+    coordinator = GlowriumCoordinator(hass, "AA:BB:CC:DD:EE:FF", "Glowrium-G7")
+    coordinator.device_info = _parse_device_info(info)
+
+    for said in await _the_three_warnings(coordinator, caplog):
+        assert named in said
+
+
+async def test_a_remembered_model_id_is_held_to_its_shape_in_the_log_too(
+    hass: HomeAssistant, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Until the lamp is read, its model is what an earlier session stored."""
+    coordinator = GlowriumCoordinator(
+        hass,
+        "AA:BB:CC:DD:EE:FF",
+        "Glowrium-G7",
+        model_id="Glowrium-C051;devid:CST-0001",
+    )
+
+    for said in await _the_three_warnings(coordinator, caplog):
+        assert "CST-0001" not in said
+        assert "(model not as expected, firmware unknown)" in said
+
+
 async def test_a_link_that_dies_after_the_read_is_not_a_refusal(
     hass: HomeAssistant,
 ) -> None:

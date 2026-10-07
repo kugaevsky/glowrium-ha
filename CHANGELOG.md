@@ -52,6 +52,14 @@ All notable changes to this project are documented here. The format is based on
   repair for a stuck Bluetooth stack already puts it: letters, digits,
   spaces, dashes and underscores
   ([#23](https://github.com/kugaevsky/glowrium-ha/issues/23)).
+- **A warning names the model and the firmware only when they are what they
+  claim to be.** The three warnings that ask to be reported - a refused
+  state request, a frame with trailing bytes, a frame with an item that
+  cannot be read - said both as the lamp gave them. A lamp that glues the
+  fields of its device-info string together would have put its serial
+  number there. Each is now held to the shape the diagnostics file already
+  holds it to, and is `not as expected` otherwise
+  ([#23](https://github.com/kugaevsky/glowrium-ha/issues/23)).
 
 ### Changed
 
