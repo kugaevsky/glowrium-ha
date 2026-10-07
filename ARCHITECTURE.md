@@ -120,9 +120,10 @@ before the write call has returned. That is the whole of priming on a lamp
 that answers: nothing is read.
 
 > ⚠️ **On BlueZ, a GATT read of this lamp ends the link.** `NOTIFY_UUID` is
-> readable, and from 0.2.0 it was read first, on every connect. Measured on a
-> G7 (firmware 4) from a Linux host with BlueZ 5.82, outside the integration
-> and between its poll ticks, on 2026-10-05:
+> readable, and from 0.2.0 it was read first, on every connect — which looked
+> sturdier than asking. Measured on a G7 (firmware 4) from a Linux host with
+> BlueZ 5.82, outside the integration and between its poll ticks, on
+> 2026-10-05:
 >
 > | After connecting | Runs | Link |
 > | --- | --- | --- |

@@ -86,19 +86,13 @@ _COMMAND_TIMEOUT = 25.0
 # before the next.
 #
 # And it is no shorter than what the library gives one try of its own
-# (BLEAK_TIMEOUT, 20 s), where it used to be 10 s. That does not hand the
-# library the whole dial - the ceiling also covers the wait for the lock and
-# every try after the first, so a slow try can still be cut from outside. It
-# moves the cut away from where connects on a weak link finish. Measured on a
-# G7 at the edge of range (2026-10-06, one host, 517 dials): the ones that
-# got through took 6.9 s at the median and 9.7 s at the ninetieth percentile,
-# piled up against the ceiling; 426 were cut off by it, and in 181 of those a
-# connection made inside the dial was lost in the last second before the
-# cut. A ceiling that close to what a connect takes turns a slow connect into
-# a failed one, again thirty seconds later, for as long as the radio stays
-# marginal. Under the longer one, on that host through an afternoon of poor
-# reception (the same day, 80 dials), 64 got through and 16 were cut, and 35
-# of the 64 had needed more than 10 s.
+# (BLEAK_TIMEOUT, 20 s): a ceiling close to what a connect takes on a weak
+# link turns a slow connect into a failed one, tick after tick, for as long as
+# the radio stays marginal. That does not hand the library the whole dial -
+# the ceiling also covers the wait for the lock and every try after the
+# first, so a slow try can still be cut from outside. What was measured under
+# 10 s and under 20 s, and why it is not raised further: ARCHITECTURE.md,
+# "Reconnect".
 # test_no_path_holds_the_lock_longer_than_a_command_will_wait pins all three.
 _CONNECT_TIMEOUT = 20.0
 # Ceiling on asking a link that is already held for its state - priming one a
@@ -1454,20 +1448,13 @@ class GlowriumCoordinator:
         """Prime the state mirror: ask the lamp to report, read only if it will not.
 
         Writing the ids in ``STATE_KEYS`` to ``NOTIFY_UUID`` makes the lamp
-        report them in a notification. ``NOTIFY_UUID`` is readable too, and
-        from 0.2.0 it was read first, on every connect - which looked sturdier,
-        and on BlueZ ended every link it touched. Measured on a G7 (BlueZ 5.82,
-        2026-10-05), outside this integration and between its poll ticks: a
-        link left alone, subscribed to, or asked for its state by a write was
-        still up at the end of the test, nine runs out of nine; a link that had
-        one characteristic read - the 235-byte state, the 93-byte device info,
-        a single byte - was gone 2.02 to 2.04 s later, six runs out of six. The
-        read itself succeeds; BlueZ takes the ATT channel down right after it,
-        so the very next call answers "Not connected", and two seconds later
-        the link follows. That was read as a lamp at the edge of range dropping
-        its link on every poll. It was this method. (The lamp answers a read
-        twice - the value, then an error response to the same request - and
-        BlueZ closes the channel on the stray one; macOS ignores it.)
+        report them in a notification. ``NOTIFY_UUID`` is readable too, but on
+        BlueZ a GATT read of this lamp ends the link two seconds later: the
+        lamp answers a read twice - the value, then an error response to the
+        same request - and BlueZ closes the channel on the stray one, where
+        macOS ignores it. Reading first, on every connect, is what 0.2.0 and
+        0.2.1 did, and it cost a link on every poll tick. The measurement and
+        the trace: ARCHITECTURE.md, "Priming state on connect".
 
         So the lamp is asked first, and a link whose lamp reports is never
         read. The report is waited for, briefly: on a G7 it arrives inside the

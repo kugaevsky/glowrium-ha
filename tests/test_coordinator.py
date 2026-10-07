@@ -461,12 +461,9 @@ async def test_one_dropped_link_does_not_abandon_the_state_request(
 async def test_a_lamp_that_reports_is_asked_and_never_read(hass: HomeAssistant) -> None:
     """A lamp that answers the state request is primed by that alone.
 
-    From 0.2.0 the state was read first, on every connect. On BlueZ a read of
-    this lamp ends the link: measured on a G7 between poll ticks, a link that
-    was left alone, subscribed to or asked for its state by a write was still
-    up at the end, nine runs of nine, and a link that had one characteristic
-    read was gone 2.0 s later, six runs of six. A hundred links an hour were
-    lost that way and put down to range.
+    From 0.2.0 the state was read first, on every connect, and on BlueZ a read
+    of this lamp ends the link: a hundred links an hour were lost that way and
+    put down to range (ARCHITECTURE.md, "Priming state on connect").
     """
     coordinator = GlowriumCoordinator(hass, "AA:BB:CC:DD:EE:FF", "Glowrium-G7")
     client = MagicMock()
