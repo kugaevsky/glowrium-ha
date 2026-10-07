@@ -6,6 +6,9 @@
         "description": "Choose the Glowrium device to set up.",
         "data": {
           "address": "Device"
+        },
+        "data_description": {
+          "address": "Each line is a lamp heard nearby that has not been set up yet, listed by the name it advertises and its Bluetooth address."
         }
       },
       "bluetooth_confirm": {

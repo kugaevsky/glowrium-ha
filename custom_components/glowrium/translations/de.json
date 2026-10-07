@@ -6,6 +6,9 @@
         "description": "Wähle das einzurichtende Glowrium-Gerät.",
         "data": {
           "address": "Gerät"
+        },
+        "data_description": {
+          "address": "Jede Zeile steht für eine Lampe, die in der Nähe empfangen wird und noch nicht eingerichtet ist: mit dem Namen, den sie über Bluetooth aussendet, und ihrer Adresse."
         }
       },
       "bluetooth_confirm": {

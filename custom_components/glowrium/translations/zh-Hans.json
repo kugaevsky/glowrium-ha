@@ -6,6 +6,9 @@
         "description": "选择要设置的 Glowrium 设备。",
         "data": {
           "address": "设备"
+        },
+        "data_description": {
+          "address": "每一行是一盏在附近发现且尚未设置的灯具，以其广播的名称和蓝牙地址显示。"
         }
       },
       "bluetooth_confirm": {

@@ -1,5 +1,7 @@
 """Tests for the Glowrium config flow."""
 
+import json
+from pathlib import Path
 from unittest.mock import patch
 
 from bleak.backends.device import BLEDevice
@@ -16,6 +18,17 @@ from custom_components.glowrium.const import DOMAIN
 
 GLOWRIUM_ADDRESS = "AA:BB:CC:DD:EE:FF"
 GLOWRIUM_NAME = "Glowrium-G7_1234"
+
+INTEGRATION = Path(__file__).parent.parent / "custom_components" / "glowrium"
+# What the form that lists the lamps is given to say, in strings.json and in
+# each language. Read here and not in a test: a test runs in the event loop.
+FORM_WORDS = {
+    path.name: json.loads(path.read_text())["config"]["step"]["user"]
+    for path in (
+        INTEGRATION / "strings.json",
+        *sorted(INTEGRATION.glob("translations/*.json")),
+    )
+}
 
 
 def _service_info(
@@ -233,6 +246,37 @@ async def test_the_list_offers_only_lamps_that_are_not_set_up(
     assert result["type"] is FlowResultType.FORM
     offered = result["data_schema"].schema[CONF_ADDRESS].container
     assert offered == {other: f"Glowrium-G8_5678 ({other})"}
+
+
+async def test_every_field_of_the_form_is_described_in_every_language(
+    hass: HomeAssistant,
+) -> None:
+    """The list of lamps says what its lines are, whatever the language.
+
+    Its one field was labelled "Device" and nothing more, which leaves
+    someone with two lamps in range to work out what a line is made of. The
+    fields are asked of the form itself, so that one added to it later has
+    to be labelled and described as well - and described in the language,
+    not in the English left where a translation was meant to go.
+    """
+    with patch(
+        "custom_components.glowrium.config_flow.async_discovered_service_info",
+        return_value=[_service_info()],
+    ):
+        result = await hass.config_entries.flow.async_init(
+            DOMAIN, context={"source": SOURCE_USER}
+        )
+    fields = [str(field) for field in result["data_schema"].schema]
+    assert fields == [CONF_ADDRESS]
+
+    assert len(FORM_WORDS) == 7  # strings.json and the six languages
+    for field in fields:
+        for file, words in FORM_WORDS.items():
+            assert words["data"][field].strip(), file
+            assert words.get("data_description", {}).get(field, "").strip(), file
+        # Six wordings in seven files: en.json is strings.json word for word.
+        described = {w["data_description"][field] for w in FORM_WORDS.values()}
+        assert len(described) == 6
 
 
 async def test_nothing_is_offered_when_the_only_lamp_is_set_up(

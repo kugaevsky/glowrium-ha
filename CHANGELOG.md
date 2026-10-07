@@ -110,6 +110,11 @@ All notable changes to this project are documented here. The format is based on
   examples out of the README, and fails on one that does not parse or that
   names an option the selects do not offer
   ([#32](https://github.com/kugaevsky/glowrium-ha/issues/32)).
+- **The list of lamps to set up says what its lines are.** The form's one
+  field was labelled "Device" and nothing more. Under it now stands, in
+  all six languages, that each line is a lamp heard nearby that has not
+  been set up yet, by the name it advertises and its address
+  ([#33](https://github.com/kugaevsky/glowrium-ha/issues/33)).
 
 ## [0.3.0] - 2026-10-06
 
