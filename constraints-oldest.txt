@@ -1,0 +1,5 @@
+# The oldest Home Assistant this project supports - the one hacs.json, the
+# README and CONTRIBUTING.md name - by the release of the test plugin that
+# carries it: 0.13.344 is Home Assistant 2026.7.0. Raise it only together with
+# that minimum. tools/test_stack.py applies it; nothing else reads it.
+pytest-homeassistant-custom-component==0.13.344

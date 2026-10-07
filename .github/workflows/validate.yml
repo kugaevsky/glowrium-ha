@@ -12,6 +12,10 @@ permissions:
 
 jobs:
   hassfest:
+    # One run for one commit: see the same condition in test.yml.
+    if: >-
+      github.event_name != 'pull_request' ||
+      github.event.pull_request.head.repo.full_name != github.repository
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -23,6 +27,10 @@ jobs:
       - uses: home-assistant/actions/hassfest@master
 
   hacs:
+    # One run for one commit: see the same condition in test.yml.
+    if: >-
+      github.event_name != 'pull_request' ||
+      github.event.pull_request.head.repo.full_name != github.repository
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1

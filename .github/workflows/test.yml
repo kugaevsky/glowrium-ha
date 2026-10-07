@@ -4,10 +4,12 @@ on:
   push:
   pull_request:
   schedule:
-    # Once a week with nothing pushed. The Home Assistant under test is
-    # whatever is current, and the integration reaches into bleak's private
-    # attributes to close a client's bus (see _close_bus): a release that
-    # moves them has to fail here before it reaches anybody's host.
+    # Once a week with nothing pushed, for the newest leg. The Home Assistant
+    # it tests is whatever the test plugin tracks that day, and the
+    # integration reaches into bleak's private attributes to close a client's
+    # bus (see _close_bus): a release that moves them has to fail here before
+    # it reaches anybody's host. The oldest leg moves only when
+    # constraints-oldest.txt does.
     - cron: "0 5 * * 1"
   workflow_dispatch:
 
@@ -16,7 +18,24 @@ permissions:
 
 jobs:
   test:
+    # A branch of this repository with a pull request open gets two events
+    # for one commit: a push and a pull_request. The push run is the one
+    # kept, since it is also the only one a branch without a pull request
+    # gets. A pull request from a fork has no push run here and keeps its own.
+    if: >-
+      github.event_name != 'pull_request' ||
+      github.event.pull_request.head.repo.full_name != github.repository
+    name: test (${{ matrix.stack }} Home Assistant)
     runs-on: ubuntu-latest
+    strategy:
+      # Each leg answers a question of its own: one failing says nothing
+      # about the other, and both answers are wanted.
+      fail-fast: false
+      matrix:
+        # oldest - the Home Assistant this project names as its minimum, held
+        #   to one release (constraints-oldest.txt).
+        # newest - whatever the test plugin tracks today, betas included.
+        stack: [oldest, newest]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -24,7 +43,9 @@ jobs:
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: "3.14"
-      - run: pip install -r requirements-test.txt
+      # Writes which Home Assistant this leg got into the run's summary, and
+      # fails if a library is not at the version that Home Assistant dictates.
+      - run: python tools/test_stack.py ${{ matrix.stack }}
       - run: ruff check .
       - run: ruff format --check .
       - run: mypy

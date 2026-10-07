@@ -1,12 +1,12 @@
+# Installed by tools/test_stack.py, not by hand: it adds what cannot be
+# written here.
+#
+# The test plugin carries Home Assistant itself, one exact release per release
+# of its own. Left unpinned it is the newest, pre-releases included;
+# constraints-oldest.txt names the release for the oldest Home Assistant this
+# project supports. Home Assistant's Bluetooth and USB integrations then
+# require libraries at versions Home Assistant dictates - the script reads
+# those from the Home Assistant it has just installed.
 pytest-homeassistant-custom-component
 ruff~=0.16.10
 mypy~=2.4.0
-
-# homeassistant.components.bluetooth pulls in usb -> serialx -> aioesphomeapi;
-# these are not in the base homeassistant / PHACC distribution. The
-# aiousbwatcher / serialx / dbus-fast pins come from the usb & bluetooth
-# integration manifests in HA 2026.10, which is what an unpinned PHACC installs.
-aiousbwatcher==1.1.2
-serialx==1.11.0
-dbus-fast==5.0.22
-aioesphomeapi

@@ -1043,8 +1043,16 @@ Unit tests live in `tests/` and **never touch real Bluetooth**:
   what must not come out of it whatever the lamp reports.
 - `test_models.py` — the per-model profiles: preset keys are keys, and each
   has a name in `strings.json` and every translation.
+- `test_identity.py` — what is shown of the lamp's own words about itself:
+  its name as text, its model id and firmware only when they are what they
+  claim to be.
+- `test_bench.py` — what `tools/bench.py` prints, and what it leaves out.
 - `test_translations.py` — every translation carries exactly the keys and
   placeholders of `strings.json`. hassfest checks the same in CI, on a push.
+- `test_test_stack.py` — the script that installs what all of the above run
+  on: how it reads the versions Home Assistant dictates and what it says when
+  one is not met, and that the workflows and the dependabot configuration
+  agree with it.
 
 Run the checks:
 
@@ -1056,9 +1064,15 @@ Run the checks:
 
 `pytest` runs in `asyncio_mode = "auto"`; ruff line length is 88 and mypy runs
 in strict mode over the integration (both configured in `pyproject.toml`). CI
-runs the same and holds coverage of the integration to 95 %; it also runs once
-a week with nothing pushed, because the Home Assistant under test is whatever
-is current and `_close_bus` reaches into bleak's private attributes.
+runs the same and holds coverage of the integration to 95 %, and runs it on
+two stacks: the oldest Home Assistant supported, held to one release, and the
+newest, which is whatever the test plugin tracks that day, betas included.
+`tools/test_stack.py` installs either, here as in CI, and with it the
+Bluetooth libraries at the versions that Home Assistant dictates - read from
+the Home Assistant under test and written nowhere here, so that the tests
+run on what a user of that release has. The newest leg is why CI also runs
+once a week with nothing pushed: what it tests moves by itself, and
+`_close_bus` reaches into bleak's private attributes.
 Verification against live hardware is separate and not part
 of the automated suite: `tools/bench.py` runs the production coordinator
 against a lamp from the machine it is started on — see

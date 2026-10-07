@@ -8,11 +8,25 @@ Home Assistant **2026.7+** and Python **3.14** (the target HA runtime) are requi
 
 ```bash
 python3.14 -m venv .venv
-.venv/bin/pip install -r requirements-test.txt
+.venv/bin/python tools/test_stack.py oldest   # or: newest
 .venv/bin/ruff check . && .venv/bin/ruff format --check .
 .venv/bin/mypy
 .venv/bin/pytest
 ```
+
+`tools/test_stack.py` installs one of the two stacks CI runs every check on:
+
+- **`oldest`** - the oldest Home Assistant this project supports, held to one release by
+  `constraints-oldest.txt`. That file changes only together with the minimum named above.
+- **`newest`** - whatever the test plugin tracks today, pre-releases included. Run it again
+  in the same environment to move on to today's.
+
+Keep one virtualenv for each if you want both (`.venv` and, say, `.venv-newest`). In either,
+the script then installs what Home Assistant's own Bluetooth and USB integrations require -
+`bleak`, `habluetooth`, `dbus-fast` and the rest - at the versions that Home Assistant
+dictates, read from the Home Assistant it has just installed. None of those versions is
+written in this repository, and `pip install -r requirements-test.txt` alone does not give
+an environment the tests can run in.
 
 ## Conventions
 

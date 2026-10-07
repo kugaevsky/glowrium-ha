@@ -290,11 +290,15 @@ see **[ARCHITECTURE.md](ARCHITECTURE.md)**.
 
 ```bash
 python3.14 -m venv .venv
-.venv/bin/pip install -r requirements-test.txt
+.venv/bin/python tools/test_stack.py oldest   # or: newest
 .venv/bin/ruff check . && .venv/bin/ruff format --check .
 .venv/bin/mypy
 .venv/bin/pytest
 ```
+
+`oldest` is the oldest Home Assistant supported, `newest` is the newest there is; CI runs
+the checks on both. [CONTRIBUTING.md](CONTRIBUTING.md#development-setup) has what the
+script installs and why.
 
 ## Disclaimer
 
