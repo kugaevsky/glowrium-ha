@@ -113,11 +113,11 @@ rules:
   entity-device-class:
     status: todo
     comment: |
-      The two numbers that hold minutes have no `duration` class (#33). The
+      The two numbers that hold minutes have no `duration` class yet. The
       class lets a unit of time be chosen for the entity, and the value
       remembered from before a restart would then be read as minutes whatever
-      unit it was shown in. Whether to take the class so, or mend that first,
-      is undecided. No class fits what the other entities are.
+      unit it was shown in. That is mended first, and the class given with
+      it (#35). No class fits what the other entities are.
   entity-disabled-by-default:
     status: todo
     comment: Whether the two coordinate sensors start disabled is undecided.
