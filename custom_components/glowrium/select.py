@@ -121,11 +121,12 @@ class GlowriumLightingModeSelect(GlowriumSettingEntity, SelectEntity):
     def current_option(self) -> str | None:
         """Return the selected lighting mode, if known.
 
-        The mode remembered from the last run stands in only while the lamp
-        has named no index. Once it has, the answer is the preset that index
-        belongs to - or none, when it belongs to no preset of this model. The
+        The mode remembered from the last run stands in only while the state
+        mirror holds no index - none reported by the lamp and none written
+        to it. Once there is one, the answer is the preset that index belongs
+        to - or none, when it belongs to no preset of this model. The
         remembered mode is not an answer then: it is what the select showed
-        before the last restart, and the lamp has just said something else.
+        before the last restart, and the lamp has since said something else.
         """
         state = self._coordinator.state
         modes = self._modes

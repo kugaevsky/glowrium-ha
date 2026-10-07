@@ -69,7 +69,7 @@ All notable changes to this project are documented here. The format is based on
   whenever the reported preset was none of the model's own. So it showed
   whatever it had shown before the restart, and Home Assistant recorded
   the change to it, for an automation to act on. The remembered mode now
-  stands in only until the lamp has said something
+  stands in only until a lighting mode has been reported or set
   ([#30](https://github.com/kugaevsky/glowrium-ha/issues/30)).
 
 ### Changed

@@ -75,6 +75,11 @@ class GlowriumSettingEntity(GlowriumEntity, RestoreEntity):
     into the coordinator's mirror, because the write paths use that mirror to
     decide whether a field is safe to modify, and a remembered value would let
     them rewrite a schedule slot from data that may be days old.
+
+    It stands in for a setting that has not been read - not for one that has
+    been read and cannot be used. The lighting-mode select holds to that. The
+    other settings do not tell the two apart yet: their readers answer nothing
+    for a malformed value as for an absent one, and they fall back on both.
     """
 
     _restored: str | None = None

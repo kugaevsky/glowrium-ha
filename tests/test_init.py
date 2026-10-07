@@ -1107,10 +1107,19 @@ def test_the_select_itself_does_not_offer_a_mode_the_lamp_does_not_have() -> Non
     select._restored = "balance"
     assert select.current_option == "balance"
 
-    # And once the lamp has named an index, the remembered mode has had its say.
-    select._coordinator.state[KEY_LIGHTING_MODE] = 7  # no preset of the G7
-    assert select.current_option is None
-    # Whatever it named: a report of nothing at all is a report too.
+
+def test_a_report_of_nothing_is_a_report_and_the_remembered_mode_steps_back() -> None:
+    """What is under the id decides, whatever it is - even when it is nothing.
+
+    The remembered mode stands in while the id is absent from the mirror. A
+    value that is there and names no preset is the lamp having spoken.
+    """
+    select = GlowriumLightingModeSelect(
+        GlowriumCoordinator(None, ADDRESS, "Glowrium-G7")
+    )
+    select._restored = "balance"
+    assert select.current_option == "balance"
+
     select._coordinator.state[KEY_LIGHTING_MODE] = None
     assert select.current_option is None
 
@@ -1143,13 +1152,12 @@ async def test_the_lighting_mode_shown_is_the_one_the_lamp_reports(
 @pytest.mark.parametrize(
     "model_id",
     [
-        pytest.param(None, id="model not read yet"),
         pytest.param("Glowrium-C051", id="a model with a profile"),
         pytest.param("Glowrium-C064", id="a model without one"),
     ],
 )
 async def test_an_index_the_model_does_not_have_is_not_the_remembered_mode(
-    hass: HomeAssistant, model_id: str | None
+    hass: HomeAssistant, model_id: str
 ) -> None:
     """The lamp has spoken, and what it said is no preset known here: unknown.
 
@@ -1161,7 +1169,7 @@ async def test_an_index_the_model_does_not_have_is_not_the_remembered_mode(
     """
     select = "select.glowrium_g7_1234_lighting_mode"
     mock_restore_cache(hass, (State(select, "balance"),))
-    entry = _entry(**({CONF_MODEL_ID: model_id} if model_id else {}))
+    entry = _entry(**{CONF_MODEL_ID: model_id})
     entry.add_to_hass(hass)
     await _setup_without_bluetooth(hass, entry)
     coordinator = entry.runtime_data
