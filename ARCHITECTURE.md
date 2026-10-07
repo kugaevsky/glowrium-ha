@@ -486,7 +486,7 @@ The vendor app performs this bring-up on first pairing. It is **entirely local**
 the captures show **no SMP pairing / BLE bond and no cloud** — so the integration
 replays the same sequence itself. On connect, `_async_activate_if_needed` waits
 briefly for the initial state to arrive; if `0x14` reads `False`,
-`async_activate` sends three commands to `facebd01`:
+`_async_activate` sends three commands to `facebd01`:
 
 ```
 1.  { 0x53: 300 }                         # KEY_ACTIVATE_MISC

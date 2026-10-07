@@ -1922,7 +1922,7 @@ class GlowriumCoordinator:
                 break
             await asyncio.sleep(0.25)
         if self.state.get(KEY_ACTIVATED) is False:
-            await self.async_activate()
+            await self._async_activate()
         if self.state.get(KEY_ACTIVATED):
             self._activation_checked = True
 
@@ -1958,13 +1958,17 @@ class GlowriumCoordinator:
             {KEY_TIME: protocol.encode_device_time(dt_util.now()), KEY_TIME_SYNCED: 1}
         )
 
-    async def async_activate(self) -> None:
+    async def _async_activate(self) -> None:
         """Bring up a factory-reset device: clock + flags + enable light output.
 
         Replays the vendor app's first-pairing sequence - all local, no cloud and
         no BLE bond - so the light works without the app. The device gates its
         light output on 0x14; a virgin (factory-reset) device reports 0x14 False
         and its front-panel LEDs blink until this runs. Idempotent when already on.
+
+        The caller must hold ``_lock`` and have a connection, as for
+        ``_write_raw``, which this is three calls of. The one caller is
+        ``_async_activate_if_needed``, on the priming path.
         """
         await self._write_raw({KEY_ACTIVATE_MISC: ACTIVATE_MISC_VALUE})
         await self._write_raw(

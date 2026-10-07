@@ -299,7 +299,7 @@ async def test_presence_callbacks_notify(hass: HomeAssistant) -> None:
 async def test_async_activate_sequence(hass: HomeAssistant) -> None:
     """Bring-up replays the app's sequence: {0x53}, {time, 0x31}, then {0x14}."""
     coordinator, client = _connected_coordinator(hass)
-    await coordinator.async_activate()
+    await coordinator._async_activate()
     assert client.write_gatt_char.await_count == 3
     payloads = [cbor.decode(c.args[1]) for c in client.write_gatt_char.await_args_list]
     assert payloads[0] == {0x53: 300}
@@ -498,7 +498,7 @@ async def test_activation_skipped_when_state_unreadable(hass: HomeAssistant) -> 
     coordinator._client = client
     coordinator._state_request_muted_until = monotonic() + 60
     activated = []
-    coordinator.async_activate = AsyncMock(side_effect=lambda: activated.append(1))
+    coordinator._async_activate = AsyncMock(side_effect=lambda: activated.append(1))
 
     await coordinator._async_activate_if_needed()
 
