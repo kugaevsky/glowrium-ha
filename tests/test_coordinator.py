@@ -1,6 +1,7 @@
 """Tests for the Glowrium coordinator's command encoding."""
 
 import asyncio
+from collections.abc import Callable
 import logging
 import random
 from time import monotonic
@@ -1484,6 +1485,111 @@ async def test_a_command_reaches_the_entities(hass: HomeAssistant) -> None:
 
     await coordinator.async_set_power(True)
     assert fired == [1]
+
+
+def _listeners_that_fail(coordinator: GlowriumCoordinator, count: int) -> list[int]:
+    """Give ``coordinator`` listeners that all raise, and return who was told."""
+    told: list[int] = []
+
+    def _failing(number: int) -> Callable[[], None]:
+        def _listener() -> None:
+            told.append(number)
+            raise ValueError("this entity cannot show what it was given")
+
+        return _listener
+
+    for number in range(count):
+        coordinator.async_add_listener(_failing(number))
+    return told
+
+
+async def test_a_listener_that_fails_does_not_keep_the_news_from_the_rest(
+    hass: HomeAssistant, caplog: pytest.LogCaptureFixture
+) -> None:
+    """An entity that cannot show a value must not cost the others theirs.
+
+    The listeners are the entities, told one after another. With nothing
+    around each, the first to raise ended the round: whoever came after it
+    went on showing what it had shown before, and the exception landed on
+    whoever had brought the news - the notification, or a command that had
+    in fact gone through.
+
+    Every listener here fails, so the order they are told in does not decide
+    the outcome.
+    """
+    coordinator, _ = _connected_coordinator(hass)
+    told = _listeners_that_fail(coordinator, 3)
+
+    with caplog.at_level(logging.ERROR):
+        carried = coordinator._ingest(cbor.encode({KEY_POWER: True}))
+
+    assert sorted(told) == [0, 1, 2]
+    assert carried == frozenset({KEY_POWER})  # and the report still counts
+    failures = [r for r in caplog.records if r.levelno >= logging.ERROR]
+    assert len(failures) == 3
+    assert all(r.exc_info for r in failures)  # with what it takes to fix it
+
+
+async def test_a_listener_that_keeps_failing_is_named_once(
+    hass: HomeAssistant, caplog: pytest.LogCaptureFixture
+) -> None:
+    """The lamp reports all day; a trace for every report would bury the log.
+
+    Loudly the first time, then quietly - until the listener has managed a
+    round, after which a new failure is news again.
+    """
+    coordinator, _ = _connected_coordinator(hass)
+    healthy = [False]
+
+    def _listener() -> None:
+        if not healthy[0]:
+            raise ValueError("this entity cannot show what it was given")
+
+    coordinator.async_add_listener(_listener)
+
+    def _errors_while_told() -> int:
+        caplog.clear()
+        with caplog.at_level(logging.ERROR):
+            coordinator._ingest(cbor.encode({KEY_POWER: True}))
+        return len([r for r in caplog.records if r.levelno >= logging.ERROR])
+
+    assert _errors_while_told() == 1
+    assert _errors_while_told() == 0  # the same fault, said once
+    healthy[0] = True
+    assert _errors_while_told() == 0
+    healthy[0] = False
+    assert _errors_while_told() == 1  # it had recovered: this is a new one
+
+
+async def test_a_listener_added_again_starts_with_a_clean_record(
+    hass: HomeAssistant, caplog: pytest.LogCaptureFixture
+) -> None:
+    """What a listener did before it was removed is not held against it."""
+    coordinator, _ = _connected_coordinator(hass)
+
+    def _listener() -> None:
+        raise ValueError("this entity cannot show what it was given")
+
+    for _round in range(2):
+        remove = coordinator.async_add_listener(_listener)
+        caplog.clear()
+        with caplog.at_level(logging.ERROR):
+            coordinator._ingest(cbor.encode({KEY_POWER: True}))
+        assert len([r for r in caplog.records if r.levelno >= logging.ERROR]) == 1
+        remove()
+
+
+async def test_a_command_that_went_through_is_not_failed_by_a_listener(
+    hass: HomeAssistant,
+) -> None:
+    """The lamp did what it was told; an entity's trouble is not the caller's."""
+    coordinator, client = _connected_coordinator(hass)
+    told = _listeners_that_fail(coordinator, 2)
+
+    await coordinator.async_set_power(True)
+
+    client.write_gatt_char.assert_awaited_once()
+    assert sorted(set(told)) == [0, 1]
 
 
 async def test_confirmation_waits_for_a_report_that_arrives_late(

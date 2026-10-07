@@ -55,9 +55,17 @@ class GlowriumLight(GlowriumEntity, LightEntity):
 
     @property
     def brightness(self) -> int | None:
-        """Return brightness on HA's 0-255 scale (device uses 0-100)."""
+        """Return brightness on HA's 0-255 scale (device uses 0-100).
+
+        A level is a whole number from 0 to 100, which is also how the
+        diagnostics read it. Anything else under the id is no level: a float
+        can be ``inf`` or ``nan``, which cannot be rounded at all, and 150
+        would come out as a brightness Home Assistant has no such thing as.
+        """
         value = self._coordinator.state.get(KEY_BRIGHTNESS)
-        if not isinstance(value, (int, float)) or isinstance(value, bool):
+        if isinstance(value, bool) or not isinstance(value, int):
+            return None
+        if not 0 <= value <= 100:  # noqa: PLR2004 - a percentage
             return None
         return round(value * 255 / 100)
 

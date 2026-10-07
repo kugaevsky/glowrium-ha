@@ -407,6 +407,14 @@ def _as_text(name: str) -> str:
     return " ".join(kept.split())[:_NAME_SHOWN] or "the lamp"
 
 
+def _named(listener: Callable[[], None]) -> str:
+    """Return what to call ``listener`` in the log: its entity, if it has one."""
+    entity_id = getattr(getattr(listener, "__self__", None), "entity_id", None)
+    if isinstance(entity_id, str):
+        return entity_id
+    return getattr(listener, "__qualname__", "a listener")
+
+
 def _parse_device_info(raw: bytes) -> dict[str, str]:
     """Parse the facebd80 device-info string: 'key:value;key:value;...'."""
     info: dict[str, str] = {}
@@ -459,6 +467,9 @@ class GlowriumCoordinator:
         self._desired_ramp: bytes | None = None
         self._lock = asyncio.Lock()
         self._listeners: set[Callable[[], None]] = set()
+        # Listeners whose last telling raised: each is named in the log once,
+        # not on every report (see _async_notify_listeners).
+        self._listeners_failing: set[Callable[[], None]] = set()
         self._cancel_bluetooth: Callable[[], None] | None = None
         self._cancel_unavailable: Callable[[], None] | None = None
         self._cancel_poll: Callable[[], None] | None = None
@@ -704,14 +715,43 @@ class GlowriumCoordinator:
         @callback
         def _remove() -> None:
             self._listeners.discard(update_callback)
+            self._listeners_failing.discard(update_callback)
 
         return _remove
 
     @callback
     def _async_notify_listeners(self) -> None:
+        """Tell every listener that something changed, each on its own.
+
+        A listener is an entity writing its state. One that raises must not
+        keep the news from the rest, and its exception is not the business of
+        whoever brought the news - a notification, or a command that in fact
+        went through. It is named with its trace once: the lamp reports all
+        day, and what failed an entity once fails it on every report, until
+        the value changes. Having managed a round, it is news again.
+        """
         self._async_log_reach()
         for update_callback in list(self._listeners):
-            update_callback()
+            try:
+                update_callback()
+            except Exception:  # whatever it raised, the rest are still told
+                if update_callback in self._listeners_failing:
+                    _LOGGER.debug(
+                        "%s: %s failed again to take in a change",
+                        self.address,
+                        _named(update_callback),
+                    )
+                    continue
+                self._listeners_failing.add(update_callback)
+                _LOGGER.exception(
+                    "%s: %s failed to take in a change and shows what it showed "
+                    "before; the others were told. Said once, until it has "
+                    "managed again. Please report this with the trace below",
+                    self.address,
+                    _named(update_callback),
+                )
+            else:
+                self._listeners_failing.discard(update_callback)
 
     @callback
     def _async_log_reach(self) -> None:

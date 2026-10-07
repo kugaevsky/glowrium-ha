@@ -2,7 +2,9 @@
 
 import asyncio
 import importlib
-from unittest.mock import AsyncMock, MagicMock, patch
+import logging
+from typing import Any
+from unittest.mock import AsyncMock, MagicMock, PropertyMock, patch
 
 from bleak.exc import BleakError
 from homeassistant.components.logger.helpers import get_integration_loggers
@@ -20,16 +22,24 @@ from pytest_homeassistant_custom_component.common import (
 from custom_components.glowrium import PLATFORMS, cbor, models
 from custom_components.glowrium.const import (
     DOMAIN,
+    KEY_ACTIVATED,
     KEY_BRIGHTNESS,
+    KEY_CIRCADIAN,
     KEY_DST,
     KEY_INDICATOR,
+    KEY_LATITUDE,
     KEY_LIGHTING_MODE,
+    KEY_LONGITUDE,
     KEY_POWER,
+    KEY_RAMP,
+    KEY_SCHEDULE,
+    KEY_TIMER,
 )
 from custom_components.glowrium.coordinator import (
     GlowriumCoordinator,
     _parse_device_info as _parsed,
 )
+from custom_components.glowrium.light import GlowriumLight
 from custom_components.glowrium.models import GlowriumModel
 from custom_components.glowrium.select import GlowriumLightingModeSelect
 
@@ -847,6 +857,139 @@ async def test_a_brightness_that_is_not_a_number_is_not_a_brightness(
     light = hass.states.get("light.glowrium_g7_1234")
     assert light.state == "on"
     assert light.attributes["brightness"] is None
+
+
+@pytest.mark.parametrize(
+    "reported", [float("inf"), float("-inf"), float("nan"), 150, -1, 2**40, 12.5, True]
+)
+async def test_a_brightness_that_is_no_percentage_is_not_a_brightness(
+    hass: HomeAssistant, reported: float
+) -> None:
+    """A level is a whole number from 0 to 100, or it is not shown.
+
+    ``inf`` and ``nan`` are what a lamp - or whatever answers at its address -
+    can put in a float, and rounding either raises; 150 would be shown as a
+    brightness Home Assistant has no such thing as.
+    """
+    entry = await _setup_without_bluetooth(hass)
+
+    entry.runtime_data._ingest(cbor.encode({KEY_POWER: True, KEY_BRIGHTNESS: reported}))
+    await hass.async_block_till_done()
+
+    light = hass.states.get("light.glowrium_g7_1234")
+    assert light.state == "on"
+    assert light.attributes["brightness"] is None
+
+
+# A lamp as it reports when all is well; its three modes are below.
+_WELL: dict[int, Any] = {
+    KEY_POWER: True,
+    KEY_BRIGHTNESS: 70,
+    KEY_LATITUDE: 12.5,
+    KEY_LONGITUDE: 65.5,
+    KEY_TIMER: bytes.fromhex("01000000061e1200460258"),
+    KEY_ACTIVATED: True,
+    KEY_INDICATOR: True,
+    KEY_LIGHTING_MODE: 5,
+    KEY_RAMP: bytes.fromhex("0708"),
+    KEY_DST: bytes.fromhex("0000000e10"),
+}
+_MODES: tuple[dict[int, Any], ...] = (
+    {KEY_CIRCADIAN: False, KEY_SCHEDULE: False},
+    {KEY_CIRCADIAN: True, KEY_SCHEDULE: False},
+    {KEY_CIRCADIAN: False, KEY_SCHEDULE: True},
+)
+# Everything the decoder can hand over under an id: the shape of a frame is
+# checked, what sits under an id is not.
+_ODD: tuple[Any, ...] = (
+    float("inf"),
+    float("-inf"),
+    float("nan"),
+    1.5,
+    -1,
+    101,
+    255,
+    2**64 - 1,
+    -(2**63),
+    True,
+    False,
+    "",
+    "on",
+    b"",
+    b"\x01",
+    b"\xff" * 2,
+    b"\xff" * 5,
+    b"\xff" * 7,
+    b"\xff" * 11,
+    b"\x00" * 11,
+    b"\xff" * 40,
+    [],
+    [1, 2],
+    {},
+    {1: 2},
+)
+
+
+async def test_no_value_under_an_id_makes_an_entity_raise(
+    hass: HomeAssistant, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Whatever the lamp puts under an id, every entity still says something.
+
+    Each entity reads the mirror its own way and guards for its own types; a
+    value none of them expected - a float where a flag belongs, a slot of the
+    wrong length, a map - has to come out as "unknown" at worst. One entity
+    raising used to keep the update from all the others, and still fills the
+    log.
+    """
+    entry = await _setup_without_bluetooth(hass)
+    coordinator = entry.runtime_data
+    raised: list[str] = []
+
+    def _told(values: dict[int, Any]) -> None:
+        caplog.clear()
+        try:
+            coordinator._ingest(cbor.encode(values))
+        except Exception as err:  # collected, to name them all
+            raised.append(f"{values!r}: {err!r}")
+        raised.extend(
+            f"{values!r}: {record.getMessage()} ({record.exc_info[1]!r})"
+            for record in caplog.records
+            if record.levelno >= logging.ERROR and record.exc_info
+        )
+
+    with caplog.at_level(logging.ERROR):
+        for mode in _MODES:
+            _told(_WELL | mode)
+            for key, well in (_WELL | mode).items():
+                for odd in _ODD:
+                    _told({key: odd})
+                _told({key: well})
+    await hass.async_block_till_done()
+
+    assert not raised, "\n".join(sorted(set(raised)))
+
+
+async def test_an_entity_that_raises_is_named_and_the_others_still_follow(
+    hass: HomeAssistant, caplog: pytest.LogCaptureFixture
+) -> None:
+    """The log says which entity failed, and the device page shows the rest.
+
+    Which entity is told first is not fixed, so the others following is seen
+    here only when the failing one happens to come first; that every listener
+    is told whatever the ones before it did is pinned on the coordinator.
+    """
+    entry = await _setup_without_bluetooth(hass)
+    bug = PropertyMock(side_effect=RuntimeError("a bug in the light"))
+
+    with patch.object(GlowriumLight, "is_on", bug), caplog.at_level(logging.ERROR):
+        entry.runtime_data._ingest(cbor.encode({KEY_INDICATOR: True}))
+        entry.runtime_data._ingest(cbor.encode({KEY_INDICATOR: False}))
+        await hass.async_block_till_done()
+
+    assert hass.states.get("switch.glowrium_g7_1234_indicator_light").state == "off"
+    failures = [r for r in caplog.records if r.levelno >= logging.ERROR]
+    assert len(failures) == 1  # two reports, one fault: said once
+    assert "light.glowrium_g7_1234 failed" in failures[0].getMessage()
 
 
 async def test_an_entity_built_after_the_lamp_was_read_describes_it_in_full(

@@ -32,6 +32,19 @@ All notable changes to this project are documented here. The format is based on
   exchange - the debug log said `Reconnect to … failed` of a link the
   integration went on holding. It says now that the link is held
   ([#20](https://github.com/kugaevsky/glowrium-ha/issues/20)).
+- **One entity that cannot show a value no longer keeps the update from the
+  others.** The entities were told of a change one after another with
+  nothing around each, so the first to raise ended the round: the rest went
+  on showing what they had shown before, and a command that had in fact
+  reached the lamp was reported as failed. Each is told on its own now. One
+  that fails is named in the log with its trace, once, until it has managed
+  again ([#23](https://github.com/kugaevsky/glowrium-ha/issues/23)).
+- **A brightness that is no percentage is not shown as one.** A lamp - or
+  whatever answers at its address - that reported `inf` or `nan` made the
+  light raise, and 150 came out as a level Home Assistant has no such thing
+  as. A level is a whole number from 0 to 100; anything else leaves the
+  light's brightness unknown
+  ([#23](https://github.com/kugaevsky/glowrium-ha/issues/23)).
 
 ### Changed
 
