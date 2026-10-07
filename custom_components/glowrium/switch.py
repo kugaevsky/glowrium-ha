@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import Any
 
 from homeassistant.components.switch import SwitchEntity
+from homeassistant.const import EntityCategory
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 
@@ -31,8 +32,13 @@ async def async_setup_entry(
 
 
 class GlowriumIndicatorSwitch(GlowriumSettingEntity, SwitchEntity):
-    """The device's status indicator LED (key 0x17)."""
+    """The device's status indicator LED (key 0x17).
 
+    A setting of the lamp, not what the lamp is for: as a `config` entity it
+    is passed over by an action aimed at a room, which means the light.
+    """
+
+    _attr_entity_category = EntityCategory.CONFIG
     _attr_translation_key = "indicator"
 
     def __init__(self, coordinator: GlowriumCoordinator) -> None:
@@ -58,8 +64,14 @@ class GlowriumIndicatorSwitch(GlowriumSettingEntity, SwitchEntity):
 
 
 class GlowriumDstSwitch(GlowriumSettingEntity, SwitchEntity):
-    """Daylight-saving-time handling (key 0x35, byte 0)."""
+    """Daylight-saving-time handling (key 0x35, byte 0).
 
+    A `config` entity, and it matters that it is: the flag moves the lamp's
+    own program by its offset, and "turn on every switch in this room" used
+    to set it with nothing to say why the lamp was an hour out.
+    """
+
+    _attr_entity_category = EntityCategory.CONFIG
     _attr_translation_key = "dst"
 
     def __init__(self, coordinator: GlowriumCoordinator) -> None:

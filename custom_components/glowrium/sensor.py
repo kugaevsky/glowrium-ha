@@ -33,9 +33,17 @@ async def async_setup_entry(
 
 
 class GlowriumCoordinateSensor(GlowriumEntity, SensorEntity):
-    """The latitude/longitude the device uses to compute its circadian curve."""
+    """The latitude/longitude the device uses to compute its circadian curve.
+
+    Disabled until somebody asks for it. After Sync location this is where
+    the home is, and enabled it sits in a state and goes into the recorder's
+    history on every installation, for the few who ever look. Home Assistant
+    takes this default only when it first registers the entity, so one that
+    an installation already has stays as it is.
+    """
 
     _attr_entity_category = EntityCategory.DIAGNOSTIC
+    _attr_entity_registry_enabled_default = False
 
     def __init__(
         self, coordinator: GlowriumCoordinator, key: int, translation_key: str

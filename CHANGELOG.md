@@ -115,6 +115,23 @@ All notable changes to this project are documented here. The format is based on
   all six languages, that each line is a lamp heard nearby that has not
   been set up yet, by the name it advertises and its address
   ([#33](https://github.com/kugaevsky/glowrium-ha/issues/33)).
+- **The indicator, daylight saving time and *Sync location* are settings.**
+  They carried no category, so Home Assistant took them for the lamp's main
+  controls: "turn on every switch in this room" set the daylight-saving
+  flag, and the lamp's own program was an hour out with nothing to say why.
+  They are `config` entities now. On the device page they move from
+  *Controls* to *Configuration*, and an action aimed at an area, a device or
+  a floor passes them over; one that names the entity still reaches it.
+  Nor does Home Assistant offer them to a voice assistant by default any
+  more - where that choice has not been made already
+  ([#36](https://github.com/kugaevsky/glowrium-ha/issues/36)).
+- **The two coordinate sensors start disabled.** *Latitude* and *Longitude*
+  show the position the lamp holds - after *Sync location*, the home's -
+  and enabled they kept it in states and in the recorder's history on
+  every installation. A lamp set up from now on has them disabled until
+  they are enabled on the device page. An installation that already has
+  them keeps them as they are
+  ([#36](https://github.com/kugaevsky/glowrium-ha/issues/36)).
 
 ## [0.3.0] - 2026-10-06
 

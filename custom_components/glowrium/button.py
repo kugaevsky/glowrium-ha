@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from homeassistant.components.button import ButtonEntity
+from homeassistant.const import EntityCategory
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 
@@ -27,9 +28,12 @@ async def async_setup_entry(
 class GlowriumSyncLocationButton(GlowriumEntity, ButtonEntity):
     """Push Home Assistant's home coordinates to the device (keys 0x0a/0x0b).
 
-    The device then recomputes its circadian sunrise/sunset curve itself.
+    The device then recomputes its circadian sunrise/sunset curve itself. A
+    setting of the lamp, so a `config` entity: pressing every button in a
+    room is not a reason to rewrite where the lamp believes it stands.
     """
 
+    _attr_entity_category = EntityCategory.CONFIG
     _attr_translation_key = "sync_location"
 
     def __init__(self, coordinator: GlowriumCoordinator) -> None:

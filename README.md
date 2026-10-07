@@ -52,13 +52,23 @@ Three of these are written out under
 | Indicator light | `switch` | Front-panel status LED |
 | Daylight saving time | `switch` | Device DST handling |
 | Sync location | `button` | Pushes HA's home coordinates; the device recomputes its circadian curve itself |
-| Latitude / Longitude | `sensor` | Diagnostic — the coordinates stored on the device |
+| Latitude / Longitude | `sensor` | Diagnostic — the coordinates stored on the device; *disabled until you enable them* |
 | Activated | `binary_sensor` | Diagnostic — provisioning status (see [Provisioning](#provisioning)) |
 
 **Mode-dependent availability:** *Lighting mode* and *Ramp time* are available
 only in **Circadian**; the *Schedule* controls only in **Schedule**. The
 integration drives the device's own native Circadian/Schedule engine rather than
 reimplementing it in Home Assistant.
+
+**Controls and settings.** The light and the operating mode are the lamp's
+controls. Everything else that can be set — lighting mode, ramp, the schedule,
+the indicator, daylight saving time, *Sync location* — is a setting: it sits
+under *Configuration* on the device page, and Home Assistant passes it over
+when an action is aimed at a room or at the device as a whole. "Turn on every
+switch in this room" does not set the daylight-saving flag; an action that
+names the entity still does. *Latitude* and *Longitude* start disabled, so
+that the position the lamp holds is not kept in states and history unasked:
+enable them on the device page to see it.
 
 **Lighting modes in automations.** The select shows the vendor's names; what
 it stores, and what `select.select_option` takes, is a key: `sun_sync`,
@@ -145,7 +155,7 @@ a clear write-up is enough, and I'll help with the rest.
    - Lighting mode — the circadian presets (do the names/effects match?);
    - Ramp time; Schedule start/end, gradual, and brightness;
    - Indicator light; Daylight saving time; Sync location;
-   - Diagnostic Latitude/Longitude sensors and the Activated sensor;
+   - Diagnostic Latitude/Longitude sensors (enable them first) and the Activated sensor;
    - Bringing up a **factory-reset** unit (if you tried it).
 4. **What's wrong or missing.** Anything that doesn't work, is stuck
    *unavailable*, behaves oddly, or that your device can do but the integration

@@ -9,7 +9,12 @@ from unittest.mock import AsyncMock, MagicMock, PropertyMock, patch
 from bleak.exc import BleakError
 from homeassistant.components.logger.helpers import get_integration_loggers
 from homeassistant.config_entries import ConfigEntryState
-from homeassistant.const import CONF_ADDRESS, CONF_MODEL_ID, EVENT_HOMEASSISTANT_STOP
+from homeassistant.const import (
+    CONF_ADDRESS,
+    CONF_MODEL_ID,
+    EVENT_HOMEASSISTANT_STOP,
+    EntityCategory,
+)
 from homeassistant.core import (
     Event,
     EventStateChangedData,
@@ -18,7 +23,11 @@ from homeassistant.core import (
     callback,
 )
 from homeassistant.exceptions import HomeAssistantError, ServiceValidationError
-from homeassistant.helpers import device_registry as dr, entity_registry as er
+from homeassistant.helpers import (
+    area_registry as ar,
+    device_registry as dr,
+    entity_registry as er,
+)
 from homeassistant.helpers.event import async_track_state_change_event
 from homeassistant.helpers.icon import async_get_icons
 import pytest
@@ -218,12 +227,15 @@ async def test_every_platform_produces_entities(hass: HomeAssistant) -> None:
     from the list - so the lamp has no light entity, the one thing the
     integration exists for - left every test passing.
     """
-    await _setup_without_bluetooth(hass)
+    entry = await _setup_without_bluetooth(hass)
 
+    # Asked of the registry, not of the states: an entity that starts
+    # disabled is registered and has no state.
     domains = {
-        state.entity_id.split(".")[0]
-        for state in hass.states.async_all()
-        if "glowrium" in state.entity_id
+        registered.domain
+        for registered in er.async_entries_for_config_entry(
+            er.async_get(hass), entry.entry_id
+        )
     }
     assert domains == {
         "binary_sensor",
@@ -235,6 +247,119 @@ async def test_every_platform_produces_entities(hass: HomeAssistant) -> None:
         "switch",
         "time",
     }
+
+
+def _coordinate_sensors_from_before(
+    hass: HomeAssistant, entry: MockConfigEntry
+) -> None:
+    """Register the two coordinate sensors as an older installation has them.
+
+    Enabled, that is: they start disabled only where they are new.
+    """
+    for which in ("latitude", "longitude"):
+        er.async_get(hass).async_get_or_create(
+            "sensor", DOMAIN, f"{ADDRESS}_{which}", config_entry=entry
+        )
+
+
+async def test_an_action_aimed_at_the_lamps_room_reaches_the_light_and_no_setting(
+    hass: HomeAssistant,
+) -> None:
+    """An action aimed at a room - "turn on everything here" - means the light.
+
+    The indicator, daylight saving time and Sync location carried no category,
+    so Home Assistant took them for the lamp's main controls, and an action
+    aimed at the room reached them: every switch in the room on meant the
+    daylight-saving flag set, and the lamp's own program an hour out, with
+    nothing to say why.
+    """
+    entry = await _setup_without_bluetooth(hass)
+    coordinator = entry.runtime_data
+    room = ar.async_get(hass).async_create("Greenhouse")
+    dr.async_get(hass).async_update_device(_device(hass).id, area_id=room.id)
+    await hass.async_block_till_done()
+    coordinator.async_set_dst = AsyncMock()
+    coordinator.async_set_indicator = AsyncMock()
+    coordinator.async_sync_location = AsyncMock()
+    coordinator.async_set_light_state = AsyncMock()
+
+    for domain, service in (
+        ("switch", "turn_on"),
+        ("switch", "turn_off"),
+        ("button", "press"),
+        ("light", "turn_on"),
+    ):
+        await hass.services.async_call(
+            domain, service, {}, target={"area_id": room.id}, blocking=True
+        )
+
+    coordinator.async_set_dst.assert_not_awaited()
+    coordinator.async_set_indicator.assert_not_awaited()
+    coordinator.async_sync_location.assert_not_awaited()
+    coordinator.async_set_light_state.assert_awaited_once()  # the room's light
+
+
+@pytest.mark.parametrize(
+    ("domain", "unique"),
+    [("switch", "indicator"), ("switch", "dst"), ("button", "sync_location")],
+)
+async def test_a_setting_of_the_lamp_is_registered_as_a_setting(
+    hass: HomeAssistant, domain: str, unique: str
+) -> None:
+    """Which is what puts it under Configuration, and out of a room-wide action."""
+    await _setup_without_bluetooth(hass)
+    registry = er.async_get(hass)
+
+    entity_id = registry.async_get_entity_id(domain, DOMAIN, f"{ADDRESS}_{unique}")
+
+    assert entity_id is not None
+    registered = registry.async_get(entity_id)
+    assert registered is not None
+    assert registered.entity_category is EntityCategory.CONFIG
+
+
+async def test_the_coordinate_sensors_start_disabled(hass: HomeAssistant) -> None:
+    """Where the lamp is, is not put into states and history unasked.
+
+    After Sync location the lamp holds the home's position, and the two
+    sensors show it. Few ever look; whoever wants to enables them.
+    """
+    entry = await _setup_without_bluetooth(hass)
+    registry = er.async_get(hass)
+    entry.runtime_data._ingest(cbor.encode({KEY_LATITUDE: 12.5, KEY_LONGITUDE: 65.5}))
+    await hass.async_block_till_done()
+
+    for which in ("latitude", "longitude"):
+        entity_id = registry.async_get_entity_id("sensor", DOMAIN, f"{ADDRESS}_{which}")
+        assert entity_id is not None  # registered, so that it can be enabled
+        registered = registry.async_get(entity_id)
+        assert registered is not None
+        assert registered.disabled_by is er.RegistryEntryDisabler.INTEGRATION
+        assert hass.states.get(entity_id) is None
+
+
+async def test_coordinate_sensors_an_installation_has_already_are_left_alone(
+    hass: HomeAssistant,
+) -> None:
+    """Starting disabled is for a lamp set up from now on; nothing is taken away."""
+    entry = _entry()
+    entry.add_to_hass(hass)
+    _coordinate_sensors_from_before(hass, entry)
+    await _setup_without_bluetooth(hass, entry)
+    registry = er.async_get(hass)
+
+    entry.runtime_data._ingest(cbor.encode({KEY_LATITUDE: 12.5, KEY_LONGITUDE: 65.5}))
+    await hass.async_block_till_done()
+
+    shown = {}
+    for which in ("latitude", "longitude"):
+        entity_id = registry.async_get_entity_id("sensor", DOMAIN, f"{ADDRESS}_{which}")
+        assert entity_id is not None
+        registered = registry.async_get(entity_id)
+        assert registered is not None
+        assert registered.disabled_by is None
+        shown[which] = hass.states.get(entity_id).state
+    assert shown == {"latitude": "12.5", "longitude": "65.5"}
 
 
 async def test_the_light_shows_what_the_device_reported(hass: HomeAssistant) -> None:
@@ -1005,7 +1130,10 @@ async def test_no_value_under_an_id_makes_an_entity_raise(
     raising used to keep the update from all the others, and still fills the
     log.
     """
-    entry = await _setup_without_bluetooth(hass)
+    entry = _entry()
+    entry.add_to_hass(hass)
+    _coordinate_sensors_from_before(hass, entry)  # every entity, these too
+    await _setup_without_bluetooth(hass, entry)
     coordinator = entry.runtime_data
     raised: list[str] = []
 
