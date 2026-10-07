@@ -29,7 +29,7 @@ rules:
     status: done
     comment: |
       Shipped in the integration's `brand` directory, which Home Assistant
-      serves since 2026.3.
+      serves.
   common-modules: done
   config-flow-test-coverage: done
   config-flow: done

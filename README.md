@@ -208,14 +208,15 @@ device already paired via the app stays activated across restarts.
 ## Automation examples
 
 Each block is one automation, as the automation editor shows it in YAML mode.
-The entity ids are placeholders: a real one carries the name the lamp
-advertises (`light.glowrium_g7_xxxxxx`), and the device page lists them.
-Nothing else needs changing. The integration adds no actions of its own; these
-are Home Assistant's, for the kind of entity each one is.
+The entity ids are placeholders: the device page lists the real ones, which
+carry your lamp's name where these have `xxxxxx`. Nothing else needs
+changing. The integration adds no actions of its own; these are Home
+Assistant's, for the kind of entity each one is.
 
 **Switch the light on a timetable of your own** — on at seven, at 80 %; a
-second automation with `light.turn_off` ends the day. This suits a lamp in
-**Manual**: in Circadian and Schedule the lamp is run by its own program.
+second automation with `light.turn_off` ends the day. It is written for a
+lamp in **Manual**. In Circadian and Schedule the lamp's own program
+switches it as well, and how the two get on has not been tried.
 
 ```yaml
 alias: Grow lamp on in the morning
@@ -225,19 +226,22 @@ triggers:
 actions:
   - action: light.turn_on
     target:
-      entity_id: light.glowrium_g7
+      entity_id: light.glowrium_g7_xxxxxx
     data:
       brightness_pct: 80
 ```
 
 **Hand the lamp to its circadian program when the last person leaves.** The
-operating mode goes first: a lighting mode can only be chosen in Circadian,
-and a call made in another mode does nothing. And the lighting mode is named
-by its key, `sunrise_sync`, not by the name the select shows (see
-[Features](#features)).
+operating mode goes first: a lighting mode can only be chosen in Circadian.
+In another mode the select is unavailable, and Home Assistant passes a call
+to it over with a warning in the log. The lighting mode is named by its key,
+`sunrise_sync`, not by the name the select shows (see
+[Features](#features)). The trigger counts the people Home Assistant tracks
+at home, so it needs some tracked; and nothing here takes the lamp back - an
+automation of its own does that when somebody returns.
 
 ```yaml
-alias: Grow lamp runs itself while nobody is home
+alias: Grow lamp runs itself once nobody is home
 triggers:
   - trigger: numeric_state
     entity_id: zone.home
@@ -245,12 +249,12 @@ triggers:
 actions:
   - action: select.select_option
     target:
-      entity_id: select.glowrium_g7_operating_mode
+      entity_id: select.glowrium_g7_xxxxxx_operating_mode
     data:
       option: circadian
   - action: select.select_option
     target:
-      entity_id: select.glowrium_g7_lighting_mode
+      entity_id: select.glowrium_g7_xxxxxx_lighting_mode
     data:
       option: sunrise_sync
 ```
@@ -266,7 +270,7 @@ triggers:
 actions:
   - action: switch.turn_off
     target:
-      entity_id: switch.glowrium_g7_indicator_light
+      entity_id: switch.glowrium_g7_xxxxxx_indicator_light
 ```
 
 The other controls go the same way: `number.set_value` for *Ramp time* and the
@@ -278,7 +282,7 @@ two schedule numbers, `time.set_value` for *Schedule start* and *end*,
 The lamp pushes its state. Over the Bluetooth link the integration holds, the
 lamp reports each change as it happens — one its own program made as much as
 one made from Home Assistant — and the entities follow. State is not polled.
-The lamp is asked for it once, when a link is made, which is also how a
+The lamp is asked for it when a link is made, which is also how a
 setting changed from the vendor app while Home Assistant was not connected is
 picked up. (A lamp that refuses to be asked is read instead: see
 `refused the batched state request` under [Troubleshooting](#troubleshooting).)
@@ -292,8 +296,10 @@ links each shows the last value it had, and a command sent then makes its own
 connection first.
 
 After a restart of Home Assistant the settings — operating mode, lighting
-mode, ramp, schedule, indicator, daylight saving time — show what they showed
-before it, until the lamp reports. The light does not: a lamp said to be on
+mode, ramp, schedule, indicator, daylight saving time — show the value they
+showed before it, until the lamp reports. One that showed none has none to
+show: a setting of a mode the lamp was not in is unavailable, and comes back
+`unknown`. The light is not remembered at all: a lamp said to be on
 while it is off is worse than `unknown`, so the light, like the diagnostic
 entities, reads `unknown` until the lamp has spoken. On a first start nothing
 is remembered yet, and the settings read `unknown` as well. A remembered value
@@ -312,8 +318,7 @@ What the integration cannot do, as distinct from what it gets wrong.
   the lamp; nothing here can change it.
 - **Only the lamp, not the rest of the vendor app.** The integration talks to
   the lamp over Bluetooth and to nothing else: there is no vendor account in
-  it, and none of what the app offers beyond the lamp's own controls, such as
-  its plant assistant and its watering reminders.
+  it, and none of what the app offers beyond the lamp's own controls.
 - **The lamp's location can only be set to Home Assistant's own.** *Sync
   location* writes the home coordinates Home Assistant is set to, and there is
   no giving it others. *Latitude* and *Longitude* show what the lamp holds and
@@ -323,9 +328,8 @@ What the integration cannot do, as distinct from what it gets wrong.
   indices until its own are known (see
   [Supported devices](#supported-devices)).
 - **A Linux host, and the G8.** Both are described where they show, and not
-  again here: through BlueZ a read of the lamp ends the link, which costs one
-  two-second link after every start or reload (see
-  [Troubleshooting](#troubleshooting)); and what is and is not confirmed on a
+  again here: what a read of the lamp costs on a Linux host is under
+  [Troubleshooting](#troubleshooting), and what is and is not confirmed on a
   G8 is under [Supported devices](#supported-devices).
 
 ## Troubleshooting
@@ -365,6 +369,12 @@ messages worth acting on, and two symptoms that come without one.
   write did not get through. Check that the vendor app is not connected (the
   lamp takes one connection at a time) and that an adapter or a proxy is
   within range of the lamp.
+- **Sync location fails with "Home Assistant has no home location set"** —
+  the latitude and the longitude Home Assistant holds are both zero, which
+  is what it has when it was never given a position. Written to the lamp,
+  that would put it where the equator meets the prime meridian. Set the home
+  location in Home Assistant and press again. A home with one of the two at
+  zero is a real place and is sent as it is.
 - **A command fails with "the integration is being reloaded or Home Assistant
   is stopping"** — it arrived while the integration was on its way out.
   Nothing is wrong with the lamp or with the radio; send it again once the

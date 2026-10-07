@@ -17,7 +17,7 @@ from homeassistant.core import (
     State,
     callback,
 )
-from homeassistant.exceptions import HomeAssistantError
+from homeassistant.exceptions import HomeAssistantError, ServiceValidationError
 from homeassistant.helpers import device_registry as dr, entity_registry as er
 from homeassistant.helpers.event import async_track_state_change_event
 from homeassistant.helpers.icon import async_get_icons
@@ -856,6 +856,9 @@ async def test_syncing_a_home_that_was_never_set_writes_nothing_and_says_why(
 
     assert err.value.translation_domain == DOMAIN
     assert err.value.translation_key == "home_location_not_set"
+    # The user's to put right, not a fault of the lamp or the link: Home
+    # Assistant shows such a refusal and keeps it out of the log.
+    assert isinstance(err.value, ServiceValidationError)
     # What the user is shown is the message, with the lamp named in it - not
     # the key, which is what Home Assistant falls back on for one it lacks.
     assert "Glowrium-G7_1234" in str(err.value)

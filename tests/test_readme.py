@@ -12,7 +12,6 @@ the two selects are told apart here.
 """
 
 from collections.abc import Iterator
-from pathlib import Path
 import re
 from typing import Any
 
@@ -22,7 +21,9 @@ import yaml
 from custom_components.glowrium.const import OPERATING_MODES
 from custom_components.glowrium.models import DEFAULT_MODEL, MODELS
 
-README = Path(__file__).parent.parent / "README.md"
+from .conftest import ROOT
+
+README = ROOT / "README.md"
 HEADING = "## Automation examples"
 
 # What Home Assistant has for the kinds of entity the lamp has. The integration

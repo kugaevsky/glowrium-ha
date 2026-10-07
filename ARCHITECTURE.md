@@ -636,8 +636,9 @@ or not the lamp answers. It used to be awaited, which left the entry in "setup
 in progress" for as long as the connect took — and a reload landing inside that
 window cancelled the setup and left the entry in `setup_error`. Availability
 follows advertisement presence, so an advertising lamp comes up **available with
-its entities `unknown`** until the first state arrives; that blip is the cost of
-not blocking setup. The coordinator takes its entry *before* it registers for
+nothing read** until the first state arrives - the light and the diagnostic
+entities `unknown`, the settings showing what they showed before the restart;
+that blip is the cost of not blocking setup. The coordinator takes its entry *before* it registers for
 advertisements: Home Assistant replays the last advertisement from inside that
 registration when it already knows the device — every reload, for a lamp that
 advertises all the time — and the reconnect the replay starts needs an entry to

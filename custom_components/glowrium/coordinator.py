@@ -18,7 +18,7 @@ from homeassistant.components import bluetooth
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import CONF_MODEL_ID
 from homeassistant.core import Event, HomeAssistant, callback
-from homeassistant.exceptions import HomeAssistantError
+from homeassistant.exceptions import HomeAssistantError, ServiceValidationError
 from homeassistant.helpers import device_registry as dr, issue_registry as ir
 from homeassistant.helpers.event import async_track_time_interval
 from homeassistant.helpers.typing import UNDEFINED
@@ -2153,6 +2153,10 @@ class GlowriumCoordinator:
         that place, after a press that said it had worked. One zero is a real
         place, on the equator or on the prime meridian, and is written.
 
+        The refusal is the user's to put right, not a fault of the lamp or of
+        the link, and is raised as such: Home Assistant shows it and keeps it
+        out of the log.
+
         Without Home Assistant (``tools/bench.py``) there is no home to push.
         """
         if self.hass is None:
@@ -2160,7 +2164,7 @@ class GlowriumCoordinator:
         lat = self.hass.config.latitude
         lon = self.hass.config.longitude
         if lat == 0 and lon == 0:
-            raise HomeAssistantError(
+            raise ServiceValidationError(
                 translation_domain=DOMAIN,
                 translation_key="home_location_not_set",
                 translation_placeholders={"name": self.name},

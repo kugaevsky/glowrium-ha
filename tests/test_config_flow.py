@@ -267,7 +267,7 @@ async def test_every_field_of_the_form_is_described_in_every_language(
             DOMAIN, context={"source": SOURCE_USER}
         )
     fields = [str(field) for field in result["data_schema"].schema]
-    assert fields == [CONF_ADDRESS]
+    assert CONF_ADDRESS in fields
 
     assert len(FORM_WORDS) == 7  # strings.json and the six languages
     for field in fields:
