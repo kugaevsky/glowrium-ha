@@ -690,7 +690,7 @@ async def main() -> int:
         print("no Glowrium advertising - move closer, or check the vendor app is off")
         return 1
 
-    coordinator = GlowriumCoordinator(None, device.address, device.name)  # type: ignore[arg-type]
+    coordinator = GlowriumCoordinator(None, device.address, device.name)
     coordinator._ble_device = lambda: device  # noqa: SLF001
     # The bench never provisions anything. Saying so here beats trusting that
     # 0x14 reads back the way we expect.

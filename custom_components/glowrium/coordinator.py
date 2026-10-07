@@ -433,12 +433,17 @@ class GlowriumCoordinator:
 
     def __init__(
         self,
-        hass: HomeAssistant,
+        hass: HomeAssistant | None,
         address: str,
         name: str,
         model_id: str | None = None,
     ) -> None:
         """Initialize the coordinator for the device at ``address``.
+
+        ``hass`` is None when there is no Home Assistant behind it: that is
+        how tools/bench.py drives the real coordinator against a real lamp.
+        It then connects, primes and commands as it does anywhere, keeps its
+        own background tasks, and cannot be started (see ``async_start``).
 
         ``model_id`` is the model an earlier session read off the lamp, if
         one did. The entities are built before this session has read
@@ -471,8 +476,9 @@ class GlowriumCoordinator:
         # for an owner that no longer exists. The one exception is a hang-up,
         # which has to outlive the entry - see _hang_up.
         self._entry: ConfigEntry | None = None
-        # Hang-ups in flight when there is no hass to keep them (see _hang_up).
-        self._hang_ups: set[asyncio.Task[None]] = set()
+        # Tasks in flight when there is no hass to keep them: hang-ups, and
+        # whatever the poll spawned (see _run_without_hass).
+        self._kept_tasks: set[asyncio.Task[None]] = set()
         # What sits behind each client, noted when the client is taken: by
         # the time it has to be closed, Home Assistant's wrapper may have
         # forgotten its backend (see _close_bus).
@@ -751,6 +757,14 @@ class GlowriumCoordinator:
         rather than the GATT link. Tying the task to ``entry`` means it is
         cancelled on unload, so a half-finished connect cannot outlive us.
         """
+        hass = self.hass
+        if hass is None:
+            # Watching is done through Home Assistant's Bluetooth: its
+            # advertisement callbacks, its presence tracking, its timer.
+            raise RuntimeError(
+                f"{self.address}: async_start needs Home Assistant to watch the "
+                "lamp through; without one, connect directly (tools/bench.py)"
+            )
         # Before anything is registered. Home Assistant replays the last
         # advertisement from inside async_register_callback when it already
         # knows the device - every reload, for a lamp that advertises all the
@@ -758,34 +772,49 @@ class GlowriumCoordinator:
         # put on. Without it the task lands on hass and outlives the unload.
         self._entry = entry
         self._cancel_bluetooth = bluetooth.async_register_callback(
-            self.hass,
+            hass,
             self._async_on_advertisement,
             bluetooth.BluetoothCallbackMatcher(address=self.address, connectable=True),
             bluetooth.BluetoothScanningMode.ACTIVE,
         )
         # Track presence so entity availability follows the device, not the link.
         self._cancel_unavailable = bluetooth.async_track_unavailable(
-            self.hass, self._async_on_unavailable, self.address, connectable=True
+            hass, self._async_on_unavailable, self.address, connectable=True
         )
         self._present = bluetooth.async_address_present(
-            self.hass, self.address, connectable=True
+            hass, self.address, connectable=True
         )
         self._async_log_reach()  # absent from the start is worth saying too
         self._spawn(self._async_initial_connect(), "initial connect")
         # Advertisement callbacks are throttled, so also poll: reconnect within
         # _RECONNECT_INTERVAL after any drop, regardless of advertisement timing.
         self._cancel_poll = async_track_time_interval(
-            self.hass, self._async_poll_reconnect, _RECONNECT_INTERVAL
+            hass, self._async_poll_reconnect, _RECONNECT_INTERVAL
         )
 
     @callback
     def _spawn(self, coro: Coroutine[Any, Any, None], what: str) -> None:
         """Run ``coro`` in the background, for no longer than the entry lives."""
         name = f"glowrium {what} {self.address}"
-        if self._entry is None:  # standalone use, outside Home Assistant
+        if self.hass is None:
+            self._run_without_hass(coro, name)
+        elif self._entry is None:  # not started on an entry: nothing to end it with
             self.hass.async_create_task(coro, name)
-            return
-        self._entry.async_create_background_task(self.hass, coro, name)
+        else:
+            self._entry.async_create_background_task(self.hass, coro, name)
+
+    def _run_without_hass(
+        self, coro: Coroutine[Any, Any, None], name: str
+    ) -> asyncio.Task[None]:
+        """Run ``coro`` on the loop and keep it until it is done.
+
+        Standalone, with no Home Assistant behind it (tools/bench.py). Nothing
+        keeps the task for us there, and the loop itself holds it only weakly.
+        """
+        task = asyncio.get_running_loop().create_task(coro, name=name)
+        self._kept_tasks.add(task)
+        task.add_done_callback(self._kept_tasks.discard)
+        return task
 
     async def _async_initial_connect(self) -> None:
         """Connect once at start-up, off the setup path."""
@@ -930,12 +959,7 @@ class GlowriumCoordinator:
         name = f"glowrium hang up {self.address}"
         if self.hass is not None:
             return self.hass.async_create_task(coro, name)
-        # Standalone, with no Home Assistant behind it (tools/bench.py). Nothing
-        # keeps the task for us there, and the loop itself holds it only weakly.
-        task = asyncio.get_running_loop().create_task(coro, name=name)
-        self._hang_ups.add(task)
-        task.add_done_callback(self._hang_ups.discard)
-        return task
+        return self._run_without_hass(coro, name)
 
     async def _async_disconnect(self, client: BleakClientWithServiceCache) -> None:
         """Disconnect ``client`` under a ceiling, and leave no bus open behind it.
@@ -1239,6 +1263,8 @@ class GlowriumCoordinator:
         _LOGGER.debug("%s to %s failed: %s", what, self.address, err)
 
     def _ble_device(self) -> BLEDevice | None:
+        if self.hass is None:  # the bench scans for itself and substitutes this
+            return None
         return bluetooth.async_ble_device_from_address(
             self.hass, self.address, connectable=True
         )

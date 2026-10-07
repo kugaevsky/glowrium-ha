@@ -3227,6 +3227,62 @@ async def test_a_retry_hangs_up_without_home_assistant(
     assert coordinator._client is second
 
 
+async def test_background_work_does_not_need_home_assistant() -> None:
+    """What the poll spawns - a priming, a probe - runs with no hass to run it on.
+
+    With neither an entry nor Home Assistant the task was handed to
+    ``hass.async_create_task``, on None. The coordinator keeps such a task
+    itself, as it keeps a hang-up: the loop holds a task only weakly, and one
+    nobody else refers to can be collected half-way through.
+    """
+    coordinator = GlowriumCoordinator(None, "AA:BB:CC:DD:EE:FF", "bench")
+    started = asyncio.Event()
+    release = asyncio.Event()
+    finished: list[int] = []
+
+    async def _work() -> None:
+        started.set()
+        await release.wait()
+        finished.append(1)
+
+    coordinator._spawn(_work(), "probe")
+    await asyncio.wait_for(started.wait(), 1)
+    assert len(coordinator._kept_tasks) == 1  # held for as long as it runs
+
+    release.set()
+    for _ in range(3):  # the task ends, then its done-callback runs
+        await asyncio.sleep(0)
+
+    assert finished == [1]
+    assert not coordinator._kept_tasks  # and let go of once it is done
+
+
+def test_without_home_assistant_the_coordinator_finds_no_device_itself() -> None:
+    """Looking the lamp up goes through Home Assistant's scanners.
+
+    The bench scans for itself and substitutes what it found; asked without
+    either, the coordinator says "not in range" rather than falling over.
+    """
+    coordinator = GlowriumCoordinator(None, "AA:BB:CC:DD:EE:FF", "bench")
+
+    assert coordinator._ble_device() is None
+
+
+async def test_watching_the_lamp_needs_home_assistant() -> None:
+    """Starting registers with Home Assistant's Bluetooth; without one it says so.
+
+    It failed a few lines in, inside Home Assistant's own code and in its
+    words, with the entry already taken. It is refused at the door instead,
+    with nothing put on and nothing registered.
+    """
+    coordinator = GlowriumCoordinator(None, "AA:BB:CC:DD:EE:FF", "bench")
+
+    with pytest.raises(RuntimeError, match="needs Home Assistant"):
+        await coordinator.async_start(MagicMock())
+
+    assert coordinator._entry is None
+
+
 async def test_home_assistant_waits_for_a_hang_up_in_flight(
     hass: HomeAssistant,
 ) -> None:
