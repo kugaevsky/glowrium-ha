@@ -114,6 +114,10 @@ guarantee, and the docs mark it accordingly.
 A macOS/Linux machine with a Bluetooth adapter can drive the coordinator against a real lamp
 (keep the vendor app disconnected — the lamp allows a single BLE connection):
 `tools/bench.py` connects, primes and reports, and never writes a setting of its own accord.
+Its report leaves out what places or identifies the lamp - the coordinates, the sunrise and
+sunset times, the serial number, the address - so it can be shown to others as it is;
+`--show-private` prints them. Error lines and the integration's own log (`--debug`) still name
+the lamp's address: look those over before posting.
 Docker on macOS has **no** access to the host's Bluetooth; use an ESPHome Bluetooth Proxy or
 a native BT host for live testing.
 

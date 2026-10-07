@@ -9,6 +9,13 @@ the characteristic carry every key" get answered without guessing.
     .venv/bin/python tools/bench.py --watch 5  # ...then follow notifications
     .venv/bin/python tools/bench.py --clock    # verify the clock resync, both branches
 
+Its own report can be shown to somebody else as it is: where the lamp is, the
+sunrise and sunset times it works out from that, its serial number and its
+address are left out, and --show-private puts them back. Not so the lines
+around it: an error is printed as the Bluetooth stack worded it, and the
+integration's own log (--debug) names the lamp by its address as it always
+does.
+
 It never writes a setting of its own accord. The bring-up sequence is disabled
 outright rather than relied upon not to trigger: a bench should not be able to
 reprovision somebody's lamp because a flag read back wrong. Priming, though,
@@ -39,10 +46,12 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from bleak import BleakScanner
 from homeassistant.util import dt as dt_util
 
-from custom_components.glowrium import cbor, protocol
+from custom_components.glowrium import cbor, identity, protocol
 from custom_components.glowrium.const import (
     KEY_BRIGHTNESS,
     KEY_DST,
+    KEY_LATITUDE,
+    KEY_LONGITUDE,
     KEY_POWER,
     KEY_TIME,
     NAME_PREFIX,
@@ -76,8 +85,60 @@ _KEY_NAMES = {
     0x17: "indicator",
     0x2B: "lighting mode",
     0x2F: "ramp",
+    0x34: "curve",
     0x35: "dst",
 }
+
+# The circadian curve the lamp computes for itself (see _curve).
+_CURVE_KEY = 0x34
+# What places the lamp: where it is, and the sunrise and sunset times it
+# works out from that.
+_PRIVATE_KEYS = frozenset({KEY_LATITUDE, KEY_LONGITUDE, _CURVE_KEY})
+_NOT_SHOWN = "not shown; --show-private prints it"
+
+
+class _Private:
+    """Whether what places or identifies the lamp is printed.
+
+    Not by default: a report is what gets shown to somebody else when the
+    lamp does something nobody expected. Set from --show-private.
+    """
+
+    shown = False
+
+
+def _value(key: int, raw: object) -> object:
+    """Return the value under ``key`` as it is printed."""
+    if key in _PRIVATE_KEYS and not _Private.shown:
+        return f"({_NOT_SHOWN})"
+    return raw.hex() if isinstance(raw, (bytes, bytearray)) else raw
+
+
+def _keyed(key: int, raw: object) -> str:
+    """Return one line of a listing of the state: the id, its name, its value."""
+    return f"0x{key:02x} {_KEY_NAMES.get(key, '?'):<14} {_value(key, raw)}"
+
+
+def _address(address: str) -> str:
+    """Return ``address`` as it is printed: by its end, unless asked for whole."""
+    return address if _Private.shown else f"…{address[-5:]}"
+
+
+def _device_info(coordinator: GlowriumCoordinator) -> str:
+    """Return the device-info string as it is printed.
+
+    The serial number and the address are in it, and where one field ends is
+    what the parser made of the string: the model and the firmware are held
+    to their shapes, as the integration's log holds them.
+    """
+    info = coordinator.device_info
+    if not info:
+        return "(none)"
+    if _Private.shown:
+        return str(info)
+    model = identity.model_id(coordinator.model_id) or "not as expected"
+    firmware = identity.firmware(coordinator.sw_version) or "not as expected"
+    return f"model {model}, firmware {firmware}; {len(info)} fields ({_NOT_SHOWN})"
 
 
 async def _find(seconds: float) -> object | None:
@@ -100,19 +161,17 @@ async def _find(seconds: float) -> object | None:
     await asyncio.sleep(seconds)
     await scanner.stop()
     for address, rssi in seen.items():
-        print(f"  {address}  RSSI={rssi}")
+        print(f"  {_address(address)}  RSSI={rssi}")
     return best
 
 
 def _report(coordinator: GlowriumCoordinator, from_read: set[int] | None) -> None:
     """Print what the lamp has told us, and what it has not."""
     state = coordinator.state
-    print(f"\ndevice-info: {coordinator.device_info or '(none)'}")
+    print(f"\ndevice-info: {_device_info(coordinator)}")
     print(f"keys reported: {len(state)}")
     for key in sorted(state):
-        raw = state[key]
-        shown = raw.hex() if isinstance(raw, (bytes, bytearray)) else raw
-        print(f"  0x{key:02x} {_KEY_NAMES.get(key, '?'):<14} {shown}")
+        print(f"  {_keyed(key, state[key])}")
     if from_read is not None:
         gap = [k for k in STATE_KEYS if k not in from_read]
         print(f"\na read of facebd02 alone carried {len(from_read)} keys")
@@ -267,8 +326,7 @@ async def _probe_dst(coordinator: GlowriumCoordinator) -> None:
     if moved:
         print("  other keys the lamp recomputed while the flag moved:")
         for key, value in sorted(moved.items()):
-            shown = value.hex() if isinstance(value, (bytes, bytearray)) else value
-            print(f"    0x{key:02x} {_KEY_NAMES.get(key, '?'):<14} {shown}")
+            print(f"    {_keyed(key, value)}")
     else:
         print(
             "  nothing else the lamp reports changed - the flag is stored, not applied"
@@ -452,13 +510,17 @@ async def _probe_clock(coordinator: GlowriumCoordinator) -> bool:
 # 0x34 is seven four-byte times, seconds from midnight: the circadian curve the
 # lamp computes for itself. A date three months out moves sunrise by the best
 # part of two hours here, which is far past any ambiguity.
-_CURVE_KEY = 0x34
 _CURVE_DATE_SHIFT = timedelta(days=91)
 
 
 def _curve(raw: object) -> str:
-    """Render 0x34 as wall-clock times."""
-    if not isinstance(raw, (bytes, bytearray)) or not raw or len(raw) % 4:
+    """Render 0x34 as wall-clock times - or as how many, unless asked for them."""
+    readable = isinstance(raw, (bytes, bytearray)) and raw and not len(raw) % 4
+    if not _Private.shown:
+        if not readable:
+            return "(unreadable)"
+        return f"({len(raw) // 4} times, {_NOT_SHOWN})"
+    if not readable:
         return f"(unreadable: {raw!r})"
     times = []
     for i in range(0, len(raw), 4):
@@ -658,12 +720,19 @@ def _parse_args() -> argparse.Namespace:
         action="store_true",
         help="exercise the write path (power, brightness) and restore afterwards",
     )
+    parser.add_argument(
+        "--show-private",
+        action="store_true",
+        help="print what is left out by default: the coordinates, the sunrise "
+        "and sunset times, the serial number and the whole address",
+    )
     return parser.parse_args()
 
 
 async def main() -> int:
     """Connect once, prime, report, and optionally follow notifications."""
     args = _parse_args()
+    _Private.shown = args.show_private
 
     logging.basicConfig(
         level=logging.DEBUG if args.debug else logging.INFO,
@@ -694,7 +763,7 @@ async def main() -> int:
     # installed afterwards would never be called.
     tap = _Tap(coordinator) if args.curve else None
 
-    print(f"\nconnecting to {device.name} ({device.address})…")
+    print(f"\nconnecting to {device.name} ({_address(device.address)})…")
     try:
         async with coordinator._lock:  # noqa: SLF001
             # Neither probe primes: priming corrects a drift and asks for a
@@ -729,8 +798,7 @@ async def main() -> int:
         changed = {k: v for k, v in coordinator.state.items() if before.get(k) != v}
         print(f"changed while watching: {len(changed)}")
         for key, raw in sorted(changed.items()):
-            shown = raw.hex() if isinstance(raw, (bytes, bytearray)) else raw
-            print(f"  0x{key:02x} {_KEY_NAMES.get(key, '?'):<14} {shown}")
+            print(f"  {_keyed(key, raw)}")
 
     if args.commands:
         await _exercise_commands(coordinator)
