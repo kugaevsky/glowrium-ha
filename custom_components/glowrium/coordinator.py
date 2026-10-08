@@ -57,6 +57,7 @@ from .link import (
     _RECONNECT_INTERVAL,
     Dial,
     Link,
+    Unclosed,
     _gatt_call,
     _NoNewLinkError,
     _reason,
@@ -286,7 +287,7 @@ class GlowriumCoordinator:
     reports its state as CBOR maps notified on ``NOTIFY_UUID`` (facebd02).
     """
 
-    def __init__(
+    def __init__(  # noqa: PLR0913 - what a coordinator is built from, by name
         self,
         hass: HomeAssistant | None,
         address: str,
@@ -294,6 +295,7 @@ class GlowriumCoordinator:
         model_id: str | None = None,
         *,
         dial: Dial | None = None,
+        unclosed: Unclosed | None = None,
     ) -> None:
         """Initialize the coordinator for the device at ``address``.
 
@@ -308,6 +310,10 @@ class GlowriumCoordinator:
 
         ``dial`` is what a link is made through (see ``Dial``). Left out, it
         is the lamp as Home Assistant's Bluetooth finds it.
+
+        ``unclosed`` is what coordinators for this lamp before this one could
+        neither hang up nor close (see ``Unclosed``). The integration keeps one
+        for each lamp and hands it to every coordinator it makes for it.
         """
         self.hass = hass
         self.address = address
@@ -351,6 +357,7 @@ class GlowriumCoordinator:
             reach_changed=self._async_reach_changed,
             stack_fault=self._async_on_stack_fault,
             run_lasting=self._run_lasting,
+            unclosed=unclosed,
         )
         # The keys the lamp has reported since it was last asked for its state.
         self._carried: set[int] = set()

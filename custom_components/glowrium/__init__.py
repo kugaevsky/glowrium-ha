@@ -10,8 +10,11 @@ from homeassistant.const import (
     Platform,
 )
 from homeassistant.core import HomeAssistant
+from homeassistant.util.hass_dict import HassKey
 
+from .const import DOMAIN
 from .coordinator import GlowriumCoordinator
+from .link import Unclosed
 
 PLATFORMS: list[Platform] = [
     Platform.BINARY_SENSOR,
@@ -26,16 +29,27 @@ PLATFORMS: list[Platform] = [
 
 type GlowriumConfigEntry = ConfigEntry[GlowriumCoordinator]
 
+# For each lamp, by its address, what could be neither hung up nor closed.
+# Kept here, where a reload does not reach, and not on the coordinator: the
+# one a reload makes must not dial over a client its predecessor could not
+# let go of.
+_UNCLOSED: HassKey[dict[str, Unclosed]] = HassKey(f"{DOMAIN}_unclosed")
+
 
 async def async_setup_entry(hass: HomeAssistant, entry: GlowriumConfigEntry) -> bool:
     """Set up Glowrium from a config entry."""
+    address = entry.data[CONF_ADDRESS]
     coordinator = GlowriumCoordinator(
         hass,
-        entry.data[CONF_ADDRESS],
+        address,
         entry.title,
         # What an earlier session read off the lamp. The entities are built
         # before this one has read anything, and the presets depend on it.
         model_id=entry.data.get(CONF_MODEL_ID),
+        # What a coordinator for this lamp before this one could not let go
+        # of. By the lamp's address and not by the entry: a lamp removed and
+        # set up again is the same lamp, under another entry.
+        unclosed=hass.data.setdefault(_UNCLOSED, {}).setdefault(address, Unclosed()),
     )
     # Published before it is started, not after: async_start registers the
     # bluetooth callbacks and the reconnect poll, so a setup cancelled part-way

@@ -102,9 +102,12 @@ class ScriptedLamp:
         hass: HomeAssistant | None,
         name: str = "Glowrium-G7",
         model_id: str | None = None,
+        **handed: Any,
     ) -> GlowriumCoordinator:
-        """Return a coordinator that dials this lamp."""
-        coordinator = GlowriumCoordinator(hass, ADDRESS, name, model_id, dial=self.dial)
+        """Return a coordinator that dials this lamp, handed whatever else is given."""
+        coordinator = GlowriumCoordinator(
+            hass, ADDRESS, name, model_id, dial=self.dial, **handed
+        )
         _LAMPS[coordinator] = self
         return coordinator
 

@@ -220,6 +220,34 @@ async def _setup_without_bluetooth(
     return entry
 
 
+async def test_a_reload_hands_on_what_would_not_close(hass: HomeAssistant) -> None:
+    """What could be neither hung up nor closed is held for the lamp.
+
+    Not for one coordinator: a reload makes another, and that one must not
+    dial over a client the first could not let go of. A second lamp has
+    nothing to do with it.
+    """
+    entry = await _setup_without_bluetooth(hass)
+    first = entry.runtime_data
+    stuck = object()
+    first._unreleased.add(stuck)
+
+    assert await hass.config_entries.async_unload(entry.entry_id)
+    await _setup_without_bluetooth(hass, entry)
+    other = MockConfigEntry(
+        domain=DOMAIN,
+        title="Glowrium-G7_5678",
+        unique_id="11:22:33:44:55:66",
+        data={CONF_ADDRESS: "11:22:33:44:55:66"},
+    )
+    other.add_to_hass(hass)
+    await _setup_without_bluetooth(hass, other)
+
+    assert entry.runtime_data is not first
+    assert entry.runtime_data._unreleased == {stuck}
+    assert other.runtime_data._unreleased == set()
+
+
 async def test_every_platform_produces_entities(hass: HomeAssistant) -> None:
     """Each platform in PLATFORMS actually contributes entities.
 

@@ -351,6 +351,88 @@ async def test_a_command_refused_over_a_client_that_will_not_close_says_so(
     assert len(host.clients) == 1
 
 
+async def test_what_would_not_close_is_not_dialled_over_by_the_next_coordinator(
+    hass: HomeAssistant, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A reload does not forget a client that could be neither hung up nor closed.
+
+    Such a client is kept and nothing is dialled over it - by the coordinator
+    that kept it. Reloading the entry made another, which knew nothing of it
+    and dialled: one more bus beside the one nothing could close, and one more
+    with every reload after that. What would not close is now held for the
+    lamp, and the coordinator that comes next is handed it.
+    """
+    held = link_module.Unclosed()
+    host = _WedgedBlueZ(_MovedBackend)
+    lamp = ScriptedLamp()
+    lamp.dials_through(host.dial)
+    monkeypatch.setattr(link_module, "_HANG_UP_TIMEOUT", 0.01)
+    monkeypatch.setattr(link_module, "_STACK_FAULT_AFTER", 10**6)
+    monkeypatch.setattr(coordinator_module, "_COMMAND_TIMEOUT", 0.2)
+    monkeypatch.setattr(coordinator_module, "_CONFIRM_TIMEOUT", 0.01)
+    first = lamp.coordinator(hass, unclosed=held)
+    await _polls(first, hass, 1)
+    assert first._unreleased
+    await first.async_stop()
+
+    second = lamp.coordinator(hass, unclosed=held)
+    with pytest.raises(HomeAssistantError) as err:
+        await second.async_set_power(True)
+    await _polls(second, hass, 3)
+
+    assert err.value.translation_key == "link_not_released"
+    assert len(host.clients) == 1  # nothing was dialled over it
+    assert host.open_buses == 1
+    assert host.clients[0].disconnects > 2  # and the second goes on trying it
+
+    host.released.set()
+    await _polls(second, hass, 3)
+
+    assert host.open_buses == 0
+    assert len(host.clients) > 1  # dialling again
+
+
+async def test_what_is_handed_on_can_still_be_closed_by_the_one_it_is_handed_to(
+    hass: HomeAssistant, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The client goes on with what is behind it, or nobody could close it again.
+
+    A bus is closed through the client's backend, which is noted when the
+    client is taken because Home Assistant's wrapper may forget it. Handed on
+    bare, a client whose wrapper has forgotten could never be let go of by
+    the next coordinator, and the lamp would stay undialled until a restart.
+    """
+    held = link_module.Unclosed()
+    host = _WedgedBlueZ()
+
+    async def _dial_a_stuck_one(*_args: object, **_kwargs: object) -> _WedgedClient:
+        client = await host.dial()
+        client._backend._bus = host.bus_of[client] = _StuckBus()
+        return client
+
+    lamp = ScriptedLamp()
+    lamp.dials_through(_dial_a_stuck_one)
+    monkeypatch.setattr(link_module, "_HANG_UP_TIMEOUT", 0.01)
+    monkeypatch.setattr(link_module, "_STACK_FAULT_AFTER", 10**6)
+    first = lamp.coordinator(hass, unclosed=held)
+    await _polls(first, hass, 1)
+    assert first._unreleased
+    await first.async_stop()
+    stuck = host.clients[0]
+    backend = stuck._backend
+    # The bus would close now, and the wrapper no longer knows its backend.
+    backend._bus = host.bus_of[stuck] = _Bus()
+    stuck._backend = None
+
+    second = lamp.coordinator(hass, unclosed=held)
+    lamp.dials_through(host.dial)
+    await _polls(second, hass, 3)
+
+    assert host.bus_of[stuck].closed  # closed through what was handed on
+    assert second._unreleased == set()
+    assert len(host.clients) > 1  # and dialling again
+
+
 async def test_nothing_is_kept_of_a_client_that_was_let_go(
     hass: HomeAssistant, monkeypatch: pytest.MonkeyPatch
 ) -> None:

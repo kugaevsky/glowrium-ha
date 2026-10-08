@@ -4,6 +4,20 @@ All notable changes to this project are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+- **A client that could be neither hung up nor closed is not dialled over
+  after a reload.** When the Bluetooth stack will not hang up and the
+  connection behind a client cannot be closed either, the client is kept and
+  nothing more is dialled, so that the system bus is short of one connection
+  and not of one more at every try. It was kept by the part of the
+  integration that a reload replaces, and what replaced it knew nothing of
+  the client and dialled. It is kept for the lamp now, for as long as Home
+  Assistant runs, together with what is needed to close it later
+  ([#21](https://github.com/kugaevsky/glowrium-ha/issues/21)).
+
 ## [0.3.1] - 2026-10-08
 
 ### Fixed

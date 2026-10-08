@@ -251,6 +251,28 @@ def _reason(err: BaseException) -> str:
     return str(err) or repr(err)
 
 
+class Unclosed:
+    """What would neither hang up nor have its bus closed, kept for one lamp.
+
+    A client lands here when its link was let go of, BlueZ would not hang
+    up, and the bus behind it could not be closed either (see
+    ``Link._async_disconnect``). While there is one, nothing is dialled. It
+    used to be kept by the coordinator, and a reload of the entry made a new
+    coordinator that knew nothing of it and dialled - a second bus beside the
+    one nothing could close. So there is one of these for each lamp, for as
+    long as the process runs, and every link to that lamp is handed it.
+
+    A client is kept with what is behind it. That is what its bus is closed
+    through, and by the time the next link tries, Home Assistant's wrapper
+    may have forgotten it.
+    """
+
+    def __init__(self) -> None:
+        """Start with nothing kept."""
+        self.clients: set[BleakClientWithServiceCache] = set()
+        self.backends: dict[BleakClientWithServiceCache, Any] = {}
+
+
 class Link:
     """One lamp's link: who holds the client, and how it is let go of."""
 
@@ -264,6 +286,7 @@ class Link:
         reach_changed: Callable[[], None],
         stack_fault: Callable[[int | None], None],
         run_lasting: Callable[[Coroutine[Any, Any, None], str], asyncio.Task[None]],
+        unclosed: Unclosed | None = None,
     ) -> None:
         """Take what the link is handed; it starts with no client and unlocked.
 
@@ -273,7 +296,9 @@ class Link:
         because it was lost. ``stack_fault`` is given the count of hang-ups
         left unanswered when a run of them is called a fault, and None when
         the lamp answers again. ``run_lasting`` runs a hang-up where nothing
-        that ends the caller can end it.
+        that ends the caller can end it. ``unclosed`` is what links to this
+        lamp before this one could not let go of (see ``Unclosed``); left
+        out, the link keeps its own, as the bench's does.
         """
         self.address = address
         self._dial = dial
@@ -289,8 +314,10 @@ class Link:
         # forgotten its backend (see _close_bus).
         self.backends: dict[BleakClientWithServiceCache, Any] = {}
         # Clients that would not hang up and whose bus could not be closed
-        # either. While there is one, nothing is dialled (see open).
-        self.unclosed: set[BleakClientWithServiceCache] = set()
+        # either. While there is one, nothing is dialled (see open). The set
+        # is the lamp's, not this link's: the next link finds them in it.
+        self._kept = unclosed or Unclosed()
+        self.unclosed = self._kept.clients
         # Hang-ups in a row that BlueZ left unanswered (see _STACK_FAULT_AFTER),
         # and the moment before which the poll does not dial because of them.
         self.stuck_hang_ups = 0
@@ -545,6 +572,9 @@ class Link:
         ceiling = _STOP_TIMEOUT if self.shutting_down else _HANG_UP_TIMEOUT
         backend = self.backends.get(client)
         if backend is None:
+            # One a link before this one could not let go of.
+            backend = self._kept.backends.get(client)
+        if backend is None:
             backend = getattr(client, "_backend", None)
         hung_up = unanswered = False
         try:
@@ -563,8 +593,10 @@ class Link:
             if hung_up or bus is not _Bus.OPEN:
                 self.backends.pop(client, None)
                 self.unclosed.discard(client)
+                self._kept.backends.pop(client, None)
             else:
                 self.unclosed.add(client)
+                self._kept.backends[client] = backend
             if unanswered and bus is not _Bus.CLEAR and _is_bluez(backend):
                 # BlueZ's own client, its bus still open, and no answer at
                 # all: BlueZ would not hang up. An error would have been an
