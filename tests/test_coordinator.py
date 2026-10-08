@@ -69,6 +69,7 @@ def _connected_coordinator(
     coordinator = lamp.coordinator(hass)
     client = MagicMock()
     client.is_connected = True
+    client.start_notify = AsyncMock()
     client.write_gatt_char = AsyncMock()
     client.disconnect = AsyncMock()
     coordinator._client = client
@@ -460,17 +461,11 @@ async def test_write_retries_once_after_a_dropped_link(hass: HomeAssistant) -> N
     """A write that fails once reconnects and retries before succeeding."""
     coordinator, client = _connected_coordinator(hass)
     client.write_gatt_char = AsyncMock(side_effect=[BleakError("dropped"), None])
-    reconnects: list[int] = []
+    dial = _dialling(coordinator, client)
 
-    async def _reconnect(**_kw: object) -> None:
-        reconnects.append(1)
-        client.is_connected = True
-        coordinator._client = client
-
-    coordinator._connect_locked = _reconnect
     await coordinator.async_set_power(True)
     assert client.write_gatt_char.await_count == 2  # failed, then retried
-    assert reconnects  # a reconnect happened before the retry
+    dial.assert_awaited_once()  # a reconnect happened before the retry
     assert coordinator.state[KEY_POWER] is True
 
 
@@ -482,12 +477,8 @@ async def test_write_raises_after_two_failures(
     # Nothing will confirm this write, so do not sit out the whole grace window.
     monkeypatch.setattr(coordinator_module, "_CONFIRM_TIMEOUT", 0.01)
     client.write_gatt_char = AsyncMock(side_effect=BleakError("down"))
+    _dialling(coordinator, client)
 
-    async def _reconnect(**_kw: object) -> None:
-        client.is_connected = True
-        coordinator._client = client
-
-    coordinator._connect_locked = _reconnect
     with pytest.raises(HomeAssistantError) as err:
         await coordinator.async_set_power(True)
     assert err.value.translation_key == "cannot_connect"
@@ -917,10 +908,10 @@ async def test_command_gives_up_instead_of_hanging(
     monkeypatch.setattr(coordinator_module, "_COMMAND_TIMEOUT", 0.05)
     monkeypatch.setattr(coordinator_module, "_CONFIRM_TIMEOUT", 0.01)
 
-    async def _never_connects(**_kw: object) -> None:
+    async def _never_connects(*_a: object, **_kw: object) -> None:
         await asyncio.Event().wait()
 
-    coordinator._connect_locked = _never_connects
+    _dialling(coordinator).side_effect = _never_connects
     with pytest.raises(HomeAssistantError) as err:
         await coordinator.async_set_power(True)
     assert err.value.translation_key == "cannot_connect"
@@ -1399,25 +1390,24 @@ async def test_command_writes_before_reading_anything(hass: HomeAssistant) -> No
     coordinator._client = None
     order: list[str] = []
 
-    async def _connect(*, prime: bool = True) -> None:
-        # The point of the fix: a command must ask for a bare link.
-        assert prime is False
+    async def _connect(*_a: object, **_kw: object) -> MagicMock:
         order.append("connect")
-        client.is_connected = True
-        coordinator._client = client
+        return client
 
     async def _read(_uuid: str) -> bytes:
         order.append("read")
         return b""
 
-    coordinator._connect_locked = _connect
+    _dialling(coordinator).side_effect = _connect
     client.read_gatt_char = AsyncMock(side_effect=_read)
     client.write_gatt_char = AsyncMock(
         side_effect=lambda *a, **k: order.append("write")
     )
 
     await coordinator.async_set_power(True)
-    assert order == ["connect", "write"]  # nothing read on the way
+    # The point of the fix: a command asks for a bare link. A link that was
+    # primed would have had the state request written to it first.
+    assert order == ["connect", "write"]  # nothing read, nothing asked, on the way
 
 
 async def test_a_command_connect_is_primed_by_the_poll(hass: HomeAssistant) -> None:
@@ -1742,12 +1732,7 @@ async def test_confirmation_waits_for_a_report_that_arrives_late(
     client.write_gatt_char = AsyncMock(side_effect=BleakError("Unlikely Error"))
     assert KEY_POWER not in coordinator.state  # nothing to match at failure time
 
-    async def _relink(*, prime: bool = True) -> None:
-        assert prime is False  # a command asks for a bare link
-        client.is_connected = True
-        coordinator._client = client
-
-    coordinator._connect_locked = _relink
+    _dialling(coordinator, client)
 
     async def _report_after_the_failure() -> None:
         await asyncio.sleep(0.05)
@@ -1759,6 +1744,10 @@ async def test_confirmation_waits_for_a_report_that_arrives_late(
     finally:
         await reporter
     assert coordinator.state[KEY_POWER] is True
+    # A command asks for a bare link: nothing but the command was written.
+    assert {call.args[0] for call in client.write_gatt_char.await_args_list} == {
+        WRITE_UUID
+    }
 
 
 async def test_a_write_with_nothing_reportable_is_never_confirmed(
@@ -1773,16 +1762,14 @@ async def test_a_write_with_nothing_reportable_is_never_confirmed(
     coordinator, client = _connected_coordinator(hass)
     monkeypatch.setattr(coordinator_module, "_CONFIRM_TIMEOUT", 0.05)
     client.write_gatt_char = AsyncMock(side_effect=BleakError("down"))
-
-    async def _relink(*, prime: bool = True) -> None:
-        assert prime is False
-        client.is_connected = True
-        coordinator._client = client
-
-    coordinator._connect_locked = _relink
+    _dialling(coordinator, client)
 
     with pytest.raises(HomeAssistantError):
         await coordinator._async_write({0x2C: b"\x02\xd0"})
+    # A command asks for a bare link: nothing but the command was written.
+    assert {call.args[0] for call in client.write_gatt_char.await_args_list} == {
+        WRITE_UUID
+    }
 
 
 async def test_a_background_connect_primes_once(hass: HomeAssistant) -> None:
@@ -2353,15 +2340,14 @@ async def test_a_stale_mirror_does_not_vouch_for_a_failed_write(
     monkeypatch.setattr(coordinator_module, "_CONFIRM_TIMEOUT", 0.05)
     coordinator.state[KEY_POWER] = False  # what the lamp said, some time ago
     client.write_gatt_char = AsyncMock(side_effect=BleakError("Not connected"))
-
-    async def _relink(*, prime: bool = True) -> None:
-        assert prime is False
-        coordinator._client = client
-
-    coordinator._connect_locked = _relink
+    _dialling(coordinator, client)
 
     with pytest.raises(HomeAssistantError):
         await coordinator.async_set_power(False)
+    # A command asks for a bare link: nothing but the command was written.
+    assert {call.args[0] for call in client.write_gatt_char.await_args_list} == {
+        WRITE_UUID
+    }
 
 
 @pytest.mark.parametrize(
@@ -2397,15 +2383,15 @@ async def test_a_report_vouches_only_for_what_it_carries(
         side_effect=_fails_and_the_lamp_says_something_else
     )
 
-    async def _relink(*, prime: bool = True) -> None:
-        assert prime is False
-        coordinator._client = client
-
-    coordinator._connect_locked = _relink
+    _dialling(coordinator, client)
 
     with pytest.raises(HomeAssistantError):
         await coordinator.async_set_power(False)
     assert coordinator.state[KEY_BRIGHTNESS] == 40  # the report itself was taken
+    # A command asks for a bare link: nothing but the command was written.
+    assert {call.args[0] for call in client.write_gatt_char.await_args_list} == {
+        WRITE_UUID
+    }
 
 
 async def test_a_command_is_vouched_for_by_what_it_changed(
@@ -2448,11 +2434,8 @@ async def test_a_command_that_never_reached_the_wire_fails_at_once(
     coordinator._client = None
     coordinator.state[KEY_POWER] = True  # and the mirror happens to agree
     monkeypatch.setattr(coordinator_module, "_CONFIRM_TIMEOUT", 30.0)
-
-    async def _out_of_range(*, prime: bool = True) -> None:
-        raise BleakError("AA:BB:CC:DD:EE:FF is not in range")
-
-    coordinator._connect_locked = _out_of_range
+    dial = _dialling(coordinator)
+    dial.side_effect = BleakError("AA:BB:CC:DD:EE:FF is not in range")
 
     async with asyncio.timeout(1):  # nowhere near the grace window
         with pytest.raises(HomeAssistantError):
