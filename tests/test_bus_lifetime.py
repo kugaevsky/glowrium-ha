@@ -733,7 +733,7 @@ async def test_a_call_waiting_its_turn_when_the_link_drops_ends_as_a_lost_link(
 
 
 async def test_a_command_waiting_its_turn_when_the_link_drops_is_sent_on_a_new_link(
-    hass: HomeAssistant, monkeypatch: pytest.MonkeyPatch
+    hass: HomeAssistant,
 ) -> None:
     """The same moment, with a command in the write: it is tried again.
 

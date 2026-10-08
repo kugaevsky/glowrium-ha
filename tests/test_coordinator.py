@@ -1784,9 +1784,7 @@ async def test_a_write_with_nothing_reportable_is_never_confirmed(
         await coordinator._async_write({0x2C: b"\x02\xd0"})
 
 
-async def test_a_background_connect_primes_once(
-    hass: HomeAssistant, monkeypatch: pytest.MonkeyPatch
-) -> None:
+async def test_a_background_connect_primes_once(hass: HomeAssistant) -> None:
     """A connect that primes says so, so the poll does not do it again.
 
     This drives the real _connect_locked: subscribe, ask for the state, mark
@@ -1812,7 +1810,7 @@ async def test_a_background_connect_primes_once(
 
 
 async def test_the_device_info_is_the_last_thing_read_and_read_once(
-    hass: HomeAssistant, monkeypatch: pytest.MonkeyPatch
+    hass: HomeAssistant,
 ) -> None:
     """The one read left on a link that reports comes after everything else.
 
@@ -1847,7 +1845,7 @@ async def test_the_device_info_is_the_last_thing_read_and_read_once(
         return client
 
     first, second = _lamp(), _lamp()
-    _dialling(coordinator, monkeypatch, first, second)
+    _dialling(coordinator, first, second)
 
     await coordinator._connect_locked()
     assert order == ["state asked", "clock written", "info read"]
@@ -1863,9 +1861,7 @@ async def test_the_device_info_is_the_last_thing_read_and_read_once(
     second.read_gatt_char.assert_not_awaited()
 
 
-async def test_a_command_connect_reads_nothing(
-    hass: HomeAssistant, monkeypatch: pytest.MonkeyPatch
-) -> None:
+async def test_a_command_connect_reads_nothing(hass: HomeAssistant) -> None:
     """A command's own connect makes no read at all, not even of the model.
 
     It used to read the device-info string on its way to the write when the
@@ -1876,7 +1872,7 @@ async def test_a_command_connect_reads_nothing(
     coordinator._client = None
     client = _fresh_client()
     client.write_gatt_char = AsyncMock()
-    _dialling(coordinator, monkeypatch, client)
+    _dialling(coordinator, client)
 
     await coordinator.async_set_power(True)
 
@@ -2492,7 +2488,7 @@ async def test_an_old_client_disconnecting_does_not_drop_the_live_one(
 
 
 async def test_a_connect_that_fails_half_way_leaves_no_link_behind(
-    hass: HomeAssistant, monkeypatch: pytest.MonkeyPatch
+    hass: HomeAssistant,
 ) -> None:
     """A connect that cannot finish must hang up, not abandon the link.
 
@@ -2673,7 +2669,7 @@ async def test_a_link_that_answers_nothing_is_dropped(hass: HomeAssistant) -> No
 
 
 async def test_a_connect_whose_read_fails_is_not_primed_either(
-    hass: HomeAssistant, monkeypatch: pytest.MonkeyPatch
+    hass: HomeAssistant,
 ) -> None:
     """The rule holds on the connect path too, not just when the poll primes.
 
@@ -2695,7 +2691,7 @@ async def test_a_connect_whose_read_fails_is_not_primed_either(
 
 
 async def test_a_connect_that_cannot_be_read_is_dropped_at_once(
-    hass: HomeAssistant, monkeypatch: pytest.MonkeyPatch
+    hass: HomeAssistant,
 ) -> None:
     """A dead link is dropped where it is detected, not a poll tick later.
 
@@ -3093,9 +3089,7 @@ async def test_a_clock_that_is_no_date_is_corrected(
     assert written[KEY_TIME_SYNCED] == 1
 
 
-async def test_both_priming_paths_check_the_clock(
-    hass: HomeAssistant, monkeypatch: pytest.MonkeyPatch
-) -> None:
+async def test_both_priming_paths_check_the_clock(hass: HomeAssistant) -> None:
     """A background connect corrects the clock too, not only the poll's priming.
 
     Most connects on a healthy lamp are background reconnects; if only the poll
@@ -3164,11 +3158,7 @@ async def test_dst_falls_back_to_an_hour_when_unread(hass: HomeAssistant) -> Non
     assert cbor.decode(client.write_gatt_char.await_args.args[1])[KEY_DST] == DST_ON
 
 
-def _dialling(
-    coordinator: GlowriumCoordinator,
-    monkeypatch: pytest.MonkeyPatch,
-    *clients: MagicMock,
-) -> AsyncMock:
+def _dialling(coordinator: GlowriumCoordinator, *clients: MagicMock) -> AsyncMock:
     """Make the coordinator's next connects hand back ``clients``, in order."""
     dial = AsyncMock(side_effect=list(clients))
     lamp_of(coordinator).dials_through(dial)
@@ -3221,14 +3211,12 @@ async def test_a_link_the_poll_gives_up_on_is_hung_up(hass: HomeAssistant) -> No
     client.disconnect.assert_awaited_once()
 
 
-async def test_a_connect_that_cannot_be_read_is_hung_up(
-    hass: HomeAssistant, monkeypatch: pytest.MonkeyPatch
-) -> None:
+async def test_a_connect_that_cannot_be_read_is_hung_up(hass: HomeAssistant) -> None:
     """The same on the connect path, which is the one the poll takes every tick."""
     coordinator, _ = _connected_coordinator(hass)
     coordinator._client = None
     client = _fresh_client()
-    _dialling(coordinator, monkeypatch, client)
+    _dialling(coordinator, client)
 
     await coordinator._connect_locked()
     await hass.async_block_till_done()
@@ -3238,7 +3226,7 @@ async def test_a_connect_that_cannot_be_read_is_hung_up(
 
 
 async def test_a_write_retry_hangs_up_before_it_dials_again(
-    hass: HomeAssistant, monkeypatch: pytest.MonkeyPatch
+    hass: HomeAssistant,
 ) -> None:
     """The client a write failed on is closed, and closed before the retry.
 
@@ -3261,7 +3249,7 @@ async def test_a_write_retry_hangs_up_before_it_dials_again(
         return second
 
     first.disconnect = AsyncMock(side_effect=_hang_up_slowly)
-    _dialling(coordinator, monkeypatch).side_effect = _dial
+    _dialling(coordinator).side_effect = _dial
 
     await coordinator.async_set_power(True)
 
@@ -3272,7 +3260,7 @@ async def test_a_write_retry_hangs_up_before_it_dials_again(
 
 
 async def test_a_failed_command_hangs_up_only_after_the_device_could_confirm(
-    hass: HomeAssistant, monkeypatch: pytest.MonkeyPatch
+    hass: HomeAssistant,
 ) -> None:
     """The last client is closed too - but not before confirmation has listened.
 
@@ -3290,7 +3278,7 @@ async def test_a_failed_command_hangs_up_only_after_the_device_could_confirm(
     coordinator, first = _connected_coordinator(hass)
     first.write_gatt_char = AsyncMock(side_effect=BleakError("Unlikely Error"))
     second = _fresh_client()
-    _dialling(coordinator, monkeypatch, second)
+    _dialling(coordinator, second)
     still_up_when_reporting: list[bool] = []
 
     def _report_if_still_connected() -> None:
@@ -3317,7 +3305,7 @@ async def test_a_failed_command_hangs_up_only_after_the_device_could_confirm(
 
 
 async def test_a_confirmed_command_still_hangs_up_the_client_it_gave_up_on(
-    hass: HomeAssistant, monkeypatch: pytest.MonkeyPatch
+    hass: HomeAssistant,
 ) -> None:
     """Being told the command worked is no reason to keep the leak."""
     coordinator, first = _connected_coordinator(hass)
@@ -3329,7 +3317,7 @@ async def test_a_confirmed_command_still_hangs_up_the_client_it_gave_up_on(
 
     first.write_gatt_char = AsyncMock(side_effect=_write_then_notify)
     second.write_gatt_char = AsyncMock(side_effect=_write_then_notify)
-    _dialling(coordinator, monkeypatch, second)
+    _dialling(coordinator, second)
 
     await coordinator.async_set_power(True)  # confirmed by the report
     await hass.async_block_till_done()
@@ -3402,7 +3390,7 @@ async def test_a_hang_up_outlives_the_deadline_of_whoever_asked_for_it(
         finished.append(1)
 
     first.disconnect = AsyncMock(side_effect=_slow_hang_up)
-    dial = _dialling(coordinator, monkeypatch, _fresh_client())
+    dial = _dialling(coordinator, _fresh_client())
 
     with pytest.raises(HomeAssistantError):
         await coordinator.async_set_power(True)  # the deadline ends the wait
@@ -3513,9 +3501,7 @@ async def test_reading_the_device_info_does_not_need_home_assistant() -> None:
     assert coordinator.sw_version == "4"
 
 
-async def test_a_retry_hangs_up_without_home_assistant(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+async def test_a_retry_hangs_up_without_home_assistant() -> None:
     """The same for the path that waits for the hang-up before it dials again.
 
     This is the one the bench exists to exercise: a command on a link that
@@ -3527,7 +3513,7 @@ async def test_a_retry_hangs_up_without_home_assistant(
     coordinator._client = first
     second = _fresh_client()
     second.write_gatt_char = AsyncMock()
-    _dialling(coordinator, monkeypatch, second)
+    _dialling(coordinator, second)
 
     await coordinator.async_set_power(True)
 
@@ -3684,7 +3670,7 @@ async def test_a_connect_that_fails_half_way_hangs_up_outside_its_deadline(
         finished.append(1)
 
     client.disconnect = AsyncMock(side_effect=_slow_hang_up)
-    _dialling(coordinator, monkeypatch, client)
+    _dialling(coordinator, client)
 
     with pytest.raises(TimeoutError):  # the deadline, while it waits
         await coordinator._async_ensure_connected()
@@ -3731,7 +3717,7 @@ async def test_a_deadline_that_falls_on_a_held_link_leaves_it_and_calls_it_held(
     monkeypatch.setattr(coordinator_module, "_CONNECT_TIMEOUT", 0.05)
     client = _fresh_client()
     client.write_gatt_char = AsyncMock(side_effect=_never_returns)
-    dial = _dialling(coordinator, monkeypatch, client)
+    dial = _dialling(coordinator, client)
     caplog.set_level(logging.DEBUG)
 
     await getattr(coordinator, connect)()
@@ -3766,7 +3752,7 @@ async def test_a_deadline_that_falls_after_priming_says_the_link_is_primed(
     client = _fresh_client()
     _answers(coordinator, client, {KEY_POWER: True, KEY_ACTIVATED: True})
     client.read_gatt_char = AsyncMock(side_effect=_never_returns)
-    _dialling(coordinator, monkeypatch, client)
+    _dialling(coordinator, client)
     caplog.set_level(logging.DEBUG)
 
     await coordinator._async_reconnect()
@@ -3789,7 +3775,7 @@ async def test_a_deadline_spent_waiting_behind_a_command_that_connected_is_no_fa
     coordinator, client = _connected_coordinator(hass)
     coordinator._client = None
     monkeypatch.setattr(coordinator_module, "_CONNECT_TIMEOUT", 0.05)
-    dial = _dialling(coordinator, monkeypatch)
+    dial = _dialling(coordinator)
     caplog.set_level(logging.DEBUG)
 
     async with coordinator._lock:  # the command's turn
@@ -3827,7 +3813,6 @@ async def test_a_connect_that_gets_no_link_is_still_called_a_failed_connect(
 
 async def test_a_connect_that_fails_on_a_held_link_keeps_the_error_it_failed_with(
     hass: HomeAssistant,
-    monkeypatch: pytest.MonkeyPatch,
     caplog: pytest.LogCaptureFixture,
 ) -> None:
     """Only running out of time is reworded: an error says what it was."""
@@ -3835,7 +3820,7 @@ async def test_a_connect_that_fails_on_a_held_link_keeps_the_error_it_failed_wit
     coordinator._client = None
     client = _fresh_client()
     _answers(coordinator, client, {KEY_POWER: True, KEY_ACTIVATED: True})
-    _dialling(coordinator, monkeypatch, client)
+    _dialling(coordinator, client)
     coordinator._async_sync_clock_if_needed = AsyncMock(
         side_effect=BleakError("the clock would not be set")
     )
@@ -3926,7 +3911,7 @@ async def test_hanging_up_a_client_we_gave_up_on_leaves_the_one_we_hold(
     second = _fresh_client()  # its write fails as well: the command fails
     third = _fresh_client()
     third.write_gatt_char = AsyncMock()  # the next command's link works
-    _dialling(coordinator, monkeypatch, second, third)
+    _dialling(coordinator, second, third)
     monkeypatch.setattr(coordinator_module, "_CONFIRM_TIMEOUT", 0.2)
 
     failing = asyncio.create_task(coordinator.async_set_power(True))
@@ -3947,7 +3932,7 @@ async def test_hanging_up_a_client_we_gave_up_on_leaves_the_one_we_hold(
 
 
 async def test_a_connect_does_not_wait_for_the_hang_up_it_started(
-    hass: HomeAssistant, monkeypatch: pytest.MonkeyPatch
+    hass: HomeAssistant,
 ) -> None:
     """A link that answers nothing is hung up in the background.
 
@@ -3967,7 +3952,7 @@ async def test_a_connect_does_not_wait_for_the_hang_up_it_started(
         finished.append(1)
 
     client.disconnect = AsyncMock(side_effect=_slow_hang_up)
-    _dialling(coordinator, monkeypatch, client)
+    _dialling(coordinator, client)
 
     async with asyncio.timeout(1):
         await coordinator._connect_locked()  # returns with the hang-up pending
@@ -4007,7 +3992,7 @@ async def test_the_poll_does_not_wait_for_the_hang_up_it_started(
 
 
 async def test_a_retry_dials_only_after_a_half_made_connect_is_hung_up(
-    hass: HomeAssistant, monkeypatch: pytest.MonkeyPatch
+    hass: HomeAssistant,
 ) -> None:
     """A subscription that fails is hung up before the command dials again.
 
@@ -4037,7 +4022,7 @@ async def test_a_retry_dials_only_after_a_half_made_connect_is_hung_up(
         return next(clients)
 
     first.disconnect = AsyncMock(side_effect=_hang_up_slowly)
-    _dialling(coordinator, monkeypatch).side_effect = _dial
+    _dialling(coordinator).side_effect = _dial
 
     await coordinator.async_set_power(True)
 
@@ -4071,7 +4056,7 @@ async def test_a_connect_cancelled_half_way_is_hung_up_but_not_waited_for(
 
     client.start_notify = AsyncMock(side_effect=_never)
     client.disconnect = AsyncMock(side_effect=_slow_hang_up)
-    _dialling(coordinator, monkeypatch, client)
+    _dialling(coordinator, client)
 
     async with asyncio.timeout(0.5):
         with pytest.raises(TimeoutError):
@@ -4144,7 +4129,7 @@ _BUS_CLOSED = (EOFError(), OSError(9, "Bad file descriptor"))
 
 @pytest.mark.parametrize("failure", _BUS_CLOSED, ids=["eof", "bad-fd"])
 async def test_a_write_on_a_bus_closed_under_it_is_retried_like_a_lost_link(
-    hass: HomeAssistant, monkeypatch: pytest.MonkeyPatch, failure: Exception
+    hass: HomeAssistant, failure: Exception
 ) -> None:
     """The bus closing under a write is the link going, and is handled as that.
 
@@ -4159,7 +4144,7 @@ async def test_a_write_on_a_bus_closed_under_it_is_retried_like_a_lost_link(
     first.write_gatt_char = AsyncMock(side_effect=failure)
     second = _fresh_client()
     second.write_gatt_char = AsyncMock()
-    _dialling(coordinator, monkeypatch, second)
+    _dialling(coordinator, second)
 
     await coordinator.async_set_power(True)  # the retry, on a fresh link, works
 
@@ -4176,7 +4161,7 @@ async def test_a_command_that_keeps_meeting_a_closed_bus_fails_readably(
     first.write_gatt_char = AsyncMock(side_effect=failure)
     second = _fresh_client()
     second.write_gatt_char = AsyncMock(side_effect=failure)
-    _dialling(coordinator, monkeypatch, second)
+    _dialling(coordinator, second)
     monkeypatch.setattr(coordinator_module, "_CONFIRM_TIMEOUT", 0.01)
 
     with pytest.raises(HomeAssistantError):
@@ -4185,7 +4170,7 @@ async def test_a_command_that_keeps_meeting_a_closed_bus_fails_readably(
 
 @pytest.mark.parametrize("failure", _BUS_CLOSED, ids=["eof", "bad-fd"])
 async def test_a_connect_whose_reads_meet_a_closed_bus_just_drops_the_link(
-    hass: HomeAssistant, monkeypatch: pytest.MonkeyPatch, failure: Exception
+    hass: HomeAssistant, failure: Exception
 ) -> None:
     """The state request and the read, on a bus that closed: a dead link.
 
@@ -4200,7 +4185,7 @@ async def test_a_connect_whose_reads_meet_a_closed_bus_just_drops_the_link(
     client = _fresh_client()
     client.read_gatt_char = AsyncMock(side_effect=failure)
     client.write_gatt_char = AsyncMock(side_effect=failure)
-    _dialling(coordinator, monkeypatch, client)
+    _dialling(coordinator, client)
 
     await coordinator._connect_locked()
     await hass.async_block_till_done()
@@ -4211,7 +4196,7 @@ async def test_a_connect_whose_reads_meet_a_closed_bus_just_drops_the_link(
 
 @pytest.mark.parametrize("failure", _BUS_CLOSED, ids=["eof", "bad-fd"])
 async def test_background_connects_that_meet_a_closed_bus_only_log_it(
-    hass: HomeAssistant, monkeypatch: pytest.MonkeyPatch, failure: Exception
+    hass: HomeAssistant, failure: Exception
 ) -> None:
     """Neither background connect lets it out.
 
@@ -4221,7 +4206,7 @@ async def test_background_connects_that_meet_a_closed_bus_only_log_it(
     """
     coordinator, _ = _connected_coordinator(hass)
     coordinator._client = None
-    _dialling(coordinator, monkeypatch).side_effect = failure
+    _dialling(coordinator).side_effect = failure
 
     await coordinator._async_initial_connect()
     await coordinator._async_reconnect()
@@ -4267,7 +4252,7 @@ async def test_stopping_lets_go_of_a_link_made_while_it_was_stopping(
         await answered.wait()
         return second
 
-    _dialling(coordinator, monkeypatch).side_effect = _dial_slowly
+    _dialling(coordinator).side_effect = _dial_slowly
 
     command = asyncio.create_task(coordinator.async_set_power(True))
     await asyncio.sleep(0)  # its write has failed; the retry is dialling
@@ -4321,7 +4306,7 @@ async def test_a_stopped_coordinator_does_not_dial(
     later, for a different reason.
     """
     coordinator, _ = _connected_coordinator(hass)
-    dial = _dialling(coordinator, monkeypatch, _fresh_client(), _fresh_client())
+    dial = _dialling(coordinator, _fresh_client(), _fresh_client())
     monkeypatch.setattr(coordinator_module, "_CONFIRM_TIMEOUT", 0.01)
 
     await coordinator.async_stop()
@@ -4347,7 +4332,7 @@ async def test_a_command_refused_because_it_has_stopped_says_so(
     that is refused on purpose is not asked for a second time.
     """
     coordinator, _ = _connected_coordinator(hass)
-    dial = _dialling(coordinator, monkeypatch, _fresh_client(), _fresh_client())
+    dial = _dialling(coordinator, _fresh_client(), _fresh_client())
     monkeypatch.setattr(coordinator_module, "_CONFIRM_TIMEOUT", 0.01)
     asked = _counting_connects(coordinator)
     if stopped_by == "an unload":
@@ -4383,7 +4368,7 @@ async def test_a_command_overtaken_by_a_stop_says_so_too(
         await subscribed.wait()
 
     client.start_notify = AsyncMock(side_effect=_subscribe_slowly)
-    dial = _dialling(coordinator, monkeypatch, client, _fresh_client())
+    dial = _dialling(coordinator, client, _fresh_client())
     monkeypatch.setattr(coordinator_module, "_CONFIRM_TIMEOUT", 0.01)
     asked = _counting_connects(coordinator)
 
@@ -4532,7 +4517,7 @@ async def test_shutting_down_stops_watching_and_takes_no_new_link(
     coordinator._cancel_bluetooth = cancels["bluetooth"]
     coordinator._cancel_unavailable = cancels["unavailable"]
     coordinator._cancel_poll = cancels["poll"]
-    dial = _dialling(coordinator, monkeypatch, _fresh_client(), _fresh_client())
+    dial = _dialling(coordinator, _fresh_client(), _fresh_client())
     monkeypatch.setattr(coordinator_module, "_CONFIRM_TIMEOUT", 0.01)
 
     coordinator.async_shutdown()
@@ -4654,7 +4639,7 @@ async def test_stopping_gives_the_lock_back_however_it_ends(
 
 
 async def test_a_link_subscribed_while_the_coordinator_stopped_is_not_kept(
-    hass: HomeAssistant, monkeypatch: pytest.MonkeyPatch
+    hass: HomeAssistant,
 ) -> None:
     """The check for a stop comes after the subscription, not before it.
 
@@ -4672,7 +4657,7 @@ async def test_a_link_subscribed_while_the_coordinator_stopped_is_not_kept(
         await subscribed.wait()
 
     client.start_notify = AsyncMock(side_effect=_subscribe_slowly)
-    _dialling(coordinator, monkeypatch, client)
+    _dialling(coordinator, client)
 
     async def _connect() -> None:
         async with coordinator._lock:
