@@ -732,16 +732,23 @@ predecessor could not let go of, does not dial over it, and goes on trying to
 close it. So a reload no longer gets a lamp dialled again while such a client
 is kept: the stack letting go of it does, or a restart of Home Assistant.
 
-One limit is known, and it has two faces. A client is kept only when its
+**A dial waits for a hang-up still under way.** A client is kept only when its
 hang-up has run out its ceiling, and until then nothing knows that it will
-not close. Within one coordinator, that hang-up finishes after the connect
-that gave the client up has released the lock, so one more dial can get in
-first. And across a reload: a link held when the entry is unloaded is hung up
-in the background, the unload waits three seconds for it and no longer, and
-the coordinator that follows dials at once - over a client that is kept a few
-seconds later, if the stack would not hang up. Either way it is one client
-more, and then none. Closing the window means a dial that waits for a hang-up
-still under way, which changes when a lamp is dialled; it has not been done.
+not close. A dial made in between used to go ahead beside it. Within one
+coordinator: the hang-up finishes after the connect that gave the client up
+has released the lock. Across a reload: a link held when the entry is
+unloaded is hung up in the background, the unload waits three seconds for it
+and no longer, and the coordinator that followed dialled at once. Either way
+it was one client more on a stack that was not letting go of the first. So
+the hang-ups under way are held for the lamp beside the clients that would
+not close, and `Link.open()` waits for them before it dials - after refusing
+what is already known (a stopped link, a client already kept), and refusing
+again when the wait has shown it. The caller's own deadline bounds the wait,
+and ending the wait ends no hang-up. On a stack that hangs up it is the time
+a disconnect takes; on one that does not, a command waits out the hang-up -
+ten seconds at most - before it is told that the link was not released. A
+hang-up that has already ended is not waited for: a command's retry has just
+waited for its own.
 
 **A hang-up is the one piece of background work not tied to the config entry.**
 Everything else dies with the entry, because a connect that outlives its

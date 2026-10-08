@@ -18,8 +18,22 @@ All notable changes to this project are documented here. The format is based on
   long as Home Assistant runs, together with what is needed to close it
   later. Reloading the integration therefore no longer gets such a lamp
   dialled again: the stack letting go does - the repair says how - or a
-  restart of Home Assistant. A client that is still being hung up when the
-  reload happens is not kept yet, and can still be dialled over once
+  restart of Home Assistant
+  ([#21](https://github.com/kugaevsky/glowrium-ha/issues/21)).
+
+### Changed
+
+- **A connect waits for a hang-up that is still under way.** Whether a
+  client will close is not known until its hang-up has ended, and only then
+  is a client that will not close kept. A connect made in between - by a
+  command, by the lamp being heard again, by the integration reloading while
+  a link was still being hung up - went ahead beside it: one more
+  connection on a Bluetooth stack that was not letting go of the first. It
+  waits for the hang-up now, and is then refused or goes ahead. Where the
+  stack hangs up, that is the time a disconnect takes. Where it does not, a
+  command waits for the hang-up to run out - up to ten seconds - before it
+  is told that the link was not released; once a client is kept, the
+  command is told at once, as before
   ([#21](https://github.com/kugaevsky/glowrium-ha/issues/21)).
 
 ## [0.3.1] - 2026-10-08

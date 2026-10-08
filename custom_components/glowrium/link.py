@@ -270,12 +270,20 @@ class Unclosed:
     A client is kept with what is behind it. That is what its bus is closed
     through, and by the time the next link tries, Home Assistant's wrapper
     may have forgotten it.
+
+    The hang-ups still under way are here too, for the same reason: the
+    coordinator a reload makes must wait for its predecessor's before it
+    dials, or it dials over a client that is kept a few seconds later.
     """
 
     def __init__(self) -> None:
         """Start with nothing kept."""
         self.clients: set[BleakClientWithServiceCache] = set()
         self.backends: dict[BleakClientWithServiceCache, Any] = {}
+        # The hang-ups still under way. Until one has ended nobody knows
+        # whether its client will close, so a dial waits for them (see
+        # ``Link.open``) - the next link's as well as the one that began them.
+        self.hang_ups: set[asyncio.Task[None]] = set()
 
     def keep(self, client: BleakClientWithServiceCache, backend: Any) -> None:
         """Keep ``client``, with what is behind it."""
@@ -409,20 +417,21 @@ class Link:
         does on the new link - the first exchange, or a command's own write
         and nothing else - is its business and comes after.
         """
-        if self.stopped:
-            # Only a command gets here: one already in flight when the entry
-            # was unloaded, or one sent after Home Assistant began to stop.
-            raise _NoNewLinkError(
-                f"{self.address}: stopped, taking no new link", "not_running"
-            )
-        if self.unclosed:
-            # Every dial opens a connection to the system bus, and the last
-            # one could be neither hung up nor closed (see _async_disconnect).
-            raise _NoNewLinkError(
-                f"{self.address}: the previous link is still open and will "
-                "not close; not dialling over it",
-                "link_not_released",
-            )
+        self._refuse_what_must_not_be_dialled()
+        # Not the ones that have ended: a retry that has just waited for its own
+        # hang-up has nothing left to wait for.
+        under_way = tuple(one for one in self._kept.hang_ups if not one.done())
+        if under_way:
+            # A client is kept only once its hang-up has run out its ceiling;
+            # until then nothing says that it will not close. A dial made in
+            # between went ahead beside it: one more client on a stack that
+            # was not letting go of the first - within one coordinator, and
+            # across a reload, where the next one dialled as its predecessor's
+            # hang-up was still running. So the dial waits. On a stack that
+            # hangs up that is the time a disconnect takes; the caller's own
+            # deadline bounds it, and ending the wait ends no hang-up.
+            await asyncio.wait(under_way)
+            self._refuse_what_must_not_be_dialled()
         client = await self._dial(self.on_lost)
         self.backends[client] = getattr(client, "_backend", None)
         try:
@@ -453,6 +462,23 @@ class Link:
         # reports as connected forever while no state ever arrives again.
         self.client = client
         return client
+
+    def _refuse_what_must_not_be_dialled(self) -> None:
+        """Raise the link's own "no" where a dial is known to be wrong."""
+        if self.stopped:
+            # Only a command gets here: one already in flight when the entry
+            # was unloaded, or one sent after Home Assistant began to stop.
+            raise _NoNewLinkError(
+                f"{self.address}: stopped, taking no new link", "not_running"
+            )
+        if self.unclosed:
+            # Every dial opens a connection to the system bus, and the last
+            # one could be neither hung up nor closed (see _async_disconnect).
+            raise _NoNewLinkError(
+                f"{self.address}: the previous link is still open and will "
+                "not close; not dialling over it",
+                "link_not_released",
+            )
 
     def shut_down(self) -> None:
         """Hang up as Home Assistant stops: at once, and without waiting.
@@ -562,9 +588,13 @@ class Link:
         """
         if client is self.client:
             self.client = None
-        return self._run_lasting(
+        hang_up = self._run_lasting(
             self._async_disconnect(client), f"glowrium hang up {self.address}"
         )
+        # Known to whatever dials next, for as long as it runs (see open).
+        self._kept.hang_ups.add(hang_up)
+        hang_up.add_done_callback(self._kept.hang_ups.discard)
+        return hang_up
 
     async def _async_disconnect(self, client: BleakClientWithServiceCache) -> None:
         """Disconnect ``client`` under a ceiling, and leave no bus open behind it.

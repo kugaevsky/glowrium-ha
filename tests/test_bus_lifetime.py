@@ -455,6 +455,136 @@ async def test_what_is_handed_on_can_still_be_closed_by_the_one_it_is_handed_to(
     assert len(host.clients) > 1  # and dialling again
 
 
+async def test_no_dial_gets_in_before_a_client_that_will_not_close_is_kept(
+    hass: HomeAssistant, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A dial waits for a hang-up still under way.
+
+    Whether a client will close is not known until its hang-up has run out
+    its ceiling, and only then is the client kept. A dial made in between -
+    by a command, by the lamp advertising - knew of nothing in its way and
+    went ahead: one more client on a stack that was not letting go of the
+    first. So a dial waits for the hang-up to end, and then finds the client
+    kept and is refused, or finds nothing kept and dials.
+    """
+    host = _WedgedBlueZ(_MovedBackend)
+    lamp = ScriptedLamp()
+    lamp.dials_through(host.dial)
+    monkeypatch.setattr(link_module, "_HANG_UP_TIMEOUT", 0.2)
+    monkeypatch.setattr(link_module, "_STACK_FAULT_AFTER", 10**6)
+    monkeypatch.setattr(coordinator_module, "_COMMAND_TIMEOUT", 2.0)
+    monkeypatch.setattr(coordinator_module, "_CONFIRM_TIMEOUT", 0.01)
+    coordinator = lamp.coordinator(hass)
+    coordinator._async_poll_reconnect(None)
+    await asyncio.sleep(0.05)  # dialled, found to answer nothing, being hung up
+    assert len(host.clients) == 1
+    assert host.clients[0].disconnects == 1
+    assert not coordinator._unreleased  # and not yet known not to close
+
+    with pytest.raises(HomeAssistantError) as err:
+        await coordinator.async_set_power(True)
+
+    assert err.value.translation_key == "link_not_released"
+    assert len(host.clients) == 1  # nothing was dialled beside it
+    assert host.open_buses == 1
+    await hass.async_block_till_done()
+
+
+async def test_no_dial_gets_in_across_a_reload_either(
+    hass: HomeAssistant, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The coordinator a reload makes waits for its predecessor's hang-up.
+
+    A link held when the entry is unloaded is hung up in the background, and
+    the unload waits three seconds for it and no longer. The coordinator that
+    followed dialled at once - over a client that was kept a few seconds
+    later, on a stack that would not hang up. The hang-ups under way are held
+    for the lamp, like the clients that would not close.
+    """
+    held = link_module.Unclosed()
+    host = _WedgedBlueZ(_MovedBackend)
+    lamp = ScriptedLamp()
+    lamp.dials_through(host.dial)
+    monkeypatch.setattr(link_module, "_HANG_UP_TIMEOUT", 0.2)
+    monkeypatch.setattr(link_module, "_STOP_TIMEOUT", 0.02)
+    monkeypatch.setattr(link_module, "_STACK_FAULT_AFTER", 10**6)
+    monkeypatch.setattr(coordinator_module, "_COMMAND_TIMEOUT", 2.0)
+    monkeypatch.setattr(coordinator_module, "_CONFIRM_TIMEOUT", 0.01)
+    first = lamp.coordinator(hass, unclosed=held)
+    first._client = await host.dial()  # a link it holds when the reload comes
+
+    await first.async_stop()  # gives the hang-up its three seconds, and goes
+    assert not held.clients  # still being hung up: not kept yet
+    second = lamp.coordinator(hass, unclosed=held)
+    with pytest.raises(HomeAssistantError) as err:
+        await second.async_set_power(True)
+
+    assert err.value.translation_key == "link_not_released"
+    assert len(host.clients) == 1
+    assert host.open_buses == 1
+    await hass.async_block_till_done()
+
+
+async def test_a_dial_that_waited_for_a_hang_up_goes_ahead_when_it_has_ended(
+    hass: HomeAssistant,
+) -> None:
+    """On a stack that does hang up, the wait is the hang-up and nothing more.
+
+    The dial is not refused and not put off to the next poll: it follows the
+    hang-up, as a command's second try always has.
+    """
+    lamp = ScriptedLamp()
+    coordinator = lamp.coordinator(hass)
+    await coordinator.async_set_power(True)
+    first = lamp.links[0]
+    dialled_when_it_ended: list[int] = []
+    hang_up_may_end = asyncio.Event()
+
+    async def _slow_to_hang_up() -> None:
+        await hang_up_may_end.wait()
+        dialled_when_it_ended.append(lamp.dials)
+
+    first.disconnect = _slow_to_hang_up
+    lamp.lose()  # reported lost; its hang-up is under way
+    command = asyncio.create_task(coordinator.async_set_power(False))
+    await asyncio.sleep(0.02)
+    assert lamp.dials == 1  # the command waits; nothing is dialled
+
+    hang_up_may_end.set()
+    await command
+
+    assert dialled_when_it_ended == [1]  # the hang-up ended, and then
+    assert lamp.dials == 2  # the dial went ahead
+    assert lamp.written[-1] == (WRITE_UUID, cbor.encode({KEY_POWER: False}))
+
+
+async def test_a_command_is_refused_at_once_over_a_client_already_kept(
+    hass: HomeAssistant, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """What is already known is not waited for.
+
+    While a client is kept the poll goes on trying to hang it up, so on a
+    stack that will not there is nearly always a hang-up under way. A button
+    pressed then is told at once that the link was not released - not after
+    that hang-up's ten seconds.
+    """
+    coordinator, host = _wedged(hass, monkeypatch, behind=_MovedBackend)
+    await _polls(coordinator, hass, 1)
+    assert coordinator._unreleased
+    monkeypatch.setattr(link_module, "_HANG_UP_TIMEOUT", 60)
+    coordinator._async_poll_reconnect(None)  # tries the kept client again
+    await asyncio.sleep(0)
+
+    async with asyncio.timeout(0.5):
+        with pytest.raises(HomeAssistantError) as err:
+            await coordinator.async_set_power(True)
+
+    assert err.value.translation_key == "link_not_released"
+    assert len(host.clients) == 1
+    host.released.set()  # let the long hang-up end with the test
+    await hass.async_block_till_done()
+
+
 async def test_nothing_is_kept_of_a_client_that_was_let_go(
     hass: HomeAssistant, monkeypatch: pytest.MonkeyPatch
 ) -> None:
