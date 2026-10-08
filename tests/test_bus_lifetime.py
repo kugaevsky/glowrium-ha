@@ -164,6 +164,28 @@ async def _polls(
     await hass.async_block_till_done()
 
 
+def _a_link(**handed: Any) -> link_module.Link:
+    """Return a link with no coordinator and no Home Assistant behind it.
+
+    What it is handed does nothing, unless a test hands it something else: a
+    test that only takes a client and lets go of it needs no more.
+    """
+
+    def _on_the_loop(coro: Any, name: str) -> asyncio.Task[None]:
+        return asyncio.get_running_loop().create_task(coro, name=name)
+
+    return link_module.Link(
+        "AA:BB:CC:DD:EE:FF",
+        handed.pop("dial", AsyncMock()),
+        notify_uuid=NOTIFY_UUID,
+        heard=handed.pop("heard", lambda _characteristic, _data: None),
+        reach_changed=handed.pop("reach_changed", lambda: None),
+        stack_fault=handed.pop("stack_fault", lambda _count: None),
+        run_lasting=_on_the_loop,
+        **handed,
+    )
+
+
 async def test_a_wedged_bluez_does_not_cost_a_connection_per_poll(
     hass: HomeAssistant, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -430,6 +452,7 @@ async def test_what_is_handed_on_can_still_be_closed_by_the_one_it_is_handed_to(
 
     assert host.bus_of[stuck].closed  # closed through what was handed on
     assert second._unreleased == set()
+    assert held.backends == {}  # and nothing is kept of it once it is let go
     assert len(host.clients) > 1  # and dialling again
 
 
@@ -490,9 +513,7 @@ async def test_a_bus_that_will_not_close_stops_the_dialling(
     assert len(host.clients) == 1
 
 
-async def test_a_disconnect_that_returns_is_not_taken_at_its_word(
-    hass: HomeAssistant, monkeypatch: pytest.MonkeyPatch
-) -> None:
+async def test_a_disconnect_that_returns_is_not_taken_at_its_word() -> None:
     """A disconnect() that returns may have left the bus open all the same.
 
     bleak's does when another disconnect of the same client is under way:
@@ -500,12 +521,12 @@ async def test_a_disconnect_that_returns_is_not_taken_at_its_word(
     got that far is not something the caller is told, so the bus is looked at
     after a hang-up that succeeded as well.
     """
-    coordinator, host = _wedged(hass, monkeypatch)
+    link, host = _a_link(), _WedgedBlueZ()
     client = await host.dial()
     client.disconnect = AsyncMock()  # returns, having closed nothing
-    coordinator._client = client
+    link.client = client
 
-    await coordinator._hang_up(client)
+    await link.hang_up(client)
 
     assert host.open_buses == 0
 
@@ -629,26 +650,27 @@ def test_bleak_still_calls_these_what_the_coordinator_calls_them() -> None:
 
 @pytest.mark.parametrize("answer", ["never", "error"])
 async def test_bleaks_own_client_ends_up_closed(
-    hass: HomeAssistant, monkeypatch: pytest.MonkeyPatch, answer: str
+    monkeypatch: pytest.MonkeyPatch, answer: str
 ) -> None:
     """Against bleak's real client: a failed hang-up still closes everything.
 
     Two ways ``disconnect()`` stops short of the lines that close the bus:
     BlueZ never answers ``Disconnect`` (the incident), and BlueZ answers it
     with an error. The doubles above stand in for bleak; this runs bleak's own
-    code, so that a release which renames what the coordinator reaches for
-    fails here and not on somebody's host.
+    code, so that a release which renames what the link reaches for fails
+    here and not on somebody's host.
     """
-    coordinator = GlowriumCoordinator(hass, "AA:BB:CC:DD:EE:FF", "Glowrium-G7")
+    link = _a_link()
     monkeypatch.setattr(link_module, "_HANG_UP_TIMEOUT", 0.05)
     bus = _StubBus(answer)
     backend, removed = _bleaks_own_client(bus)
     monitor = backend._disconnect_monitor_event
     client = _HaClient(backend)
-    coordinator._client = client
+    link.client = client
 
-    await coordinator._hang_up(client)
+    await link.hang_up(client)
 
+    assert link.client is None
     assert bus.calls == ["Disconnect"]  # asked properly first
     assert bus.closed
     # And bleak is left as it leaves itself when BlueZ reports a link gone:
@@ -932,15 +954,15 @@ def test_every_gatt_call_is_made_where_a_closed_bus_is_a_lost_link() -> None:
 
 
 async def test_a_hang_up_cancelled_half_way_still_closes_the_bus(
-    hass: HomeAssistant, monkeypatch: pytest.MonkeyPatch
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Cancellation is not an exception, and it leaves the bus open just the same."""
-    coordinator, host = _wedged(hass, monkeypatch)
+    link, host = _a_link(), _WedgedBlueZ()
     monkeypatch.setattr(link_module, "_HANG_UP_TIMEOUT", 60)
     client = await host.dial()
-    coordinator._client = client
+    link.client = client
 
-    hang_up = coordinator._hang_up(client)
+    hang_up = link.hang_up(client)
     await asyncio.sleep(0.01)  # into disconnect(), waiting on BlueZ
     hang_up.cancel()
     with pytest.raises(asyncio.CancelledError):

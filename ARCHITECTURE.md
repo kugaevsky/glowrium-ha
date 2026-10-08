@@ -39,9 +39,10 @@ Home Assistant entities are stateless views over that coordinator.
 
 | File (`custom_components/glowrium/…`) | Responsibility |
 | --- | --- |
-| `__init__.py` | `async_setup_entry` / `async_unload_entry`; builds the coordinator, stores it in `entry.runtime_data`, forwards platforms, and has the coordinator hang up when Home Assistant stops |
+| `__init__.py` | `async_setup_entry` / `async_unload_entry`; builds the coordinator, stores it in `entry.runtime_data`, forwards platforms, has the coordinator hang up when Home Assistant stops, and keeps for each lamp what could not be closed |
 | `config_flow.py` | Bluetooth auto-discovery + manual picker for `Glowrium-*` devices |
-| `coordinator.py` | BLE transport, reconnect, activation, state mirror, all command methods |
+| `coordinator.py` | The device: the state mirror, all command methods, the clock, activation - and, until the split is finished, the exchanges with the lamp and the reconnect poll |
+| `link.py` | The link: the client and the lock around it, the dial, the hang-up and the closing of the client's bus, the stack that will not hang up, whether the lamp is in reach. No Home Assistant in it and no protocol |
 | `cbor.py` | Minimal CBOR encoder/decoder (only the subset the device uses) — the *wire* format |
 | `protocol.py` | Semantic codec — byte layouts (`0x11` slot, `0x2f` ramp, `0x35` daylight saving, `0x05` clock) ↔ values, read and written; the coordinator's typed accessors and setters delegate here |
 | `const.py` | GATT UUIDs, CBOR property keys, byte-layout offsets, mode constants |
@@ -572,6 +573,19 @@ available = self._is_connected or self._present
 
 ### Reconnect
 
+The coordinator is being split in two ([#21](https://github.com/kugaevsky/glowrium-ha/issues/21)):
+the **link** - taking a client, holding it, letting go of it - and the
+**device**. As of the first stage the link's code is in `link.py`, moved
+there as it stood: `Link.open()` is the first half of what `_connect_locked`
+was (the refusals, the dial, subscribe-then-keep), `Link.hang_up()` is
+`_hang_up`, and so on. The exchanges - a command, the first exchange on a new
+link, the probe - and the poll are still the coordinator's and reach the link
+by the names used below, which the coordinator keeps as forwards. So the names
+in this section are still the names in the code; which file each lives in is
+the only thing that has changed. The link is handed its dial, so that it can
+stand on something other than a Bluetooth adapter: in the tests, a scripted
+lamp.
+
 Two independent triggers, both funnelling into a single guarded reconnect task
 (`_reconnecting` prevents a connect storm from the ~1 Hz advertisements):
 
@@ -708,10 +722,13 @@ then held for as long as that lasts, instead of one more per poll tick.
 `tests/test_bus_lifetime.py` counts open connections rather than calls, and
 runs the same against bleak's own BlueZ client with a stub bus, so that a
 bleak release which renames these attributes fails in the suite and not on
-somebody's host. Two limits are known: a client kept this way is not handed
-on when the entry is reloaded (the coordinator that replaces it will dial),
-and the hang-up that parks it finishes after the connect that gave it up has
-released the lock, so one more dial can get in first.
+somebody's host. A client kept this way is kept for the lamp, by its address
+and with what is behind it, for as long as Home Assistant runs (`Unclosed`):
+a reload of the entry makes a new coordinator, and that one is handed what its
+predecessor could not let go of, does not dial over it, and goes on trying to
+close it. One limit is known: the hang-up that parks such a client finishes
+after the connect that gave it up has released the lock, so one more dial can
+get in first.
 
 **A hang-up is the one piece of background work not tied to the config entry.**
 Everything else dies with the entry, because a connect that outlives its
