@@ -733,8 +733,8 @@ close it. So a reload no longer gets a lamp dialled again while such a client
 is kept: the stack letting go of it does, or a restart of Home Assistant.
 
 **A dial waits for a hang-up still under way.** A client is kept only when its
-hang-up has run out its ceiling, and until then nothing knows that it will
-not close. A dial made in between used to go ahead beside it. Within one
+hang-up has ended - at its ceiling, or sooner where BlueZ answered with an
+error - and until then nothing knows that it will not close. A dial made in between used to go ahead beside it. Within one
 coordinator: the hang-up finishes after the connect that gave the client up
 has released the lock. Across a reload: a link held when the entry is
 unloaded is hung up in the background, the unload waits three seconds for it
@@ -744,11 +744,26 @@ the hang-ups under way are held for the lamp beside the clients that would
 not close, and `Link.open()` waits for them before it dials - after refusing
 what is already known (a stopped link, a client already kept), and refusing
 again when the wait has shown it. The caller's own deadline bounds the wait,
-and ending the wait ends no hang-up. On a stack that hangs up it is the time
-a disconnect takes; on one that does not, a command waits out the hang-up -
-ten seconds at most - before it is told that the link was not released. A
-hang-up that has already ended is not waited for: a command's retry has just
-waited for its own.
+and ending the wait ends no hang-up. A hang-up that has already ended is not
+waited for: a command's retry has just waited for its own.
+
+What it costs. After a link the stack itself reported lost, nothing: bleak
+has no device left to disconnect and only closes its bus. Where the
+integration lets go of a link BlueZ still calls connected - a probe that got
+no answer, a command's last failed write - the wait is as long as BlueZ takes
+to disconnect, and it used to be a dial made while that was still going on.
+On a stack that will not hang up, every dial queues behind the hang-up before
+it: a command takes up to ten seconds longer to fail, or to be told that the
+link was not released where a client was kept; the clients open at one time
+stay at one where there were several; and the third unanswered hang-up, and
+with it the repair, comes some twenty seconds later than it did.
+
+One case is left. A dial that is itself under way when the entry is unloaded
+is not a hang-up under way: the unload has nothing to wait for and returns,
+the coordinator that follows dials, and the first dial's client arrives
+afterwards, to be hung up because its coordinator has stopped. On a stack that
+will not hang up, with a bus that will not close, that is two clients kept.
+It was so before, and takes a command in flight at the moment of a reload.
 
 **A hang-up is the one piece of background work not tied to the config entry.**
 Everything else dies with the entry, because a connect that outlives its
@@ -805,7 +820,8 @@ proxy's client is not BlueZ's to answer for - whose client it is being told
 by the module its class lives in, not by what it holds. Whether the bus
 behind the client could then be closed does not come into it: where it could
 not, the client is kept and nothing is dialled over it, and the stack is
-every bit as stuck. A command is never held back.
+every bit as stuck. The backoff never holds a command back; a command waits
+only for a hang-up still under way (above).
 The first thing the lamp says — a notification, an acknowledged write —
 ends the episode at once, and that is logged at the level it was announced
 at. Seen on the host: three unanswered hang-ups, one warning, dials at

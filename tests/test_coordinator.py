@@ -2580,6 +2580,10 @@ def test_no_path_holds_the_lock_longer_than_a_command_will_wait() -> None:
     poll = coordinator_module._RECONNECT_INTERVAL.total_seconds()
 
     assert connect < command, "a lock holder outlasting the waiter is an inversion"
+    # A dial waits for a hang-up still under way, inside the connect's own
+    # time. A hang-up allowed as long as the connect would leave no time to
+    # dial once it had ended.
+    assert hang_up < connect
     assert ask < command
     assert connect >= link_module._STOP_TIMEOUT
     # The library gives one try BLEAK_TIMEOUT before it gives up and tidies up

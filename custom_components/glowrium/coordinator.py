@@ -73,9 +73,10 @@ _WRITE_ATTEMPTS = 2  # the initial write plus one reconnect-and-retry
 # then spend up to _CONFIRM_TIMEOUT more deciding whether it failed after all,
 # so the worst a user waits is the sum of the two.
 _COMMAND_TIMEOUT = 25.0
-# Ceiling on a background connect: the wait for _lock, the dial, the
-# subscription and the priming. Without it a connect to an unreachable device
-# holds the lock indefinitely, and everything else that needs the lock waits
+# Ceiling on a background connect: the wait for _lock, the wait for a hang-up
+# still under way (see Link.open), the dial, the subscription and the priming.
+# Without it a connect to an unreachable device holds the lock indefinitely,
+# and everything else that needs the lock waits
 # behind it with no deadline of its own.
 #
 # It is deliberately SHORTER than _COMMAND_TIMEOUT, and the relationship is the

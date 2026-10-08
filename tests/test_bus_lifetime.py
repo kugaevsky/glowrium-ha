@@ -164,11 +164,13 @@ async def _polls(
     await hass.async_block_till_done()
 
 
-def _a_link() -> link_module.Link:
+def _a_link(
+    dial: Any = None, unclosed: link_module.Unclosed | None = None
+) -> link_module.Link:
     """Return a link with no coordinator and no Home Assistant behind it.
 
-    What it is handed does nothing: a test that only plants a client and
-    lets go of it needs no more.
+    What it is handed does nothing, but for a dial or a holder of what would
+    not close that a test hands it.
     """
 
     def _on_the_loop(coro: Any, name: str) -> asyncio.Task[None]:
@@ -176,12 +178,13 @@ def _a_link() -> link_module.Link:
 
     return link_module.Link(
         "AA:BB:CC:DD:EE:FF",
-        AsyncMock(),
+        dial or AsyncMock(),
         notify_uuid=NOTIFY_UUID,
         heard=lambda _characteristic, _data: None,
         reach_changed=lambda: None,
         stack_fault=lambda _count: None,
         run_lasting=_on_the_loop,
+        unclosed=unclosed,
     )
 
 
@@ -556,6 +559,59 @@ async def test_a_dial_that_waited_for_a_hang_up_goes_ahead_when_it_has_ended(
     assert dialled_when_it_ended == [1]  # the hang-up ended, and then
     assert lamp.dials == 2  # the dial went ahead
     assert lamp.written[-1] == (WRITE_UUID, cbor.encode({KEY_POWER: False}))
+
+
+async def test_a_dial_waits_for_every_hang_up_under_way_and_none_stays_noted() -> None:
+    """All of them, not the first to end; and once ended they are forgotten.
+
+    The hang-ups are noted for the lamp, where a reload does not reach. One
+    left noted after it ended would be kept for as long as the process runs.
+    """
+    held = link_module.Unclosed()
+    dial = AsyncMock(return_value=_WorkingClient())
+    link = _a_link(dial, held)
+    may_end = [asyncio.Event(), asyncio.Event()]
+    for one in may_end:
+        client = _WorkingClient()
+        client.disconnect = one.wait
+        link.hang_up(client)
+
+    opening = asyncio.create_task(link.open())
+    await asyncio.sleep(0.01)
+    may_end[0].set()
+    await asyncio.sleep(0.01)
+    dial.assert_not_awaited()  # one has ended; the other has not
+
+    may_end[1].set()
+    await opening
+    await asyncio.sleep(0)
+
+    dial.assert_awaited_once()
+    assert held.hang_ups == set()
+
+
+async def test_a_dial_that_waited_is_refused_if_the_coordinator_stopped_meanwhile(
+    hass: HomeAssistant,
+) -> None:
+    """What the wait has shown is looked at again, and a stop is part of it."""
+    lamp = ScriptedLamp()
+    coordinator = lamp.coordinator(hass)
+    await coordinator.async_set_power(True)
+    hang_up_may_end = asyncio.Event()
+    lamp.links[0].disconnect = hang_up_may_end.wait
+    lamp.lose()
+    command = asyncio.create_task(coordinator.async_set_power(False))
+    await asyncio.sleep(0.02)  # the command is waiting for the hang-up
+
+    stopping = asyncio.create_task(coordinator.async_stop())
+    await asyncio.sleep(0)
+    hang_up_may_end.set()
+    with pytest.raises(HomeAssistantError) as err:
+        await command
+    await stopping
+
+    assert err.value.translation_key == "not_running"
+    assert lamp.dials == 1  # nothing was dialled for a coordinator that stopped
 
 
 async def test_a_command_is_refused_at_once_over_a_client_already_kept(

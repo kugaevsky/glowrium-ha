@@ -285,6 +285,20 @@ class Unclosed:
         # ``Link.open``) - the next link's as well as the one that began them.
         self.hang_ups: set[asyncio.Task[None]] = set()
 
+    def hanging_up(self, hang_up: asyncio.Task[None]) -> None:
+        """Note ``hang_up`` for as long as it runs."""
+        self.hang_ups.add(hang_up)
+        hang_up.add_done_callback(self.hang_ups.discard)
+
+    def under_way(self) -> tuple[asyncio.Task[None], ...]:
+        """Return the hang-ups that have not ended.
+
+        Not the ones that have, though they may still be noted for a turn of
+        the loop: a command's second try has just waited for its own hang-up
+        and has nothing left to wait for.
+        """
+        return tuple(one for one in self.hang_ups if not one.done())
+
     def keep(self, client: BleakClientWithServiceCache, backend: Any) -> None:
         """Keep ``client``, with what is behind it."""
         self.clients.add(client)
@@ -418,12 +432,10 @@ class Link:
         and nothing else - is its business and comes after.
         """
         self._refuse_what_must_not_be_dialled()
-        # Not the ones that have ended: a retry that has just waited for its own
-        # hang-up has nothing left to wait for.
-        under_way = tuple(one for one in self._kept.hang_ups if not one.done())
+        under_way = self._kept.under_way()
         if under_way:
-            # A client is kept only once its hang-up has run out its ceiling;
-            # until then nothing says that it will not close. A dial made in
+            # A client is kept only once its hang-up has ended; until then
+            # nothing says that it will not close. A dial made in
             # between went ahead beside it: one more client on a stack that
             # was not letting go of the first - within one coordinator, and
             # across a reload, where the next one dialled as its predecessor's
@@ -592,8 +604,7 @@ class Link:
             self._async_disconnect(client), f"glowrium hang up {self.address}"
         )
         # Known to whatever dials next, for as long as it runs (see open).
-        self._kept.hang_ups.add(hang_up)
-        hang_up.add_done_callback(self._kept.hang_ups.discard)
+        self._kept.hanging_up(hang_up)
         return hang_up
 
     async def _async_disconnect(self, client: BleakClientWithServiceCache) -> None:

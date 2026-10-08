@@ -29,11 +29,13 @@ All notable changes to this project are documented here. The format is based on
   command, by the lamp being heard again, by the integration reloading while
   a link was still being hung up - went ahead beside it: one more
   connection on a Bluetooth stack that was not letting go of the first. It
-  waits for the hang-up now, and is then refused or goes ahead. Where the
-  stack hangs up, that is the time a disconnect takes. Where it does not, a
-  command waits for the hang-up to run out - up to ten seconds - before it
-  is told that the link was not released; once a client is kept, the
-  command is told at once, as before
+  waits for the hang-up now, and is then refused or goes ahead. After a
+  link that was reported lost that costs nothing; where the integration
+  itself lets go of a link, it is the time the stack takes to disconnect.
+  Where the stack will not hang up, a command waits for the hang-up to run
+  out - up to ten seconds - and so takes that much longer to fail, and the
+  repair for a stuck stack comes some twenty seconds later; once a client is
+  kept, a command is told at once that the link was not released, as before
   ([#21](https://github.com/kugaevsky/glowrium-ha/issues/21)).
 
 ## [0.3.1] - 2026-10-08
