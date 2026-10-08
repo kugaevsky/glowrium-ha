@@ -15,14 +15,17 @@ minute, until the bus refused Home Assistant's user at its limit of 256.
 
 from __future__ import annotations
 
+import ast
 import asyncio
 from itertools import pairwise
 import json
 import logging
+from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 from unittest.mock import AsyncMock
 
+from bleak.backends.bluezdbus import defs
 from bleak.backends.bluezdbus.client import BleakClientBlueZDBus
 from bleak.exc import BleakError
 from dbus_fast import MessageType
@@ -37,6 +40,7 @@ from custom_components.glowrium.const import (
     KEY_ACTIVATED,
     KEY_POWER,
     NOTIFY_UUID,
+    WRITE_UUID,
 )
 from custom_components.glowrium.coordinator import GlowriumCoordinator
 
@@ -569,6 +573,277 @@ async def test_bleaks_own_client_ends_up_closed(
     assert monitor.is_set()
     await client.disconnect()  # nothing left for bleak to do, and no error
     assert bus.calls == ["Disconnect"]
+
+
+# --- A call still waiting its turn when the bus is closed under it ----------
+
+
+class _BusyBus(_StubBus):
+    """BlueZ with an earlier call on the characteristic still waiting.
+
+    It turns every further read or write away with "in progress", and bleak
+    answers that by sleeping ten milliseconds and asking again, for as long
+    as it takes.
+    """
+
+    def __init__(self) -> None:
+        super().__init__("error")
+        self.closings = 0
+        self.going_round = asyncio.Event()
+
+    async def call(self, message: Any) -> Any:
+        if message.member not in ("ReadValue", "WriteValue"):
+            return await super().call(message)
+        self.calls.append(message.member)
+        if len(self.calls) > 1:
+            self.going_round.set()  # turned away once, and back for more
+        return SimpleNamespace(
+            message_type=MessageType.ERROR,
+            error_name=defs.BLUEZ_ERROR_IN_PROGRESS,
+            body=["In Progress"],
+        )
+
+    def disconnect(self) -> None:
+        super().disconnect()
+        self.closings += 1
+
+
+class _GattClient(_HaClient):
+    """Home Assistant's wrapper, as far as a read and a write go as well."""
+
+    @staticmethod
+    def _characteristic(uuid: str) -> Any:
+        path = "/org/bluez/hci0/dev_AA_BB_CC_DD_EE_FF/service0001/char0002"
+        return SimpleNamespace(obj=(path, {}), uuid=uuid)
+
+    async def write_gatt_char(self, uuid: str, data: bytes, response: bool) -> None:
+        assert self._backend is not None
+        await self._backend.write_gatt_char(self._characteristic(uuid), data, response)
+
+    async def read_gatt_char(self, uuid: str) -> bytearray:
+        assert self._backend is not None
+        return await self._backend.read_gatt_char(self._characteristic(uuid))
+
+
+class _WorkingClient:
+    """A client on a link that is up, as far as the coordinator asks of one."""
+
+    def __init__(self) -> None:
+        self.is_connected = True
+        self.start_notify = AsyncMock()
+        self.read_gatt_char = AsyncMock()
+        self.write_gatt_char = AsyncMock()
+        self.disconnect = AsyncMock()
+
+
+def _on_a_busy_link(
+    hass: HomeAssistant,
+) -> tuple[GlowriumCoordinator, _GattClient, _BusyBus]:
+    """Return a coordinator holding bleak's own client, on a link BlueZ is busy on."""
+    coordinator = GlowriumCoordinator(hass, "AA:BB:CC:DD:EE:FF", "Glowrium-G7")
+    bus = _BusyBus()
+    backend, _ = _bleaks_own_client(bus)
+    client = _GattClient(backend)
+    coordinator._client = client
+    return coordinator, client, bus
+
+
+async def _turned_away(bus: _BusyBus, member: str) -> None:
+    """Wait until BlueZ has turned ``member`` away twice: bleak is going round."""
+    async with asyncio.timeout(1):
+        await bus.going_round.wait()
+    assert set(bus.calls) == {member}
+
+
+def _bluez_reports_the_link_gone(
+    coordinator: GlowriumCoordinator, client: _GattClient
+) -> None:
+    """Do what bleak does when BlueZ says the device is no longer connected.
+
+    Its own handler (``on_connected_changed``, a closure inside ``connect()``):
+    mark the client disconnected, release the monitor, tidy up, and call the
+    disconnected callback - the coordinator's, which hangs the client up.
+    """
+    backend = client._backend
+    assert backend is not None
+    backend._is_connected = False
+    assert backend._disconnect_monitor_event is not None
+    backend._disconnect_monitor_event.set()
+    backend._disconnect_monitor_event = None
+    backend._cleanup_all()
+    coordinator._async_on_disconnect(client)
+
+
+@pytest.mark.parametrize(
+    ("exchange", "member"),
+    [
+        ("the state request", "WriteValue"),
+        ("the state read", "ReadValue"),
+        ("the device-info read", "ReadValue"),
+    ],
+)
+async def test_a_call_waiting_its_turn_when_the_link_drops_ends_as_a_lost_link(
+    hass: HomeAssistant,
+    caplog: pytest.LogCaptureFixture,
+    exchange: str,
+    member: str,
+) -> None:
+    """Against bleak's real client: the bus is closed under a call going round.
+
+    Seen on the G7's host, four times in thirty hours (2026-10-07): an error
+    with a traceback in Home Assistant's log, "Task exception was never
+    retrieved", a few milliseconds after a link dropped. BlueZ had been turning
+    the state request away with "in progress" - an earlier write on that
+    characteristic, abandoned at a deadline, was still waiting on a link that
+    was going - and bleak was sleeping between two tries when the link was
+    reported lost. The hang-up closed the client's bus, as it must, and bleak
+    begins each try by asserting that it has one.
+
+    That is a lost link like any other, and has to end like one: nothing comes
+    out of the exchange, and the bus is closed once.
+    """
+    coordinator, client, bus = _on_a_busy_link(hass)
+    caplog.set_level(logging.DEBUG, logger=coordinator_module.__name__)
+    exchanges = {
+        "the state request": coordinator._async_prime,
+        "the state read": lambda: coordinator._async_read_state(client),
+        "the device-info read": lambda: coordinator._async_read_device_info(client),
+    }
+
+    waiting = asyncio.create_task(exchanges[exchange]())
+    await _turned_away(bus, member)
+    _bluez_reports_the_link_gone(coordinator, client)
+    async with asyncio.timeout(1):
+        await waiting  # ends, and with nothing to say about an assertion
+    await hass.async_block_till_done()
+
+    assert coordinator._client is None
+    assert coordinator._primed_client is not client
+    assert coordinator.device_info == {}
+    # A link that was lost, and not a lamp that refused: nothing is counted
+    # towards asking it no more.
+    assert coordinator._state_request_failures == 0
+    assert not coordinator._state_request_muted
+    assert bus.closings == 1
+    assert client._backend is not None
+    assert client._backend._bus is None
+    assert "hung up while a call on it was waiting" in caplog.text
+    assert not [r for r in caplog.records if r.levelno >= logging.WARNING]
+
+
+async def test_a_command_waiting_its_turn_when_the_link_drops_is_sent_on_a_new_link(
+    hass: HomeAssistant, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The same moment, with a command in the write: it is tried again.
+
+    A write that fails on a lost link is retried once on a new one. The
+    assertion was not taken for a lost link, so it would have reached whoever
+    pressed the button as an unknown error, with the retry never made.
+    """
+    coordinator, client, bus = _on_a_busy_link(hass)
+    second = _WorkingClient()
+    monkeypatch.setattr(
+        coordinator_module, "establish_connection", AsyncMock(return_value=second)
+    )
+    coordinator._ble_device = object
+
+    command = asyncio.create_task(coordinator.async_set_power(True))
+    await _turned_away(bus, "WriteValue")
+    _bluez_reports_the_link_gone(coordinator, client)
+    async with asyncio.timeout(1):
+        await command  # delivered, and nothing raised
+    await hass.async_block_till_done()
+
+    second.write_gatt_char.assert_awaited_once_with(
+        WRITE_UUID, cbor.encode({KEY_POWER: True}), response=True
+    )
+    assert coordinator._client is second
+    assert coordinator.state[KEY_POWER] is True
+    assert bus.closings == 1
+
+
+async def test_an_assertion_on_a_link_that_is_up_is_nobodys_lost_link(
+    hass: HomeAssistant,
+) -> None:
+    """Only a client that has been hung up: any other assertion stays one.
+
+    An assertion says that somebody was wrong - bleak, Home Assistant's
+    wrapper, a test's own stand-in for the lamp - and taking every one of them
+    for a link that dropped would bury it in a debug line about the radio.
+    """
+    coordinator = GlowriumCoordinator(hass, "AA:BB:CC:DD:EE:FF", "Glowrium-G7")
+    client = _WorkingClient()
+    client.write_gatt_char.side_effect = AssertionError("not about the bus")
+    client.read_gatt_char.side_effect = AssertionError("not about the bus")
+    coordinator._client = client
+
+    with pytest.raises(AssertionError, match="not about the bus"):
+        await coordinator.async_set_power(True)
+    with pytest.raises(AssertionError, match="not about the bus"):
+        await coordinator._async_read_device_info(client)
+    with pytest.raises(AssertionError, match="not about the bus"):
+        await coordinator._async_prime()
+
+    assert coordinator._client is client  # and nothing was let go of over it
+
+
+_GATT_CALLS = frozenset(
+    {
+        "read_gatt_char",
+        "read_gatt_descriptor",
+        "start_notify",
+        "stop_notify",
+        "write_gatt_char",
+        "write_gatt_descriptor",
+    }
+)
+
+
+def test_every_gatt_call_is_made_where_a_closed_bus_is_a_lost_link() -> None:
+    """Each call that goes to the lamp is made under ``_gatt_call``.
+
+    The assertion comes out of whichever call happened to be waiting, so one
+    call left outside brings the traceback back for that call alone. This
+    reads the integration's source, so a call added later is seen here - and
+    a guard given one client around a call made on another guards nothing.
+    """
+    package = Path(coordinator_module.__file__).parent
+    bare: list[str] = []
+    calls = 0
+    for source in sorted(package.rglob("*.py")):
+        guarded: set[int] = set()
+        tree = ast.parse(source.read_text(encoding="utf-8"))
+        for block in ast.walk(tree):
+            if not isinstance(block, ast.With):
+                continue
+            # The clients this block's guards are given, as they are written.
+            clients = {
+                ast.dump(item.context_expr.args[0])
+                for item in block.items
+                if isinstance(item.context_expr, ast.Call)
+                and isinstance(item.context_expr.func, ast.Name)
+                and item.context_expr.func.id == "_gatt_call"
+                and item.context_expr.args
+            }
+            guarded.update(
+                id(call)
+                for call in ast.walk(block)
+                if isinstance(call, ast.Call)
+                and isinstance(call.func, ast.Attribute)
+                and ast.dump(call.func.value) in clients
+            )
+        for node in ast.walk(tree):
+            if (
+                isinstance(node, ast.Call)
+                and isinstance(node.func, ast.Attribute)
+                and node.func.attr in _GATT_CALLS
+            ):
+                calls += 1
+                if id(node) not in guarded:
+                    bare.append(f"{source.name}:{node.lineno} {node.func.attr}")
+
+    assert bare == []
+    assert calls >= 5  # the request, two reads, the command, the subscription
 
 
 async def test_a_hang_up_cancelled_half_way_still_closes_the_bus(

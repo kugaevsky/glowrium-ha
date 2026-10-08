@@ -82,6 +82,22 @@ All notable changes to this project are documented here. The format is based on
   at zero - on the equator, or on the prime meridian - is a real place, and
   is written as before
   ([#34](https://github.com/kugaevsky/glowrium-ha/issues/34)).
+- **A link that drops while a request is waiting its turn leaves no error in
+  the log.** BlueZ turns a read or a write away while an earlier one on the
+  same characteristic is still waiting, and bleak tries again every ten
+  milliseconds. A link reported lost between two tries was hung up, which
+  closes the client's connection to the system bus, and the next try ended on
+  an assertion inside bleak. The integration did not take that for a lost
+  link: Home Assistant logged `Task exception was never retrieved` with a
+  traceback - a few times a day on a lamp at the edge of range - and a
+  command caught at that moment would have failed as an unknown error
+  instead of being sent again on a new link. It ends now as any lost link
+  does. Since 0.3.0
+  ([#20](https://github.com/kugaevsky/glowrium-ha/issues/20)).
+- **A connect that failed says why, also when the error has no text.** For a
+  connect that ran out of time the debug log said `Reconnect to … failed:`
+  and nothing after it. It names the error now
+  ([#20](https://github.com/kugaevsky/glowrium-ha/issues/20)).
 
 ### Changed
 

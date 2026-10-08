@@ -3900,6 +3900,29 @@ async def test_a_connect_that_fails_on_a_held_link_keeps_the_error_it_failed_wit
     assert "the link is held" not in caplog.text
 
 
+@pytest.mark.parametrize(("connect", "named"), _BACKGROUND_CONNECTS)
+async def test_a_connect_that_fails_without_a_word_is_called_by_its_name(
+    hass: HomeAssistant,
+    caplog: pytest.LogCaptureFixture,
+    connect: str,
+    named: str,
+) -> None:
+    """An error with no text of its own still says what it was.
+
+    Running out of time is the commonest way for a connect to fail, and
+    ``TimeoutError`` carries no message: one night on the G7's host left 290
+    lines that ended in "failed: " with nothing after it (2026-10-08).
+    """
+    coordinator, _ = _connected_coordinator(hass)
+    coordinator._client = None
+    coordinator._async_ensure_connected = AsyncMock(side_effect=TimeoutError())
+    caplog.set_level(logging.DEBUG)
+
+    await getattr(coordinator, connect)()
+
+    assert f"{named} AA:BB:CC:DD:EE:FF failed: TimeoutError()" in caplog.text
+
+
 async def test_hanging_up_a_client_we_gave_up_on_leaves_the_one_we_hold(
     hass: HomeAssistant, monkeypatch: pytest.MonkeyPatch
 ) -> None:

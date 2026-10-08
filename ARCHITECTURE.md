@@ -820,6 +820,20 @@ every handler that deals with a lost link catches the same set,
 `_LINK_ERRORS`. Caught as nothing in particular, the error went straight out of
 a command, with no retry and no readable message.
 
+A call that is not waiting for a reply at that moment ends differently. BlueZ
+turns a read or a write away with "in progress" while an earlier call on the
+same characteristic is still waiting — one a deadline abandoned, on a link that
+is going — and bleak sleeps ten milliseconds and tries again, for as long as it
+takes, beginning every try with an assertion that it still has its bus. Hung up
+during that pause, the call ends in `AssertionError`. Seen on the G7's host
+four times in thirty hours (2026-10-07), as `Task exception was never
+retrieved` a few milliseconds after a drop. That one is not added to
+`_LINK_ERRORS`: an assertion on a link that is up says somebody was wrong, and
+the tests' own stand-ins for the lamp assert under those handlers. Every GATT
+call is made under `_gatt_call(client)` instead, which turns the assertion into
+a `BleakError` when the client no longer says it is connected and lets it
+through otherwise. A test reads the source for a call made outside it.
+
 **A stopped coordinator holds no link and takes no new one.** From the moment
 it stops, the coordinator refuses to dial, and a connect that was already on
 its way is hung up instead of kept — checked after the subscription, the last

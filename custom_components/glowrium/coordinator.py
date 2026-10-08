@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Callable, Coroutine
+from collections.abc import Callable, Coroutine, Iterator
 import contextlib
 from datetime import datetime, time, timedelta
 from enum import Enum, auto
@@ -194,6 +194,37 @@ _STATE_REQUEST_COOLDOWN = 600.0
 # BleakError. To the coordinator all of these say the same thing: this link is
 # gone. (TimeoutError is an OSError and is named only so that it can be read.)
 _LINK_ERRORS = (BleakError, TimeoutError, EOFError, OSError)
+
+
+@contextlib.contextmanager
+def _gatt_call(client: BleakClientWithServiceCache) -> Iterator[None]:
+    """Make one GATT call on ``client``; hung up under it, it ends as a lost link.
+
+    BlueZ turns a read or a write away with "in progress" while an earlier
+    call on the same characteristic is still waiting - one that a deadline
+    abandoned, on a link that is going. bleak answers by sleeping ten
+    milliseconds and trying again, for as long as it takes, and begins every
+    try by asserting that it still has its bus. A link reported lost during
+    that pause is hung up at once, which closes the bus (see ``_hang_up``),
+    and the try that follows ends on the assertion: an ``AssertionError``,
+    which says nothing of a link and is not among ``_LINK_ERRORS``. Seen on
+    the G7's host four times in thirty hours (2026-10-07), as "Task exception
+    was never retrieved" with a traceback, a few milliseconds after a drop.
+
+    Only on a client that no longer says it is connected, and so not by
+    adding the assertion to ``_LINK_ERRORS``: on a link that is up it means
+    somebody was wrong, and has to be seen. Every GATT call goes through
+    here - the assertion comes out of whichever was waiting.
+    """
+    try:
+        yield
+    except AssertionError as err:
+        if client.is_connected:
+            raise
+        raise BleakError(
+            "the client was hung up while a call on it was waiting"
+        ) from err
+
 
 # Only an error that looks like the device answering "no" counts as a refusal.
 # Two cheaper tests were tried on real hardware and both were wrong: a
@@ -1311,7 +1342,9 @@ class GlowriumCoordinator:
                 "primed" if self._client is self._primed_client else "not primed yet",
             )
             return
-        _LOGGER.debug("%s to %s failed: %s", what, self.address, err)
+        # By its name where it has no text of its own: running out of time is
+        # the commonest way for a connect to fail, and TimeoutError has none.
+        _LOGGER.debug("%s to %s failed: %s", what, self.address, str(err) or repr(err))
 
     def _ble_device(self) -> BLEDevice | None:
         if self.hass is None:  # the bench scans for itself and substitutes this
@@ -1378,7 +1411,8 @@ class GlowriumCoordinator:
         )
         self._backends[client] = getattr(client, "_backend", None)
         try:
-            await client.start_notify(NOTIFY_UUID, self._on_notify)
+            with _gatt_call(client):
+                await client.start_notify(NOTIFY_UUID, self._on_notify)
             if self._stopped:
                 # Stopped while this connect was on its way. Keeping the
                 # link would hand it to a coordinator nobody will stop
@@ -1456,7 +1490,8 @@ class GlowriumCoordinator:
         if self.device_info:
             return
         try:
-            raw = await client.read_gatt_char(INFO_UUID)
+            with _gatt_call(client):
+                raw = await client.read_gatt_char(INFO_UUID)
         except _LINK_ERRORS as err:
             _LOGGER.debug("Device-info read from %s failed: %s", self.address, err)
             return
@@ -1552,7 +1587,8 @@ class GlowriumCoordinator:
     ) -> tuple[bool, frozenset[int]]:
         """Read the state map; return whether it answered and what it carried."""
         try:
-            raw = bytes(await client.read_gatt_char(NOTIFY_UUID))
+            with _gatt_call(client):
+                raw = bytes(await client.read_gatt_char(NOTIFY_UUID))
         except _LINK_ERRORS as err:
             _LOGGER.debug("%s state read failed: %s", self.address, err)
             return False, frozenset()
@@ -1563,7 +1599,10 @@ class GlowriumCoordinator:
         self._carried.clear()
         before = self._reports
         try:
-            await client.write_gatt_char(NOTIFY_UUID, bytes(STATE_KEYS), response=True)
+            with _gatt_call(client):
+                await client.write_gatt_char(
+                    NOTIFY_UUID, bytes(STATE_KEYS), response=True
+                )
         except _LINK_ERRORS as err:
             if not _looks_like_a_refusal(err):
                 _LOGGER.debug(
@@ -1798,9 +1837,10 @@ class GlowriumCoordinator:
         if self._client is None:
             raise BleakError("write attempted while disconnected")
         self._writes_sent += 1  # counted before, so a raising write still counts
-        await self._client.write_gatt_char(
-            WRITE_UUID, cbor.encode(payload), response=True
-        )
+        with _gatt_call(self._client):
+            await self._client.write_gatt_char(
+                WRITE_UUID, cbor.encode(payload), response=True
+            )
         self._note_answer()
         # Optimistic local echo; the device also notifies its new state.
         self._mirror(payload)
