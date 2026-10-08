@@ -140,9 +140,10 @@ def _wedged(
     BlueZ fails to hang up: most tests here are about what each of those dials
     leaves behind, and want as many of them as there are ticks.
     """
-    coordinator = ScriptedLamp().coordinator(hass)
     host = _WedgedBlueZ(behind)
-    lamp_of(coordinator).dials_through(host.dial)
+    lamp = ScriptedLamp()
+    lamp.dials_through(host.dial)
+    coordinator = lamp.coordinator(hass)
     monkeypatch.setattr(coordinator_module, "_HANG_UP_TIMEOUT", 0.01)
     if not backs_off:
         monkeypatch.setattr(coordinator_module, "_STACK_FAULT_AFTER", 10**6)

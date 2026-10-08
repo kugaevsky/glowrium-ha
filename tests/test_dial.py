@@ -50,7 +50,6 @@ async def test_what_the_lamp_says_reaches_the_mirror(hass: HomeAssistant) -> Non
     lamp.say(cbor.encode({KEY_BRIGHTNESS: 70}))
 
     assert coordinator.brightness_percent == 70
-    assert lamp_of(coordinator) is lamp
 
 
 async def test_a_link_the_dial_reports_lost_is_let_go_of(hass: HomeAssistant) -> None:
@@ -90,6 +89,57 @@ async def test_the_scripted_lamp_is_silent_once_hung_up(hass: HomeAssistant) -> 
 
     assert lamp.links[0].hung_up
     assert coordinator.brightness_percent == 70
+
+
+async def test_the_scripted_lamp_is_silent_once_lost_and_takes_no_write() -> None:
+    """A link that is lost says nothing more either, and refuses what is written.
+
+    Asked of the lamp alone: with a coordinator at the dial, the hang-up that
+    follows a loss would silence the link by itself, and hide a lamp that
+    went on talking over a link it had just reported lost.
+    """
+    lamp = ScriptedLamp()
+    heard: list[bytes] = []
+    lost = MagicMock()
+    link = await lamp.dial(lost)
+    await link.start_notify("any", lambda _characteristic, data: heard.append(data))
+    lamp.say(b"\xa0")
+
+    lamp.lose()
+    lamp.lose()  # and a link is lost once
+    lamp.say(b"\xa1")
+
+    assert heard == [b"\xa0"]
+    lost.assert_called_once_with(link)
+    assert not link.is_connected
+    with pytest.raises(BleakError, match="Not connected"):
+        await link.write_gatt_char(WRITE_UUID, b"\xa0")
+    assert lamp.written == []
+
+
+async def test_a_link_that_was_hung_up_takes_no_write_either() -> None:
+    """The same of a link the coordinator let go of."""
+    lamp = ScriptedLamp()
+    link = await lamp.dial(MagicMock())
+
+    await link.disconnect()
+
+    with pytest.raises(BleakError, match="Not connected"):
+        await link.write_gatt_char(WRITE_UUID, b"\xa0")
+    with pytest.raises(BleakError, match="Not connected"):
+        await link.start_notify("any", MagicMock())
+    assert lamp.written == []
+
+
+def test_a_helper_given_the_coordinator_alone_finds_its_lamp(
+    hass: HomeAssistant,
+) -> None:
+    """And says what is wrong when the coordinator was built at none."""
+    lamp = ScriptedLamp()
+
+    assert lamp_of(lamp.coordinator(hass)) is lamp
+    with pytest.raises(LookupError, match="not built at a scripted lamp"):
+        lamp_of(GlowriumCoordinator(hass, ADDRESS, "Glowrium-G7"))
 
 
 async def test_a_lamp_out_of_range_fails_the_command_as_one_that_cannot_connect(
@@ -161,7 +211,8 @@ async def test_handed_no_dial_the_lamp_is_looked_up_in_home_assistant(
     scanners.async_ble_device_from_address.assert_called_once_with(
         hass, ADDRESS, connectable=True
     )
-    assert connect.await_args.args[1] is device
+    assert connect.await_args.args[1:] == (device, "Glowrium-G7")
+    assert connect.await_args.kwargs["max_attempts"] == 3
     link.write_gatt_char.assert_awaited_once_with(
         WRITE_UUID, cbor.encode({KEY_POWER: True}), response=True
     )

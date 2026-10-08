@@ -1050,7 +1050,15 @@ Unit tests live in `tests/` and **never touch real Bluetooth**:
   operating mode, indicator, DST, schedule) checked against real device bytes,
   and the connection logic around it: priming by asking, the fallbacks to a
   read, retries and confirmation of a failed write, the clock, activation,
-  unload and stop. The coordinator is driven with a patched/`None` BLE layer.
+  unload and stop.
+- `test_dial.py` — the dial the coordinator is handed, and the one it uses when
+  handed none. A link is made through a callable that is given the callback
+  for a link that is lost and returns a connected client. In the tests that is
+  a scripted lamp's (`tests/lamp.py`): it hands out a link, says a frame, loses
+  the link, and is silent once hung up. A test with a dial of its own — a
+  client built by hand, a stack that will not hang up — puts it behind the
+  lamp's. Nothing replaces the library's connect, except the tests of the
+  dial that is made of it.
 - `test_bus_lifetime.py` — what is left behind when a link is let go of. It
   counts open bus connections rather than calls to `disconnect()`, and runs
   the same against bleak's own BlueZ client with a stub bus, so a bleak

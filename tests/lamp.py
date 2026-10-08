@@ -54,13 +54,6 @@ class LampLink:
         self._gone_is_an_error()
         self._lamp.written.append((uuid, bytes(data)))
 
-    async def read_gatt_char(self, uuid: str) -> bytearray:
-        """Answer a read with what the lamp was told to hold there."""
-        self._gone_is_an_error()
-        if uuid not in self._lamp.readable:
-            raise BleakError(f"Characteristic {uuid} was not found")
-        return bytearray(self._lamp.readable[uuid])
-
     async def disconnect(self) -> None:
         """Hang up. The lamp says nothing more on this link."""
         self.hung_up = True
@@ -86,11 +79,10 @@ class ScriptedLamp:
     """The lamp, as the coordinator meets it: at its dial."""
 
     def __init__(self) -> None:
-        """Start in range, with nothing written and nothing to read."""
+        """Start in range, with nothing written."""
         self.dials = 0
         self.links: list[LampLink] = []
         self.written: list[tuple[str, bytes]] = []
-        self.readable: dict[str, bytes] = {}
         self._in_range = True
         self._through: Callable[..., Awaitable[Any]] | None = None
 
@@ -138,4 +130,9 @@ class ScriptedLamp:
 
 def lamp_of(coordinator: GlowriumCoordinator) -> ScriptedLamp:
     """Return the lamp ``coordinator`` was built to dial."""
+    if coordinator not in _LAMPS:
+        raise LookupError(
+            "this coordinator was not built at a scripted lamp: "
+            "build it with ScriptedLamp().coordinator(...)"
+        )
     return _LAMPS[coordinator]
