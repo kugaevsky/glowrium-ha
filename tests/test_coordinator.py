@@ -53,21 +53,24 @@ from custom_components.glowrium.coordinator import (
     _parse_device_info,
 )
 
+from .lamp import ScriptedLamp, lamp_of
+
 
 def _connected_coordinator(
     hass: HomeAssistant,
 ) -> tuple[GlowriumCoordinator, MagicMock]:
     """Return a coordinator wired to a fake, already-connected BLE client."""
-    coordinator = GlowriumCoordinator(hass, "AA:BB:CC:DD:EE:FF", "Glowrium-G7")
+    # Out of range unless a test dials (_dialling). Left to Home Assistant, the
+    # answer depends on whether some earlier test module happened to set up its
+    # Bluetooth manager: with one, "not in range"; without, a RuntimeError.
+    lamp = ScriptedLamp()
+    lamp.out_of_range()
+    coordinator = lamp.coordinator(hass)
     client = MagicMock()
     client.is_connected = True
     client.write_gatt_char = AsyncMock()
     client.disconnect = AsyncMock()
     coordinator._client = client
-    # Out of range unless a test dials (_dialling). Left to Home Assistant, the
-    # answer depends on whether some earlier test module happened to set up its
-    # Bluetooth manager: with one, "not in range"; without, a RuntimeError.
-    coordinator._ble_device = lambda: None
     return coordinator, client
 
 
@@ -1798,14 +1801,7 @@ async def test_a_background_connect_primes_once(
     client.read_gatt_char = AsyncMock(
         return_value=bytearray(b"brand:Glowrium;pkey:Glowrium-C051;version:4;;")
     )
-    monkeypatch.setattr(
-        coordinator_module, "establish_connection", AsyncMock(return_value=client)
-    )
-
-    def _in_range() -> object:
-        return object()
-
-    coordinator._ble_device = _in_range
+    lamp_of(coordinator).dials_through(AsyncMock(return_value=client))
 
     await coordinator._connect_locked()
 
@@ -2446,7 +2442,7 @@ async def test_a_command_that_never_reached_the_wire_fails_at_once(
 ) -> None:
     """An out-of-range lamp fails immediately; there is nothing to wait for.
 
-    `_ble_device` returns None without any I/O, so no byte ever left. Waiting
+    The dial says so without any I/O, so no byte ever left. Waiting
     the grace window for a notification that cannot arrive - there is no link -
     added two seconds to every command an automation sends to a lamp that is
     off or out of range.
@@ -2510,14 +2506,7 @@ async def test_a_connect_that_fails_half_way_leaves_no_link_behind(
     coordinator._client = None
     client.start_notify = AsyncMock(side_effect=BleakError("subscribe failed"))
     client.disconnect = AsyncMock()
-    monkeypatch.setattr(
-        coordinator_module, "establish_connection", AsyncMock(return_value=client)
-    )
-
-    def _in_range() -> object:
-        return object()
-
-    coordinator._ble_device = _in_range
+    lamp_of(coordinator).dials_through(AsyncMock(return_value=client))
 
     with pytest.raises(BleakError):
         await coordinator._connect_locked()
@@ -2698,14 +2687,7 @@ async def test_a_connect_whose_read_fails_is_not_primed_either(
     client.start_notify = AsyncMock()
     client.read_gatt_char = AsyncMock(side_effect=BleakError("Not connected"))
     client.write_gatt_char = AsyncMock(side_effect=BleakError("Not connected"))
-    monkeypatch.setattr(
-        coordinator_module, "establish_connection", AsyncMock(return_value=client)
-    )
-
-    def _in_range() -> object:
-        return object()
-
-    coordinator._ble_device = _in_range
+    lamp_of(coordinator).dials_through(AsyncMock(return_value=client))
 
     await coordinator._connect_locked()
 
@@ -2730,14 +2712,7 @@ async def test_a_connect_that_cannot_be_read_is_dropped_at_once(
     client.disconnect = AsyncMock()
     client.read_gatt_char = AsyncMock(side_effect=BleakError("Not connected"))
     client.write_gatt_char = AsyncMock(side_effect=BleakError("Not connected"))
-    monkeypatch.setattr(
-        coordinator_module, "establish_connection", AsyncMock(return_value=client)
-    )
-
-    def _in_range() -> object:
-        return object()
-
-    coordinator._ble_device = _in_range
+    lamp_of(coordinator).dials_through(AsyncMock(return_value=client))
 
     await coordinator._connect_locked()
 
@@ -3118,11 +3093,6 @@ async def test_a_clock_that_is_no_date_is_corrected(
     assert written[KEY_TIME_SYNCED] == 1
 
 
-def _in_range() -> object:
-    """Stand in for a device the adapter can see."""
-    return object()
-
-
 async def test_both_priming_paths_check_the_clock(
     hass: HomeAssistant, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -3149,12 +3119,7 @@ async def test_both_priming_paths_check_the_clock(
             coordinator._client = None  # a real connect, not the early return
             client.is_connected = True
             client.start_notify = AsyncMock()
-            monkeypatch.setattr(
-                coordinator_module,
-                "establish_connection",
-                AsyncMock(return_value=client),
-            )
-            coordinator._ble_device = _in_range
+            lamp_of(coordinator).dials_through(AsyncMock(return_value=client))
             await coordinator._connect_locked()
         else:
             await coordinator._async_prime()
@@ -3206,12 +3171,7 @@ def _dialling(
 ) -> AsyncMock:
     """Make the coordinator's next connects hand back ``clients``, in order."""
     dial = AsyncMock(side_effect=list(clients))
-    monkeypatch.setattr(coordinator_module, "establish_connection", dial)
-
-    def _in_range() -> object:
-        return object()
-
-    coordinator._ble_device = _in_range
+    lamp_of(coordinator).dials_through(dial)
     return dial
 
 
@@ -3561,7 +3521,7 @@ async def test_a_retry_hangs_up_without_home_assistant(
     This is the one the bench exists to exercise: a command on a link that
     drops under it.
     """
-    coordinator = GlowriumCoordinator(None, "AA:BB:CC:DD:EE:FF", "bench")
+    coordinator = ScriptedLamp().coordinator(None, "bench")
     first = _fresh_client()
     first.write_gatt_char = AsyncMock(side_effect=BleakError("dropped"))
     coordinator._client = first
@@ -3603,17 +3563,6 @@ async def test_background_work_does_not_need_home_assistant() -> None:
 
     assert finished == [1]
     assert not coordinator._kept_tasks  # and let go of once it is done
-
-
-def test_without_home_assistant_the_coordinator_finds_no_device_itself() -> None:
-    """Looking the lamp up goes through Home Assistant's scanners.
-
-    The bench scans for itself and substitutes what it found; asked without
-    either, the coordinator says "not in range" rather than falling over.
-    """
-    coordinator = GlowriumCoordinator(None, "AA:BB:CC:DD:EE:FF", "bench")
-
-    assert coordinator._ble_device() is None
 
 
 async def test_watching_the_lamp_needs_home_assistant() -> None:
@@ -3866,8 +3815,7 @@ async def test_a_connect_that_gets_no_link_is_still_called_a_failed_connect(
     coordinator, _ = _connected_coordinator(hass)
     coordinator._client = None
     monkeypatch.setattr(coordinator_module, "_CONNECT_TIMEOUT", 0.05)
-    monkeypatch.setattr(coordinator_module, "establish_connection", _never_returns)
-    coordinator._ble_device = _in_range
+    lamp_of(coordinator).dials_through(_never_returns)
     caplog.set_level(logging.DEBUG)
 
     await getattr(coordinator, connect)()
@@ -4156,12 +4104,7 @@ async def test_a_reconnect_started_while_starting_belongs_to_the_entry(
     the single slot for nobody.
     """
     coordinator, _ = _connected_coordinator(hass)
-    coordinator._client = None
-
-    def _out_of_range() -> None:
-        return None
-
-    coordinator._ble_device = _out_of_range
+    coordinator._client = None  # and its lamp is out of range
 
     def _register(_hass: object, callback: object, *_a: object) -> object:
         callback(MagicMock(), MagicMock())  # the replayed advertisement

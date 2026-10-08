@@ -64,6 +64,7 @@ from custom_components.glowrium.const import (
 from custom_components.glowrium.coordinator import (
     _CLOCK_TOLERANCE,
     GlowriumCoordinator,
+    dial_by_bluetooth,
 )
 
 # Probe brightness: pick whichever end the lamp is not already near, so the
@@ -793,8 +794,12 @@ async def main() -> int:
         return 1
 
     _PRIVACY.address = device.address
-    coordinator = GlowriumCoordinator(None, device.address, device.name)
-    coordinator._ble_device = lambda: device  # noqa: SLF001
+    coordinator = GlowriumCoordinator(
+        None,
+        device.address,
+        device.name,
+        dial=dial_by_bluetooth(lambda: device, device.address, device.name),
+    )
     # The bench never provisions anything. Saying so here beats trusting that
     # 0x14 reads back the way we expect.
     coordinator._activation_checked = True  # noqa: SLF001

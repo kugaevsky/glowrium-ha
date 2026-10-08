@@ -44,6 +44,8 @@ from custom_components.glowrium.const import (
 )
 from custom_components.glowrium.coordinator import GlowriumCoordinator
 
+from .lamp import ScriptedLamp, lamp_of
+
 _NOT_CONNECTED = "[org.bluez.Error.Failed] Not connected"
 
 
@@ -138,13 +140,12 @@ def _wedged(
     BlueZ fails to hang up: most tests here are about what each of those dials
     leaves behind, and want as many of them as there are ticks.
     """
-    coordinator = GlowriumCoordinator(hass, "AA:BB:CC:DD:EE:FF", "Glowrium-G7")
+    coordinator = ScriptedLamp().coordinator(hass)
     host = _WedgedBlueZ(behind)
-    monkeypatch.setattr(coordinator_module, "establish_connection", host.dial)
+    lamp_of(coordinator).dials_through(host.dial)
     monkeypatch.setattr(coordinator_module, "_HANG_UP_TIMEOUT", 0.01)
     if not backs_off:
         monkeypatch.setattr(coordinator_module, "_STACK_FAULT_AFTER", 10**6)
-    coordinator._ble_device = object
     return coordinator, host
 
 
@@ -212,7 +213,7 @@ async def test_the_bus_is_found_even_after_the_wrapper_let_go_of_it(
         client.start_notify = AsyncMock(side_effect=_wrapper_gives_up)
         return client
 
-    monkeypatch.setattr(coordinator_module, "establish_connection", _dial_then_forget)
+    lamp_of(coordinator).dials_through(_dial_then_forget)
 
     await _polls(coordinator, hass, 5)
 
@@ -395,7 +396,7 @@ async def test_a_bus_that_will_not_close_stops_the_dialling(
         client._backend._bus = host.bus_of[client] = _StuckBus()
         return client
 
-    monkeypatch.setattr(coordinator_module, "establish_connection", _dial_a_stuck_one)
+    lamp_of(coordinator).dials_through(_dial_a_stuck_one)
 
     await _polls(coordinator, hass, 6)
 
@@ -457,7 +458,7 @@ async def test_a_bus_that_is_already_down_is_left_alone(
         client.disconnect = AsyncMock(side_effect=OSError(9, "Bad file descriptor"))
         return client
 
-    monkeypatch.setattr(coordinator_module, "establish_connection", _dial_a_dead_one)
+    lamp_of(coordinator).dials_through(_dial_a_dead_one)
 
     await _polls(coordinator, hass, 4)
 
@@ -640,7 +641,7 @@ def _on_a_busy_link(
     hass: HomeAssistant,
 ) -> tuple[GlowriumCoordinator, _GattClient, _BusyBus]:
     """Return a coordinator holding bleak's own client, on a link BlueZ is busy on."""
-    coordinator = GlowriumCoordinator(hass, "AA:BB:CC:DD:EE:FF", "Glowrium-G7")
+    coordinator = ScriptedLamp().coordinator(hass)
     bus = _BusyBus()
     backend, _ = _bleaks_own_client(bus)
     client = _GattClient(backend)
@@ -742,10 +743,7 @@ async def test_a_command_waiting_its_turn_when_the_link_drops_is_sent_on_a_new_l
     """
     coordinator, client, bus = _on_a_busy_link(hass)
     second = _WorkingClient()
-    monkeypatch.setattr(
-        coordinator_module, "establish_connection", AsyncMock(return_value=second)
-    )
-    coordinator._ble_device = object
+    lamp_of(coordinator).dials_through(AsyncMock(return_value=second))
 
     command = asyncio.create_task(coordinator.async_set_power(True))
     await _turned_away(bus, "WriteValue")
@@ -921,7 +919,7 @@ def _on_a_clock(
         dialled.append(clock.now)
         return await host.dial(*args, **kwargs)
 
-    monkeypatch.setattr(coordinator_module, "establish_connection", _dial)
+    lamp_of(coordinator).dials_through(_dial)
     return coordinator, host, clock, dialled
 
 
@@ -1029,7 +1027,7 @@ async def test_a_hang_up_that_was_answered_with_an_error_is_not_a_wedge(
         client.disconnect = AsyncMock(side_effect=answer)
         return client
 
-    monkeypatch.setattr(coordinator_module, "establish_connection", _dial)
+    lamp_of(coordinator).dials_through(_dial)
 
     await _ticks(coordinator, hass, clock, 6)
 
@@ -1089,9 +1087,7 @@ async def test_a_stack_is_no_less_stuck_for_a_bus_that_cannot_be_closed(
         return client
 
     if not rearranged:
-        monkeypatch.setattr(
-            coordinator_module, "establish_connection", _dial_a_stuck_one
-        )
+        lamp_of(coordinator).dials_through(_dial_a_stuck_one)
 
     await _ticks(coordinator, hass, clock, 4)
 
@@ -1212,7 +1208,7 @@ async def test_a_fault_ends_with_the_lamp_and_not_with_a_hang_up(
         client.read_gatt_char = AsyncMock(return_value=bytearray(b"brand:x;;"))
         return client
 
-    monkeypatch.setattr(coordinator_module, "establish_connection", _healthy)
+    lamp_of(coordinator).dials_through(_healthy)
     await _ticks(coordinator, hass, clock, 12)
 
     said = [r.getMessage() for r in caplog.records if r.levelname == "WARNING"]
@@ -1377,7 +1373,7 @@ async def test_the_repair_goes_when_the_lamp_answers_again(
         client.read_gatt_char = AsyncMock(return_value=bytearray(b"brand:x;;"))
         return client
 
-    monkeypatch.setattr(coordinator_module, "establish_connection", _healthy)
+    lamp_of(coordinator).dials_through(_healthy)
     await _ticks(coordinator, hass, clock, 12)
 
     assert _stack_issue(hass) is None
@@ -1585,7 +1581,7 @@ async def test_the_first_answer_ends_the_backoff(
         client.read_gatt_char = AsyncMock(return_value=bytearray(b"brand:x;;"))
         return client
 
-    monkeypatch.setattr(coordinator_module, "establish_connection", _healthy)
+    lamp_of(coordinator).dials_through(_healthy)
     await _ticks(coordinator, hass, clock, 2)
 
     assert coordinator._is_connected
@@ -1611,7 +1607,7 @@ def _holding(
     hass: HomeAssistant, monkeypatch: pytest.MonkeyPatch
 ) -> tuple[GlowriumCoordinator, AsyncMock, _Clock]:
     """Return a coordinator holding a primed link to a lamp that answers."""
-    coordinator = GlowriumCoordinator(hass, "AA:BB:CC:DD:EE:FF", "Glowrium-G7")
+    coordinator = ScriptedLamp().coordinator(hass)
     clock = _Clock()
     monkeypatch.setattr(coordinator_module, "monotonic", clock)
     client = AsyncMock()
@@ -1689,7 +1685,7 @@ async def test_a_link_bluez_did_report_dropped_is_not_hung_up_twice(
     coordinator, client, clock = _holding(hass, monkeypatch)
     coordinator._state_request_failures = 1
     client.write_gatt_char = AsyncMock(side_effect=BleakError(_NOT_CONNECTED))
-    monkeypatch.setattr(coordinator_module, "establish_connection", AsyncMock())
+    lamp_of(coordinator).dials_through(AsyncMock())
     await coordinator._request_state(client)
     assert coordinator._lost is not None
 

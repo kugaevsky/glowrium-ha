@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Callable, Coroutine, Iterator
+from collections.abc import Awaitable, Callable, Coroutine, Iterator
 import contextlib
 from datetime import datetime, time, timedelta
 from enum import Enum, auto
@@ -194,6 +194,42 @@ _STATE_REQUEST_COOLDOWN = 600.0
 # BleakError. To the coordinator all of these say the same thing: this link is
 # gone. (TimeoutError is an OSError and is named only so that it can be read.)
 _LINK_ERRORS = (BleakError, TimeoutError, EOFError, OSError)
+
+# What the coordinator dials through. It is given the callback for a link that
+# is lost, and returns a connected client or raises one of ``_LINK_ERRORS``.
+# Handed in, so that the link can be made to stand on something other than a
+# Bluetooth adapter: the bench's own scan, and in the tests a scripted lamp.
+type Dial = Callable[
+    [Callable[[BleakClientWithServiceCache], None]],
+    Awaitable[BleakClientWithServiceCache],
+]
+
+
+def dial_by_bluetooth(
+    find: Callable[[], BLEDevice | None], address: str, name: str
+) -> Dial:
+    """Return the dial that connects to whatever ``find`` finds.
+
+    The integration's own, when it is handed none: ``find`` then asks Home
+    Assistant's scanners for the lamp. A lamp they do not have is "not in
+    range", said before anything is dialled.
+    """
+
+    async def _dial(
+        lost: Callable[[BleakClientWithServiceCache], None],
+    ) -> BleakClientWithServiceCache:
+        device = find()
+        if device is None:
+            raise BleakError(f"{address} is not in range")
+        return await establish_connection(
+            BleakClientWithServiceCache,
+            device,
+            name,
+            disconnected_callback=lost,
+            max_attempts=_CONNECT_ATTEMPTS,
+        )
+
+    return _dial
 
 
 @contextlib.contextmanager
@@ -466,6 +502,8 @@ class GlowriumCoordinator:
         address: str,
         name: str,
         model_id: str | None = None,
+        *,
+        dial: Dial | None = None,
     ) -> None:
         """Initialize the coordinator for the device at ``address``.
 
@@ -477,10 +515,14 @@ class GlowriumCoordinator:
         ``model_id`` is the model an earlier session read off the lamp, if
         one did. The entities are built before this session has read
         anything, and which presets a lamp has depends on its model.
+
+        ``dial`` is what a link is made through (see ``Dial``). Left out, it
+        is the lamp as Home Assistant's Bluetooth finds it.
         """
         self.hass = hass
         self.address = address
         self.name = name
+        self._dial = dial or dial_by_bluetooth(self._ble_device, address, name)
         self.state: dict[int, Any] = {}
         # The host's clock at the moment the lamp's (0x05) last came into the
         # mirror. A clock is right or wrong only against the moment it was
@@ -1359,7 +1401,7 @@ class GlowriumCoordinator:
         _LOGGER.debug("%s to %s failed: %s", what, self.address, _reason(err))
 
     def _ble_device(self) -> BLEDevice | None:
-        if self.hass is None:  # the bench scans for itself and substitutes this
+        if self.hass is None:  # the bench scans for itself and hands in a dial
             return None
         return bluetooth.async_ble_device_from_address(
             self.hass, self.address, connectable=True
@@ -1411,16 +1453,7 @@ class GlowriumCoordinator:
                 "not close; not dialling over it",
                 "link_not_released",
             )
-        device = self._ble_device()
-        if device is None:
-            raise BleakError(f"{self.address} is not in range")
-        client = await establish_connection(
-            BleakClientWithServiceCache,
-            device,
-            self.name,
-            disconnected_callback=self._async_on_disconnect,
-            max_attempts=_CONNECT_ATTEMPTS,
-        )
+        client = await self._dial(self._async_on_disconnect)
         self._backends[client] = getattr(client, "_backend", None)
         try:
             with _gatt_call(client):
