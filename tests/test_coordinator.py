@@ -3147,16 +3147,23 @@ def _dialling(coordinator: GlowriumCoordinator, *clients: MagicMock) -> AsyncMoc
     return dial
 
 
-def _counting_connects(coordinator: GlowriumCoordinator) -> list[dict[str, bool]]:
-    """Note each time the coordinator sets about getting a link, and how."""
-    asked: list[dict[str, bool]] = []
-    connect = coordinator._connect_locked
+def _counting_connects(coordinator: GlowriumCoordinator) -> list[int]:
+    """Note each time the coordinator sets about getting a link.
 
-    async def _counted(**kwargs: bool) -> None:
-        asked.append(kwargs)
-        await connect(**kwargs)
+    Counted where a link is asked for and not at the dial: a link that is
+    refused - the coordinator has stopped, a client would not close - is
+    refused before anything is dialled, and how often it was asked for is
+    what these tests are about.
+    """
+    asked: list[int] = []
+    link = coordinator._link
+    ask = link.open
 
-    coordinator._connect_locked = _counted
+    async def _counted() -> Any:
+        asked.append(1)
+        return await ask()
+
+    link.open = _counted
     return asked
 
 
