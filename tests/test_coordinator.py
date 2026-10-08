@@ -1899,21 +1899,16 @@ async def test_a_failed_reconnect_does_not_wedge_reconnection(
     """
     coordinator, _ = _connected_coordinator(hass)
     coordinator._client = None
-    attempts: list[int] = []
-
-    async def _fails() -> None:
-        attempts.append(1)
-        raise BleakError("not in range")
-
-    coordinator._async_ensure_connected = _fails
+    dial = _dialling(coordinator)
+    dial.side_effect = BleakError("not in range")
 
     coordinator._async_poll_reconnect(None)
     await hass.async_block_till_done()
-    assert attempts == [1]
+    assert dial.await_count == 1
 
     coordinator._async_poll_reconnect(None)
     await hass.async_block_till_done()
-    assert attempts == [1, 1]  # and again, and again
+    assert dial.await_count == 2  # and again, and again
 
 
 async def test_advertisements_do_not_start_a_connect_storm(
@@ -1926,20 +1921,20 @@ async def test_advertisements_do_not_start_a_connect_storm(
     """
     coordinator, _ = _connected_coordinator(hass)
     coordinator._client = None
-    attempts: list[int] = []
     release = asyncio.Event()
 
-    async def _hangs() -> None:
-        attempts.append(1)
+    async def _hangs(*_a: object, **_kw: object) -> None:
         await release.wait()
+        raise BleakError("gone again")
 
-    coordinator._async_ensure_connected = _hangs
+    dial = _dialling(coordinator)
+    dial.side_effect = _hangs
 
     for _ in range(5):
         coordinator._async_on_advertisement(None, None)
     coordinator._async_poll_reconnect(None)  # the poll must not add one either
     await asyncio.sleep(0)
-    assert attempts == [1]
+    assert dial.await_count == 1
 
     release.set()
     await hass.async_block_till_done()
@@ -2213,7 +2208,6 @@ async def test_starting_watches_for_the_device(
     fake.BluetoothCallbackMatcher = MagicMock()
     fake.BluetoothScanningMode = MagicMock()
     monkeypatch.setattr(coordinator_module, "bluetooth", fake)
-    coordinator._async_ensure_connected = AsyncMock()
     coordinator._client = None  # this is about the watchers, not the link
 
     handed_over: list[str] = []
@@ -3836,7 +3830,7 @@ async def test_a_connect_that_fails_without_a_word_is_called_by_its_name(
     """
     coordinator, _ = _connected_coordinator(hass)
     coordinator._client = None
-    coordinator._async_ensure_connected = AsyncMock(side_effect=TimeoutError())
+    _dialling(coordinator).side_effect = TimeoutError()
     caplog.set_level(logging.DEBUG)
 
     await getattr(coordinator, connect)()
