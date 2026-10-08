@@ -1,6 +1,8 @@
 """Tests for setting up and tearing down the Glowrium config entry."""
 
 import asyncio
+from collections.abc import Iterator
+import contextlib
 import importlib
 import logging
 from typing import Any
@@ -138,6 +140,41 @@ async def test_unload_stops_the_coordinator(hass: HomeAssistant) -> None:
     stop.assert_awaited_once()
 
 
+@contextlib.contextmanager
+def _a_lamp_that_never_connects(
+    cancelled: asyncio.Event | None = None,
+) -> Iterator[asyncio.Event]:
+    """Put a lamp in range whose connect never returns; yield "it is being dialled".
+
+    The integration's own setup hands the coordinator no dial, so what stands
+    in for the lamp is what that dial is made of: Home Assistant's lookup of
+    the device, and the library's connect. ``cancelled`` is set if the connect
+    is cancelled while it waits.
+    """
+    dialling = asyncio.Event()
+
+    async def _never_connects(*_args: object, **_kwargs: object) -> None:
+        dialling.set()
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            if cancelled is not None:
+                cancelled.set()
+            raise
+
+    with (
+        patch(
+            "homeassistant.components.bluetooth.async_ble_device_from_address",
+            return_value=object(),
+        ),
+        patch(
+            "custom_components.glowrium.link.establish_connection",
+            side_effect=_never_connects,
+        ),
+    ):
+        yield dialling
+
+
 async def test_setup_does_not_wait_for_the_connection(hass: HomeAssistant) -> None:
     """Setting up the entry must not wait for the lamp to be reachable.
 
@@ -150,17 +187,12 @@ async def test_setup_does_not_wait_for_the_connection(hass: HomeAssistant) -> No
     entry = _entry()
     entry.add_to_hass(hass)
 
-    async def _never_connects(_self: object) -> None:
-        await asyncio.Event().wait()
-
-    with patch(
-        "custom_components.glowrium.coordinator.GlowriumCoordinator"
-        "._async_ensure_connected",
-        autospec=True,
-        side_effect=_never_connects,
-    ):
+    with _a_lamp_that_never_connects() as dialling:
         async with asyncio.timeout(2):
             assert await hass.config_entries.async_setup(entry.entry_id)
+        # And the connect is on its way, not over: this is a setup that
+        # returned beside it, not one that had nothing to wait for.
+        await asyncio.wait_for(dialling.wait(), 1)
 
     assert entry.state is ConfigEntryState.LOADED
 
@@ -178,23 +210,15 @@ async def test_the_background_connect_is_cancelled_on_unload(
     entry.add_to_hass(hass)
     cancelled = asyncio.Event()
 
-    async def _never_connects(_self: object) -> None:
-        try:
-            await asyncio.Event().wait()
-        except asyncio.CancelledError:
-            cancelled.set()
-            raise
-
-    with patch(
-        "custom_components.glowrium.coordinator.GlowriumCoordinator"
-        "._async_ensure_connected",
-        autospec=True,
-        side_effect=_never_connects,
-    ):
+    with _a_lamp_that_never_connects(cancelled) as dialling:
         assert await hass.config_entries.async_setup(entry.entry_id)
+        await asyncio.wait_for(dialling.wait(), 1)
         assert not cancelled.is_set()  # still running while the entry is loaded
-        assert await hass.config_entries.async_unload(entry.entry_id)
-        await hass.async_block_till_done()
+        # By the unload, and so at once: left alone, a connect is ended by
+        # its own ceiling many seconds later, and that would read the same.
+        async with asyncio.timeout(2):
+            assert await hass.config_entries.async_unload(entry.entry_id)
+            await hass.async_block_till_done()
 
     assert cancelled.is_set()
 
