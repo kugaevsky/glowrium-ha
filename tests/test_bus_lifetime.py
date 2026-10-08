@@ -34,7 +34,11 @@ from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers import issue_registry as ir
 import pytest
 
-from custom_components.glowrium import cbor, coordinator as coordinator_module
+from custom_components.glowrium import (
+    cbor,
+    coordinator as coordinator_module,
+    link as link_module,
+)
 from custom_components.glowrium.const import (
     DOMAIN,
     KEY_ACTIVATED,
@@ -144,9 +148,9 @@ def _wedged(
     lamp = ScriptedLamp()
     lamp.dials_through(host.dial)
     coordinator = lamp.coordinator(hass)
-    monkeypatch.setattr(coordinator_module, "_HANG_UP_TIMEOUT", 0.01)
+    monkeypatch.setattr(link_module, "_HANG_UP_TIMEOUT", 0.01)
     if not backs_off:
-        monkeypatch.setattr(coordinator_module, "_STACK_FAULT_AFTER", 10**6)
+        monkeypatch.setattr(link_module, "_STACK_FAULT_AFTER", 10**6)
     return coordinator, host
 
 
@@ -554,7 +558,7 @@ async def test_bleaks_own_client_ends_up_closed(
     fails here and not on somebody's host.
     """
     coordinator = GlowriumCoordinator(hass, "AA:BB:CC:DD:EE:FF", "Glowrium-G7")
-    monkeypatch.setattr(coordinator_module, "_HANG_UP_TIMEOUT", 0.05)
+    monkeypatch.setattr(link_module, "_HANG_UP_TIMEOUT", 0.05)
     bus = _StubBus(answer)
     backend, removed = _bleaks_own_client(bus)
     monitor = backend._disconnect_monitor_event
@@ -850,7 +854,7 @@ async def test_a_hang_up_cancelled_half_way_still_closes_the_bus(
 ) -> None:
     """Cancellation is not an exception, and it leaves the bus open just the same."""
     coordinator, host = _wedged(hass, monkeypatch)
-    monkeypatch.setattr(coordinator_module, "_HANG_UP_TIMEOUT", 60)
+    monkeypatch.setattr(link_module, "_HANG_UP_TIMEOUT", 60)
     client = await host.dial()
     coordinator._client = client
 
@@ -914,6 +918,7 @@ def _on_a_clock(
     coordinator, host = _wedged(hass, monkeypatch, backs_off=True)
     clock = _Clock()
     monkeypatch.setattr(coordinator_module, "monotonic", clock)
+    monkeypatch.setattr(link_module, "monotonic", clock)
     dialled: list[float] = []
 
     async def _dial(*args: object, **kwargs: object) -> _WedgedClient:
@@ -1050,6 +1055,7 @@ async def test_a_proxy_that_times_out_is_not_blamed_on_bluez(
     coordinator, host = _wedged(hass, monkeypatch, behind=_ProxyBackend, backs_off=True)
     clock = _Clock()
     monkeypatch.setattr(coordinator_module, "monotonic", clock)
+    monkeypatch.setattr(link_module, "monotonic", clock)
 
     await _ticks(coordinator, hass, clock, 6)
 
@@ -1081,6 +1087,7 @@ async def test_a_stack_is_no_less_stuck_for_a_bus_that_cannot_be_closed(
     )
     clock = _Clock()
     monkeypatch.setattr(coordinator_module, "monotonic", clock)
+    monkeypatch.setattr(link_module, "monotonic", clock)
 
     async def _dial_a_stuck_one(*_args: object, **_kwargs: object) -> _WedgedClient:
         client = await host.dial()
@@ -1115,6 +1122,7 @@ async def test_a_client_with_no_backend_on_record_is_not_blamed_on_bluez(
     )
     clock = _Clock()
     monkeypatch.setattr(coordinator_module, "monotonic", clock)
+    monkeypatch.setattr(link_module, "monotonic", clock)
 
     await _ticks(coordinator, hass, clock, 6)
 
@@ -1170,7 +1178,7 @@ async def test_a_wedge_left_alone_for_days_does_not_overflow(
     coordinator._note_stuck_hang_up()
 
     assert coordinator._dial_not_before == (
-        clock.now + coordinator_module._STACK_FAULT_BACKOFF_MAX
+        clock.now + link_module._STACK_FAULT_BACKOFF_MAX
     )
 
 
@@ -1199,7 +1207,7 @@ async def test_a_fault_ends_with_the_lamp_and_not_with_a_hang_up(
     host.released.clear()  # ...and then they stop going through again
     await _ticks(coordinator, hass, clock, 24)
     assert len([r for r in caplog.records if r.levelname == "WARNING"]) == 1
-    assert coordinator._stuck_hang_ups > coordinator_module._STACK_FAULT_AFTER
+    assert coordinator._stuck_hang_ups > link_module._STACK_FAULT_AFTER
     host.released.set()
 
     async def _healthy(*_args: object, **_kwargs: object) -> _WedgedClient:
@@ -1411,7 +1419,7 @@ async def test_a_hang_up_that_outlives_the_entry_raises_no_repair(
     await _ticks(coordinator, hass, clock, 2)
     assert coordinator._stuck_hang_ups == 2
 
-    monkeypatch.setattr(coordinator_module, "_HANG_UP_TIMEOUT", 0.3)
+    monkeypatch.setattr(link_module, "_HANG_UP_TIMEOUT", 0.3)
     clock.now += 30
     coordinator._async_poll_reconnect(None)
     await asyncio.sleep(0.05)  # dialled, asked, dropped: the hang-up is in flight
@@ -1512,7 +1520,7 @@ async def test_a_wedged_stack_is_survived_without_home_assistant() -> None:
     """The bench has no dashboard to raise a repair on, and counts all the same."""
     coordinator = GlowriumCoordinator(None, "AA:BB:CC:DD:EE:FF", "bench")
 
-    for _ in range(coordinator_module._STACK_FAULT_AFTER):
+    for _ in range(link_module._STACK_FAULT_AFTER):
         coordinator._note_stuck_hang_up()
     coordinator._note_answer()
 
@@ -1611,6 +1619,7 @@ def _holding(
     coordinator = ScriptedLamp().coordinator(hass)
     clock = _Clock()
     monkeypatch.setattr(coordinator_module, "monotonic", clock)
+    monkeypatch.setattr(link_module, "monotonic", clock)
     client = AsyncMock()
     client.is_connected = True
     client._backend = None

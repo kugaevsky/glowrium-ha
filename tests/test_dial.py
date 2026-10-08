@@ -17,7 +17,11 @@ from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import HomeAssistantError
 import pytest
 
-from custom_components.glowrium import cbor, coordinator as coordinator_module
+from custom_components.glowrium import (
+    cbor,
+    coordinator as coordinator_module,
+    link as link_module,
+)
 from custom_components.glowrium.const import KEY_BRIGHTNESS, KEY_POWER, WRITE_UUID
 from custom_components.glowrium.coordinator import GlowriumCoordinator
 
@@ -170,7 +174,7 @@ async def test_handed_no_dial_the_coordinator_dials_by_bluetooth(
     """
     device, client = object(), MagicMock()
     connect = AsyncMock(return_value=client)
-    monkeypatch.setattr(coordinator_module, "establish_connection", connect)
+    monkeypatch.setattr(link_module, "establish_connection", connect)
     lost = MagicMock()
 
     dial = coordinator_module.dial_by_bluetooth(lambda: device, ADDRESS, "Glowrium-G7")
@@ -202,7 +206,7 @@ async def test_handed_no_dial_the_lamp_is_looked_up_in_home_assistant(
     scanners.async_ble_device_from_address.return_value = device
     monkeypatch.setattr(coordinator_module, "bluetooth", scanners)
     connect = AsyncMock(return_value=link)
-    monkeypatch.setattr(coordinator_module, "establish_connection", connect)
+    monkeypatch.setattr(link_module, "establish_connection", connect)
     coordinator = GlowriumCoordinator(hass, ADDRESS, "Glowrium-G7")
     scanners.async_ble_device_from_address.assert_not_called()  # not before a dial
 
@@ -223,7 +227,7 @@ async def test_a_lamp_bluetooth_does_not_find_is_not_dialled(
 ) -> None:
     """Nothing found is "not in range", said before the library is asked."""
     connect = AsyncMock()
-    monkeypatch.setattr(coordinator_module, "establish_connection", connect)
+    monkeypatch.setattr(link_module, "establish_connection", connect)
 
     dial = coordinator_module.dial_by_bluetooth(lambda: None, ADDRESS, "Glowrium-G7")
 

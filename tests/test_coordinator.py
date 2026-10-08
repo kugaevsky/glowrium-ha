@@ -18,6 +18,7 @@ import pytest
 from custom_components.glowrium import (
     cbor,
     coordinator as coordinator_module,
+    link as link_module,
     protocol,
 )
 from custom_components.glowrium.const import (
@@ -1513,7 +1514,7 @@ async def test_unload_does_not_wait_out_a_connect(
     the best part of ten seconds.
     """
     coordinator, client = _connected_coordinator(hass)
-    monkeypatch.setattr(coordinator_module, "_STOP_TIMEOUT", 0.05)
+    monkeypatch.setattr(link_module, "_STOP_TIMEOUT", 0.05)
     client.disconnect = AsyncMock()
 
     await coordinator._lock.acquire()  # stand in for a connect in flight
@@ -2521,7 +2522,7 @@ async def test_stopping_hangs_up_even_when_the_lock_is_busy(
     coordinator cannot have it.
     """
     coordinator, client = _connected_coordinator(hass)
-    monkeypatch.setattr(coordinator_module, "_STOP_TIMEOUT", 0.05)
+    monkeypatch.setattr(link_module, "_STOP_TIMEOUT", 0.05)
     client.disconnect = AsyncMock()
 
     await coordinator._lock.acquire()  # something else is mid-connect
@@ -2575,12 +2576,12 @@ def test_no_path_holds_the_lock_longer_than_a_command_will_wait() -> None:
     connect = coordinator_module._CONNECT_TIMEOUT
     ask = coordinator_module._ASK_TIMEOUT
     command = coordinator_module._COMMAND_TIMEOUT
-    hang_up = coordinator_module._HANG_UP_TIMEOUT
+    hang_up = link_module._HANG_UP_TIMEOUT
     poll = coordinator_module._RECONNECT_INTERVAL.total_seconds()
 
     assert connect < command, "a lock holder outlasting the waiter is an inversion"
     assert ask < command
-    assert connect >= coordinator_module._STOP_TIMEOUT
+    assert connect >= link_module._STOP_TIMEOUT
     # The library gives one try BLEAK_TIMEOUT before it gives up and tidies up
     # after itself. A ceiling below that cuts even the first try from outside,
     # in the middle of a connect - where, measured on a G7 whose connects take
@@ -2590,7 +2591,7 @@ def test_no_path_holds_the_lock_longer_than_a_command_will_wait() -> None:
     # Three tries inside one dial: on a weak link a connection is often made
     # and lost within a second or two, and the next try is what gets through.
     # Agreed against that measurement; another number wants another one.
-    assert coordinator_module._CONNECT_ATTEMPTS == 3
+    assert link_module._CONNECT_ATTEMPTS == 3
     # Priming is spawned from the poll and takes the same lock, so it must be
     # finished before the next tick or the ticks pile up on top of each other.
     assert connect < poll
@@ -2613,7 +2614,7 @@ async def test_stopping_hangs_up_once_not_twice(
     separate deadlines - the lock is best-effort, the disconnect is tried once.
     """
     coordinator, client = _connected_coordinator(hass)
-    monkeypatch.setattr(coordinator_module, "_STOP_TIMEOUT", 0.05)
+    monkeypatch.setattr(link_module, "_STOP_TIMEOUT", 0.05)
     attempts: list[int] = []
 
     async def _hangs() -> None:
@@ -3415,7 +3416,7 @@ async def test_a_hang_up_that_fails_or_hangs_troubles_nobody(
     none of it may vanish either: the log line says why a bus had to be closed
     by hand (tests/test_bus_lifetime.py is about the closing itself).
     """
-    monkeypatch.setattr(coordinator_module, "_HANG_UP_TIMEOUT", 0.05)
+    monkeypatch.setattr(link_module, "_HANG_UP_TIMEOUT", 0.05)
     caplog.set_level(logging.DEBUG, logger=coordinator_module.__name__)
     for failure in (BleakError("gone"), OSError(9, "Bad file descriptor"), EOFError()):
         coordinator, client = _connected_coordinator(hass)
@@ -3605,7 +3606,7 @@ async def test_stopping_does_not_cut_the_hang_up_short(
     link - and a reload is what one reaches for when Bluetooth misbehaves.
     """
     coordinator, client = _connected_coordinator(hass)
-    monkeypatch.setattr(coordinator_module, "_STOP_TIMEOUT", 0.05)
+    monkeypatch.setattr(link_module, "_STOP_TIMEOUT", 0.05)
     released = asyncio.Event()
     finished: list[int] = []
 
@@ -4484,7 +4485,7 @@ async def test_shutting_down_does_not_hold_home_assistant_up(
     with it. The bus is not worth waiting for either; the process is leaving.
     """
     coordinator, client = _connected_coordinator(hass)
-    monkeypatch.setattr(coordinator_module, "_STOP_TIMEOUT", 0.05)
+    monkeypatch.setattr(link_module, "_STOP_TIMEOUT", 0.05)
 
     async def _never() -> None:
         await asyncio.Event().wait()
@@ -4589,7 +4590,7 @@ async def test_a_hang_up_started_after_the_stop_began_is_as_short(
     """
     coordinator, _ = _connected_coordinator(hass)
     coordinator._client = None
-    monkeypatch.setattr(coordinator_module, "_STOP_TIMEOUT", 0.05)
+    monkeypatch.setattr(link_module, "_STOP_TIMEOUT", 0.05)
     late = _fresh_client()
 
     async def _never() -> None:

@@ -15,7 +15,11 @@ from homeassistant.core import HomeAssistant
 import pytest
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
-from custom_components.glowrium import cbor, coordinator as coordinator_module
+from custom_components.glowrium import (
+    cbor,
+    coordinator as coordinator_module,
+    link as link_module,
+)
 from custom_components.glowrium.const import (
     DOMAIN,
     KEY_ACTIVATED,
@@ -730,6 +734,7 @@ async def test_each_field_of_the_link_section_follows_its_own_source(
     entry = await _a_lamp_that_has_reported(hass)
     coordinator = entry.runtime_data
     monkeypatch.setattr(coordinator_module, "monotonic", lambda: _NOW)
+    monkeypatch.setattr(link_module, "monotonic", lambda: _NOW)
     coordinator._last_answer = _NOW
     arrange(coordinator)
 
