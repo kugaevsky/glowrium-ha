@@ -3923,6 +3923,42 @@ async def test_a_connect_that_fails_without_a_word_is_called_by_its_name(
     assert f"{named} AA:BB:CC:DD:EE:FF failed: TimeoutError()" in caplog.text
 
 
+@pytest.mark.parametrize(
+    ("error", "said"),
+    [
+        (TimeoutError(), "TimeoutError()"),  # a deadline
+        (EOFError(), "EOFError()"),  # a bus closed under a call
+        (BleakError("Not connected"), "Not connected"),
+        (OSError(9, "Bad file descriptor"), "[Errno 9] Bad file descriptor"),
+    ],
+)
+def test_an_error_goes_into_the_log_by_what_it_says_or_else_by_what_it_is(
+    error: Exception, said: str
+) -> None:
+    """The two errors with nothing to say are the two commonest on a weak link."""
+    assert coordinator_module._reason(error) == said
+
+
+async def test_an_exchange_that_fails_without_a_word_is_called_by_its_name(
+    hass: HomeAssistant, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Not the connect alone: every line about a lost link names what lost it.
+
+    Priming that ran out its deadline and a read whose bus was closed under
+    it said "failed: " and stopped there, as the connect did.
+    """
+    coordinator, client = _connected_coordinator(hass)
+    caplog.set_level(logging.DEBUG)
+
+    client.read_gatt_char = AsyncMock(side_effect=EOFError())
+    assert await coordinator._async_read_state(client) == (False, frozenset())
+    assert "AA:BB:CC:DD:EE:FF state read failed: EOFError()" in caplog.text
+
+    coordinator._request_state = AsyncMock(side_effect=TimeoutError())
+    await coordinator._async_prime()
+    assert "Priming state of AA:BB:CC:DD:EE:FF failed: TimeoutError()" in caplog.text
+
+
 async def test_hanging_up_a_client_we_gave_up_on_leaves_the_one_we_hold(
     hass: HomeAssistant, monkeypatch: pytest.MonkeyPatch
 ) -> None:

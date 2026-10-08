@@ -354,6 +354,18 @@ def _close_bus(backend: Any, address: str) -> _Bus:
     return _Bus.CLOSED if was_up else _Bus.CLEAR
 
 
+def _reason(err: BaseException) -> str:
+    """Return what ``err`` says, or what it is where it says nothing.
+
+    For a line of the log. A deadline that ran out and a bus closed under a
+    call - ``TimeoutError`` and ``EOFError`` - carry no text, and they are the
+    two commonest ways for an exchange with a lamp at the edge of range to
+    fail: one night on the G7's host left 290 lines that ended in "failed: "
+    with nothing after it (2026-10-08).
+    """
+    return str(err) or repr(err)
+
+
 def _looks_like_a_refusal(err: Exception) -> bool:
     """Return True if ``err`` reads as the device declining, not as a lost link.
 
@@ -1280,7 +1292,7 @@ class GlowriumCoordinator:
                 _LOGGER.debug("%s: primed a link a command made", self.address)
                 await self._async_read_device_info(client)
         except _LINK_ERRORS as err:
-            _LOGGER.debug("Priming state of %s failed: %s", self.address, err)
+            _LOGGER.debug("Priming state of %s failed: %s", self.address, _reason(err))
         else:
             self._async_notify_listeners()
 
@@ -1302,7 +1314,9 @@ class GlowriumCoordinator:
                 client = held
                 alive = await self._request_state(client)
         except _LINK_ERRORS as err:
-            _LOGGER.debug("Probing the link to %s failed: %r", self.address, err)
+            _LOGGER.debug(
+                "Probing the link to %s failed: %s", self.address, _reason(err)
+            )
         if client is None:
             return  # never got as far as asking; nothing was learnt
         if alive:
@@ -1342,9 +1356,7 @@ class GlowriumCoordinator:
                 "primed" if self._client is self._primed_client else "not primed yet",
             )
             return
-        # By its name where it has no text of its own: running out of time is
-        # the commonest way for a connect to fail, and TimeoutError has none.
-        _LOGGER.debug("%s to %s failed: %s", what, self.address, str(err) or repr(err))
+        _LOGGER.debug("%s to %s failed: %s", what, self.address, _reason(err))
 
     def _ble_device(self) -> BLEDevice | None:
         if self.hass is None:  # the bench scans for itself and substitutes this
@@ -1493,7 +1505,9 @@ class GlowriumCoordinator:
             with _gatt_call(client):
                 raw = await client.read_gatt_char(INFO_UUID)
         except _LINK_ERRORS as err:
-            _LOGGER.debug("Device-info read from %s failed: %s", self.address, err)
+            _LOGGER.debug(
+                "Device-info read from %s failed: %s", self.address, _reason(err)
+            )
             return
         self.device_info = _parse_device_info(bytes(raw))
         _LOGGER.debug(
@@ -1590,7 +1604,7 @@ class GlowriumCoordinator:
             with _gatt_call(client):
                 raw = bytes(await client.read_gatt_char(NOTIFY_UUID))
         except _LINK_ERRORS as err:
-            _LOGGER.debug("%s state read failed: %s", self.address, err)
+            _LOGGER.debug("%s state read failed: %s", self.address, _reason(err))
             return False, frozenset()
         return True, self._ingest(raw)
 
@@ -1608,7 +1622,7 @@ class GlowriumCoordinator:
                 _LOGGER.debug(
                     "%s state request failed, but not by refusing: %s",
                     self.address,
-                    err,
+                    _reason(err),
                 )
                 # The link is going, and BlueZ normally says so within seconds.
                 # Noted in case it never does (see _LOST_GRACE).
@@ -1898,7 +1912,7 @@ class GlowriumCoordinator:
                         _LOGGER.debug(
                             "Write to %s failed (%s); reconnecting and retrying",
                             self.address,
-                            err,
+                            _reason(err),
                         )
                         if client is not None:
                             # Finished before the retry dials: the hang-up
@@ -1924,10 +1938,12 @@ class GlowriumCoordinator:
                         "Command to %s reported %s, but the device reports the "
                         "state it asked for - treating it as delivered",
                         self.address,
-                        err,
+                        _reason(err),
                     )
                 else:
-                    _LOGGER.debug("Command to %s failed: %s", self.address, err)
+                    _LOGGER.debug(
+                        "Command to %s failed: %s", self.address, _reason(err)
+                    )
                     raise HomeAssistantError(
                         translation_domain=DOMAIN,
                         # What stopped it, when it was the coordinator itself:

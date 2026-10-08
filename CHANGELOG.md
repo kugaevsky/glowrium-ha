@@ -94,9 +94,11 @@ All notable changes to this project are documented here. The format is based on
   instead of being sent again on a new link. It ends now as any lost link
   does. Since 0.3.0
   ([#20](https://github.com/kugaevsky/glowrium-ha/issues/20)).
-- **A connect that failed says why, also when the error has no text.** For a
-  connect that ran out of time the debug log said `Reconnect to … failed:`
-  and nothing after it. It names the error now
+- **A debug line about a lost link says what lost it, also when the error
+  has no text.** A deadline that ran out and a connection closed under a
+  call carry none, so the log said `Reconnect to … failed:` - or the same of
+  priming, of a read, of a command - and nothing after it. Such a line
+  names the error now
   ([#20](https://github.com/kugaevsky/glowrium-ha/issues/20)).
 
 ### Changed
