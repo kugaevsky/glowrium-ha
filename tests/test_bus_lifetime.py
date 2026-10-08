@@ -177,13 +177,19 @@ def _a_link(
     def _on_the_loop(coro: Any, name: str) -> asyncio.Task[None]:
         return asyncio.get_running_loop().create_task(coro, name=name)
 
+    async def _says_nothing(_turn: link_module.Turn) -> None:
+        return None
+
     return link_module.Link(
         "AA:BB:CC:DD:EE:FF",
         dial or AsyncMock(),
         notify_uuid=NOTIFY_UUID,
         heard=lambda _characteristic, _data: None,
+        greet=_says_nothing,
+        probe=_says_nothing,
         reach_changed=lambda: None,
         stack_fault=lambda _count: None,
+        spawn=_on_the_loop,
         run_lasting=_on_the_loop,
         unclosed=unclosed,
     )
@@ -2057,7 +2063,7 @@ async def test_a_silent_link_is_asked_whether_it_is_still_there(
     """
     coordinator, client, clock = _holding(hass, monkeypatch)
 
-    clock.now += coordinator_module._PROBE_INTERVAL - 1
+    clock.now += link_module._PROBE_INTERVAL - 1
     await _tick(coordinator, hass)
     assert _asked(client) == 0  # not before its time
 
@@ -2073,7 +2079,7 @@ async def test_a_silent_link_is_asked_whether_it_is_still_there(
     await _tick(coordinator, hass)  # it has just answered
     assert _asked(client) == 1
 
-    clock.now += coordinator_module._PROBE_INTERVAL  # and silent again since
+    clock.now += link_module._PROBE_INTERVAL  # and silent again since
     await _tick(coordinator, hass)
     assert _asked(client) == 2
 
@@ -2086,7 +2092,7 @@ async def test_a_silent_link_that_does_not_answer_is_dropped(
     client.write_gatt_char = AsyncMock(side_effect=BleakError(_NOT_CONNECTED))
     client.read_gatt_char = AsyncMock(side_effect=BleakError(_NOT_CONNECTED))
 
-    clock.now += coordinator_module._PROBE_INTERVAL
+    clock.now += link_module._PROBE_INTERVAL
     await _tick(coordinator, hass)
 
     assert coordinator._client is None
@@ -2103,7 +2109,7 @@ async def test_a_question_that_is_never_answered_drops_the_link_too(
     line, the same question would be put on every poll tick for ever, each
     time holding the lock for as long as the deadline allows.
     """
-    monkeypatch.setattr(coordinator_module, "_ASK_TIMEOUT", 0.05)
+    monkeypatch.setattr(link_module, "_ASK_TIMEOUT", 0.05)
     coordinator, client, clock = _holding(hass, monkeypatch)
 
     async def _never(*_args: object, **_kwargs: object) -> None:
@@ -2111,7 +2117,7 @@ async def test_a_question_that_is_never_answered_drops_the_link_too(
 
     client.write_gatt_char = AsyncMock(side_effect=_never)
 
-    clock.now += coordinator_module._PROBE_INTERVAL
+    clock.now += link_module._PROBE_INTERVAL
     async with asyncio.timeout(2):
         await _tick(coordinator, hass)
 
@@ -2127,11 +2133,11 @@ async def test_a_question_that_could_not_be_put_proves_nothing(
     A command may hold it for its whole budget. The link is fine then, and
     the question simply waits for the next tick.
     """
-    monkeypatch.setattr(coordinator_module, "_ASK_TIMEOUT", 0.05)
+    monkeypatch.setattr(link_module, "_ASK_TIMEOUT", 0.05)
     coordinator, client, clock = _holding(hass, monkeypatch)
     await coordinator._lock.acquire()  # somebody is at work on the link
 
-    clock.now += coordinator_module._PROBE_INTERVAL
+    clock.now += link_module._PROBE_INTERVAL
     await _tick(coordinator, hass)
 
     assert coordinator._client is client
@@ -2146,13 +2152,13 @@ async def test_a_link_that_is_talking_is_not_asked(
     """A notification is an answer. So is a command that went through."""
     coordinator, client, clock = _holding(hass, monkeypatch)
 
-    clock.now += coordinator_module._PROBE_INTERVAL - 10
+    clock.now += link_module._PROBE_INTERVAL - 10
     coordinator._on_notify(None, _STATE)  # the lamp reports a change
     clock.now += 20
     await _tick(coordinator, hass)
     assert _asked(client) == 0
 
-    clock.now += coordinator_module._PROBE_INTERVAL - 10
+    clock.now += link_module._PROBE_INTERVAL - 10
     await coordinator.async_set_power(True)  # a command, answered
     clock.now += 20
     await _tick(coordinator, hass)
@@ -2173,7 +2179,7 @@ async def test_a_read_alone_is_not_taken_for_the_lamp_answering(
     """
     coordinator, client, clock = _holding(hass, monkeypatch)
 
-    clock.now += coordinator_module._PROBE_INTERVAL - 10
+    clock.now += link_module._PROBE_INTERVAL - 10
     await turn_over(coordinator, client).read(INFO_UUID)  # and nothing taken in
     clock.now += 20
     await _tick(coordinator, hass)
@@ -2220,7 +2226,7 @@ async def test_two_ticks_do_not_ask_the_same_question_twice(
         await answer(*args, **kwargs)
 
     client.write_gatt_char = AsyncMock(side_effect=_in_a_moment)
-    clock.now += coordinator_module._PROBE_INTERVAL
+    clock.now += link_module._PROBE_INTERVAL
 
     coordinator._async_poll_reconnect(None)
     coordinator._async_poll_reconnect(None)

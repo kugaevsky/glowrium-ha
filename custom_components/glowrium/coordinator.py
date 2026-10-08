@@ -70,39 +70,10 @@ _LOGGER = logging.getLogger(__name__)
 _WRITE_ATTEMPTS = 2  # the initial write plus one reconnect-and-retry
 # Ceiling on getting one user-facing command out, so a button reports a clear
 # failure instead of appearing to hang while the retries stack up. It has to
-# outlast a background connect (see _CONNECT_TIMEOUT). A failed command may
-# then spend up to _CONFIRM_TIMEOUT more deciding whether it failed after all,
-# so the worst a user waits is the sum of the two.
+# outlast a background connect (the link's _CONNECT_TIMEOUT). A failed command
+# may then spend up to _CONFIRM_TIMEOUT more deciding whether it failed after
+# all, so the worst a user waits is the sum of the two.
 _COMMAND_TIMEOUT = 25.0
-# Ceiling on a background connect: the wait for _lock, the wait for a hang-up
-# still under way (see Link.open), the dial, the subscription and the priming.
-# Without it a connect to an unreachable device holds the lock indefinitely,
-# and everything else that needs the lock waits
-# behind it with no deadline of its own.
-#
-# It is deliberately SHORTER than _COMMAND_TIMEOUT, and the relationship is the
-# point rather than the number: a background connect holds the lock while a
-# command waits for it inside its own budget, so a holder allowed longer than
-# the waiter means pressing a switch during a background connect reports
-# failure on a reachable lamp, having attempted nothing. It is also shorter
-# than _RECONNECT_INTERVAL, so the connect spawned by one poll tick is over
-# before the next.
-#
-# And it is no shorter than what the library gives one try of its own
-# (BLEAK_TIMEOUT, 20 s): a ceiling close to what a connect takes on a weak
-# link turns a slow connect into a failed one, tick after tick, for as long as
-# the radio stays marginal. Being no shorter than one try does not hand the
-# library the whole dial - the ceiling also covers the wait for the lock and
-# every try after the first, so a slow try can still be cut from outside. What
-# was measured under 10 s and under 20 s, and why it is not raised further:
-# ARCHITECTURE.md, "Reconnect".
-# test_no_path_holds_the_lock_longer_than_a_command_will_wait pins all three.
-_CONNECT_TIMEOUT = 20.0
-# Ceiling on asking a link that is already held for its state - priming one a
-# command made, probing one that has gone silent - including the wait for
-# _lock. There is no dial in it, so it need not be as long as a connect, and a
-# probe that is slow to give its verdict keeps a dead link held meanwhile.
-_ASK_TIMEOUT = 10.0
 # How long a failed command waits for the device to report the state it asked
 # for before the failure is believed. A write-with-response on a marginal link
 # can reach the lamp and be acted on while the acknowledgement is lost, which
@@ -128,19 +99,10 @@ _FLOAT_BYTES = {b"\xfb": 8, b"\xfa": 4, b"\xf9": 2}
 # itself; 0x58 and 0x59 are followed by one and by two bytes of length.
 _BYTES_SHORT = range(0x40, 0x58)
 _BYTES_LONGER = {b"\x58": 1, b"\x59": 2}
-# How long BlueZ gets to report a link dropped once it has called it "not
-# connected". Normally two to three seconds (see _REFUSAL_MARKERS). When the
-# report never comes, the client is held with is_connected True and nothing
-# dials again: on the real host that lasted five hours, until a command.
-_LOST_GRACE = 10.0
-# How long a held link may stay silent before it is asked whether it is still
-# there. The lamp only speaks when something changes, so silence is normal -
-# and it is also all a link gives off that died without BlueZ noticing.
-_PROBE_INTERVAL = 300.0
 # How long the lamp gets to report once it has acknowledged the state request.
 # On a G7 the report arrives inside the write call itself. The wait is for a
 # model that splits its map across notifications, and with the dial before it
-# has to fit inside _CONNECT_TIMEOUT.
+# has to fit inside the link's _CONNECT_TIMEOUT.
 _REPORT_TIMEOUT = 3.0
 # How far the device clock may drift before it is worth a write. The lamp only
 # ever had its clock set during first-time bring-up, so one set up months ago
@@ -319,14 +281,16 @@ class GlowriumCoordinator:
             dial or dial_by_bluetooth(self._ble_device, address, name),
             notify_uuid=NOTIFY_UUID,
             heard=self._heard,
+            greet=self._greet,
+            probe=self._probe,
             reach_changed=self._async_reach_changed,
             stack_fault=self._async_on_stack_fault,
+            spawn=self._spawn,
             run_lasting=self._run_lasting,
             unclosed=unclosed,
         )
         # The keys the lamp has reported since it was last asked for its state.
         self._carried: set[int] = set()
-        self._reconnecting = False
         self._activation_checked = False
         # The batched state request is muted until this time after a run of
         # failures, rather than for the session - see _request_state.
@@ -335,10 +299,6 @@ class GlowriumCoordinator:
         # Set once a cooldown has already been served and the model refused
         # again: that is a refusal rather than a run of bad luck.
         self._state_request_given_up = False
-        # The client whose state has been primed. A command connects without
-        # priming (see _connect_locked), so this is how the poll notices there
-        # is a connection whose properties were never fetched.
-        self._primed_client: BleakClientWithServiceCache | None = None
         # Set once a frame has been rejected for trailing bytes, so the warning
         # is raised once per session instead of on every notification.
         self._trailing_warned = False
@@ -417,9 +377,10 @@ class GlowriumCoordinator:
 
     # --- The link's own, under the names they had here -----------------------
     #
-    # Stage 1 of #21: the link holds these now (link.py). The exchanges below
-    # still say self._client and self._lock, and so do the tests that have not
-    # moved yet. Each of these goes when nothing reaches through it any more.
+    # #21: the link holds these now, and makes the connect, the first exchange
+    # and the probe (link.py). A command below still says self._client and
+    # self._lock, and so do the tests that have not moved yet. Each of these
+    # goes when nothing reaches through it any more.
 
     @property
     def _client(self) -> BleakClientWithServiceCache | None:
@@ -461,10 +422,6 @@ class GlowriumCoordinator:
     def _lost(self) -> tuple[BleakClientWithServiceCache, float] | None:
         return self._link.lost
 
-    @_lost.setter
-    def _lost(self, lost: tuple[BleakClientWithServiceCache, float] | None) -> None:
-        self._link.lost = lost
-
     @property
     def _last_answer(self) -> float:
         return self._link.last_answer
@@ -480,6 +437,22 @@ class GlowriumCoordinator:
     @_present.setter
     def _present(self, present: bool) -> None:
         self._link.present = present
+
+    @property
+    def _reconnecting(self) -> bool:
+        return self._link.reconnecting
+
+    @_reconnecting.setter
+    def _reconnecting(self, reconnecting: bool) -> None:
+        self._link.reconnecting = reconnecting
+
+    @property
+    def _primed_client(self) -> BleakClientWithServiceCache | None:
+        return self._link.primed
+
+    @_primed_client.setter
+    def _primed_client(self, client: BleakClientWithServiceCache | None) -> None:
+        self._link.primed = client
 
     @property
     def _is_connected(self) -> bool:
@@ -503,6 +476,21 @@ class GlowriumCoordinator:
     def _async_log_reach(self) -> None:
         self._link.log_reach(self._plain_name)
 
+    async def _async_initial_connect(self) -> None:
+        await self._link.initial_connect()
+
+    async def _async_reconnect(self) -> None:
+        await self._link.reconnect()
+
+    async def _async_ensure_connected(self) -> None:
+        await self._link.connect()
+
+    async def _connect_locked(self, *, prime: bool = True) -> None:
+        await self._link.connect_locked(greet=prime)
+
+    async def _async_prime(self) -> None:
+        await self._link.prime_held()
+
     # --- What the link is handed ----------------------------------------------
 
     @callback
@@ -510,9 +498,31 @@ class GlowriumCoordinator:
         """Take a frame the lamp sent - through the name a test may replace."""
         self._on_notify(characteristic, data)
 
+    async def _greet(self, turn: Turn) -> None:
+        """Make the first exchange on a link: what the lamp is asked and told.
+
+        The state is asked for, and a lamp that answers nothing ends the
+        exchange there: the link is told nothing, and lets go (what counts as
+        an answer: ``_request_state``). Then whatever has to be written - the
+        bring-up of a lamp that is not activated, a clock that has drifted -
+        and only then is the link called one that works. The device info is
+        read after that, and last: on BlueZ the link does not outlive a read.
+        """
+        if not await self._request_state(turn):
+            return
+        await self._async_activate_if_needed()
+        await self._async_sync_clock_if_needed()
+        turn.answered()
+        await self._async_read_device_info(turn)
+
+    async def _probe(self, turn: Turn) -> None:
+        """Ask a link that has gone silent for the state, and say if it answered."""
+        if await self._request_state(turn):
+            turn.answered()
+
     @callback
     def _async_reach_changed(self) -> None:
-        """Tell the entities: the link has let go of a client that was lost."""
+        """Tell the entities: the link says there is something for them to learn."""
         self._async_notify_listeners()
 
     @callback
@@ -744,7 +754,7 @@ class GlowriumCoordinator:
             hass, self.address, connectable=True
         )
         self._async_log_reach()  # absent from the start is worth saying too
-        self._spawn(self._async_initial_connect(), "initial connect")
+        self._spawn(self._link.initial_connect(), "initial connect")
         # Advertisement callbacks are throttled, so also poll: reconnect within
         # _RECONNECT_INTERVAL after any drop, regardless of advertisement timing.
         self._cancel_poll = async_track_time_interval(
@@ -779,13 +789,6 @@ class GlowriumCoordinator:
         self._kept_tasks.add(task)
         task.add_done_callback(self._kept_tasks.discard)
         return task
-
-    async def _async_initial_connect(self) -> None:
-        """Connect once at start-up, off the setup path."""
-        try:
-            await self._async_ensure_connected()
-        except _LINK_ERRORS as err:
-            self._log_connect_ended("Initial connect", err)
 
     @callback
     def _async_stop_watching(self) -> None:
@@ -879,152 +882,17 @@ class GlowriumCoordinator:
         _service_info: bluetooth.BluetoothServiceInfoBleak,
         _change: bluetooth.BluetoothChange,
     ) -> None:
-        was_present = self._present
-        self._present = True
-        # Reconnect when the device reappears, but only one attempt at a time
-        # (advertisements arrive ~every second; don't spawn a connect storm).
-        if (
-            not self._is_connected
-            and not self._reconnecting
-            and monotonic() >= self._dial_not_before
-        ):
-            self._reconnecting = True
-            self._spawn(self._async_reconnect(), "reconnect")
-        if not was_present:
-            self._async_notify_listeners()
+        self._link.advertising(True)
 
     @callback
     def _async_on_unavailable(
         self, _service_info: bluetooth.BluetoothServiceInfoBleak
     ) -> None:
-        # The device stopped advertising (powered off / out of range).
-        self._present = False
-        self._async_notify_listeners()
+        self._link.advertising(False)
 
     @callback
     def _async_poll_reconnect(self, _now: Any) -> None:
-        for client in tuple(self._unreleased):
-            # Still holding a bus nothing could close. The stack may have
-            # come round since, and until this goes through nothing dials.
-            self._hang_up(client)
-        if not self._is_connected:
-            # Held back only while BlueZ will not hang up (_note_stuck_hang_up).
-            if not self._reconnecting and monotonic() >= self._dial_not_before:
-                self._reconnecting = True
-                self._spawn(self._async_reconnect(), "reconnect")
-            return
-        lost, self._lost = self._lost, None
-        if lost is not None and lost[0] is self._client:
-            if monotonic() - lost[1] < _LOST_GRACE:
-                self._lost = lost
-            else:
-                # BlueZ said "not connected" and then never reported the link
-                # dropped. Waiting any longer is waiting for ever.
-                _LOGGER.debug(
-                    "%s: the state request failed on this link and it was "
-                    "never reported dropped; dropping it",
-                    self.address,
-                )
-                self._hang_up(lost[0])
-                self._async_notify_listeners()
-                return
-        # Connected, but by a command, which skips priming to stay fast. Fetch
-        # the properties now, off the command's critical path.
-        if self._client is not self._primed_client:
-            self._spawn(self._async_prime(), "prime")
-        elif monotonic() - self._last_answer >= _PROBE_INTERVAL:
-            self._spawn(self._async_probe(), "probe")
-
-    async def _async_prime(self) -> None:
-        """Fetch device properties for a link that was established by a command."""
-        try:
-            async with asyncio.timeout(_ASK_TIMEOUT), self._lock:
-                client = self._client
-                if client is None or client is self._primed_client:
-                    return
-                turn = self._link.turn(client)
-                if not await self._request_state(turn):
-                    # The link answers nothing, however connected it claims to
-                    # be. Drop it so the poll rebuilds one: _is_connected would
-                    # otherwise stay True and nothing would reconnect or
-                    # re-prime, leaving the entities frozen for the whole life
-                    # of a link that never worked.
-                    _LOGGER.debug("%s: link answers nothing, dropping", self.address)
-                    self._hang_up(client)
-                    # Said here: the return below skips the else at the end.
-                    self._async_notify_listeners()
-                    return
-                await self._async_activate_if_needed()
-                await self._async_sync_clock_if_needed()
-                self._primed_client = client
-                _LOGGER.debug("%s: primed a link a command made", self.address)
-                await self._async_read_device_info(turn)
-        except _LINK_ERRORS as err:
-            _LOGGER.debug("Priming state of %s failed: %s", self.address, _reason(err))
-        else:
-            self._async_notify_listeners()
-
-    async def _async_probe(self) -> None:
-        """Ask a link that has been silent whether it is still there.
-
-        By priming it again: the lamp is asked for its state, which costs one
-        write, proves the link if it answers, and refreshes the mirror for free.
-        A link that does not answer - or keeps the question waiting until the
-        deadline - is dropped, and the poll rebuilds it.
-        """
-        client: BleakClientWithServiceCache | None = None
-        alive = False
-        try:
-            async with asyncio.timeout(_ASK_TIMEOUT), self._lock:
-                held = self._client
-                if held is None or (monotonic() - self._last_answer < _PROBE_INTERVAL):
-                    return
-                client = held
-                alive = await self._request_state(self._link.turn(client))
-        except _LINK_ERRORS as err:
-            _LOGGER.debug(
-                "Probing the link to %s failed: %s", self.address, _reason(err)
-            )
-        if client is None:
-            return  # never got as far as asking; nothing was learnt
-        if alive:
-            _LOGGER.debug("%s: the held link answers", self.address)
-            return
-        _LOGGER.debug("%s: the held link no longer answers, dropping", self.address)
-        if client is self._client:
-            self._hang_up(client)
-            self._async_notify_listeners()
-
-    async def _async_reconnect(self) -> None:
-        try:
-            await self._async_ensure_connected()
-        except _LINK_ERRORS as err:
-            self._log_connect_ended("Reconnect", err)
-        finally:
-            self._reconnecting = False
-
-    def _log_connect_ended(self, what: str, err: Exception) -> None:
-        """Say how a background connect ended, when it did not end as meant.
-
-        Time can run out with the link already taken: during its first
-        exchange, during the device-info read after it, or because a command
-        got the lock first and connected. That link is held, and what becomes
-        of it is the poll's business - it primes one that is not primed, drops
-        one that answers nothing, probes one that is. Calling that a failed
-        connect sent whoever read the log looking for a lamp out of range: on
-        the G7's host (2026-10-06) the line was written of a link that was held
-        for ten seconds more, until the radio lost it.
-        """
-        if isinstance(err, TimeoutError) and self._is_connected:
-            _LOGGER.debug(
-                "%s to %s ran out of time, but the link is held (%s); "
-                "it is left to the poll",
-                what,
-                self.address,
-                "primed" if self._client is self._primed_client else "not primed yet",
-            )
-            return
-        _LOGGER.debug("%s to %s failed: %s", what, self.address, _reason(err))
+        self._link.tick()
 
     def _ble_device(self) -> BLEDevice | None:
         if self.hass is None:  # the bench scans for itself and hands in a dial
@@ -1032,59 +900,6 @@ class GlowriumCoordinator:
         return bluetooth.async_ble_device_from_address(
             self.hass, self.address, connectable=True
         )
-
-    async def _async_ensure_connected(self) -> None:
-        """Connect if not already connected, under a bounded wait for the lock.
-
-        Every background connect - setup, the reconnect poll and the
-        advertisement callback - funnels through here, so the ceiling applies to
-        all of them. It has to cover the wait for ``_lock`` too: the starvation
-        that hung setup was one holder grinding through connect attempts to an
-        unreachable lamp while another waited on the lock with no deadline.
-        """
-        if self._is_connected:
-            return
-        async with asyncio.timeout(_CONNECT_TIMEOUT), self._lock:
-            await self._connect_locked()
-
-    async def _connect_locked(self, *, prime: bool = True) -> None:
-        """Establish the GATT link, and unless told otherwise prime the state.
-
-        The caller must hold ``_lock``; ``_async_ensure_connected`` and the
-        write path both funnel through here so a command can never race a
-        background connect.
-
-        A command passes ``prime=False``. It needs the link and its own write,
-        nothing else - and priming is expensive: the state request and the
-        wait for its answer, up to 3 s waiting for the activation flag and,
-        the first time, the device-info read, all before the write is even
-        attempted and all inside the command budget. On a lamp where the
-        connect alone is marginal, that is what turns a working command into a
-        reported failure. The poll picks the priming up afterwards (see
-        ``_async_poll_reconnect``).
-        """
-        if self._is_connected:
-            return
-        client = await self._link.open()
-        if not prime:
-            return
-        turn = self._link.turn(client)
-        if not await self._request_state(turn):
-            # Established, but it answers nothing - see _request_state. Drop it
-            # here rather than holding a link that serves nothing until the
-            # poll comes round: the poll rebuilds it either way, and in the
-            # meantime _is_connected would claim a connection a command would
-            # write into before failing.
-            _LOGGER.debug("%s: link answers nothing, dropping", self.address)
-            self._hang_up(client)
-            self._async_notify_listeners()
-            return
-        await self._async_activate_if_needed()
-        await self._async_sync_clock_if_needed()
-        self._primed_client = client
-        _LOGGER.debug("%s: connected and primed", self.address)
-        await self._async_read_device_info(turn)
-        self._async_notify_listeners()
 
     def _require_read(self, value: Any, translation_key: str) -> Any:
         """Return ``value``, or raise if the device has not reported it yet.
@@ -1262,7 +1077,7 @@ class GlowriumCoordinator:
                 _reason(err),
             )
             # The link is going, and BlueZ normally says so within seconds.
-            # Noted in case it never does (see _LOST_GRACE).
+            # Noted in case it never does (the link's _LOST_GRACE).
             turn.in_doubt()
             return _Asked.LOST
         self._state_request_failures = 0  # and the write was acknowledged

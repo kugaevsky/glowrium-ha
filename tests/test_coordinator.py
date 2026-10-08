@@ -1308,7 +1308,7 @@ async def test_setup_is_not_held_by_a_connect_that_never_finishes(
     forever - never even reaching setup_retry.
     """
     coordinator = GlowriumCoordinator(hass, "AA:BB:CC:DD:EE:FF", "Glowrium-G7")
-    monkeypatch.setattr(coordinator_module, "_CONNECT_TIMEOUT", 0.05)
+    monkeypatch.setattr(link_module, "_CONNECT_TIMEOUT", 0.05)
 
     # Stand in for the other holder: the lock is taken and not given back.
     await coordinator._lock.acquire()
@@ -1439,6 +1439,65 @@ async def test_a_command_connect_is_primed_by_the_poll(hass: HomeAssistant) -> N
     coordinator._async_poll_reconnect(None)
     await hass.async_block_till_done()
     assert asked.await_count == count
+
+
+@pytest.mark.parametrize("reached", ["by a background connect", "by the poll"])
+async def test_what_the_first_exchange_wrote_is_told_to_the_entities(
+    hass: HomeAssistant, reached: str
+) -> None:
+    """A lamp brought up in the first exchange is shown as activated at once.
+
+    What the exchange writes goes into the mirror as each write is
+    acknowledged. A real lamp reports its new state as well, and that report
+    tells the entities; one that is slow to, or does not, would leave them
+    showing the lamp as it was before the exchange. So they are told once
+    more when it is over - after a background connect, and after the exchange
+    the poll makes on a link a command took.
+    """
+    coordinator, client = _connected_coordinator(hass)
+    _answers(coordinator, client, {KEY_ACTIVATED: False})
+    client.read_gatt_char = AsyncMock(return_value=bytearray(b"brand:x;;"))
+    shown: list[bool | None] = []
+    coordinator.async_add_listener(lambda: shown.append(coordinator.activated))
+
+    if reached == "by the poll":
+        coordinator._async_poll_reconnect(None)  # the link is one a command made
+        await hass.async_block_till_done()
+    else:
+        coordinator._client = None
+        _dialling(coordinator, client)
+        await coordinator._async_reconnect()
+
+    assert coordinator.activated is True
+    assert shown[0] is False  # the lamp's own report, before anything was written
+    assert shown[-1] is True  # and told again once it was
+
+
+async def test_a_first_exchange_on_a_held_link_does_not_wait_for_ever(
+    hass: HomeAssistant, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The exchange the poll makes on a command's link has a ceiling too.
+
+    It takes the lock. A lamp that never acknowledges the state request would
+    hold it for good, and every command after that would spend its whole
+    budget waiting behind a question nobody is going to answer. The link is
+    left as it was - held, and without its first exchange - for the next
+    tick.
+    """
+    monkeypatch.setattr(link_module, "_ASK_TIMEOUT", 0.05)
+    coordinator, client = _connected_coordinator(hass)
+
+    async def _never(*_args: object, **_kwargs: object) -> None:
+        await asyncio.Event().wait()
+
+    client.write_gatt_char = AsyncMock(side_effect=_never)
+
+    async with asyncio.timeout(2):
+        await coordinator._async_prime()
+
+    assert not coordinator._lock.locked()
+    assert coordinator._client is client
+    assert coordinator._primed_client is not client
 
 
 async def test_a_device_reporting_unactivated_is_brought_up(
@@ -2544,6 +2603,34 @@ async def test_background_work_is_tied_to_the_entry(hass: HomeAssistant) -> None
     assert len(spawned) == 2  # and so does the priming
 
 
+async def test_one_background_connect_at_a_time(hass: HomeAssistant) -> None:
+    """A connect still on its way is not joined by another.
+
+    A dial to a lamp on a weak signal outlasts the poll's interval whenever
+    it is given the chance, and the lamp advertises about once a second.
+    Each of those starting a connect of its own would queue them up behind
+    the lock, every one with its own deadline and its own line in the log.
+    """
+    coordinator, _ = _connected_coordinator(hass)
+    coordinator._client = None
+    spawned: list[str] = []
+
+    def _background(_hass: object, coro: object, name: str) -> object:
+        coro.close()  # started, and never done
+        spawned.append(name)
+        return MagicMock()
+
+    entry = MagicMock()
+    entry.async_create_background_task = _background
+    coordinator._entry = entry
+
+    coordinator._async_poll_reconnect(None)
+    coordinator._async_poll_reconnect(None)
+    coordinator._async_on_advertisement(MagicMock(), MagicMock())
+
+    assert len(spawned) == 1
+
+
 def test_no_path_holds_the_lock_longer_than_a_command_will_wait() -> None:
     """The timing constants have to make sense relative to each other.
 
@@ -2554,8 +2641,8 @@ def test_no_path_holds_the_lock_longer_than_a_command_will_wait() -> None:
     background connect reports failure on a perfectly reachable lamp, having
     attempted nothing at all.
     """
-    connect = coordinator_module._CONNECT_TIMEOUT
-    ask = coordinator_module._ASK_TIMEOUT
+    connect = link_module._CONNECT_TIMEOUT
+    ask = link_module._ASK_TIMEOUT
     command = coordinator_module._COMMAND_TIMEOUT
     hang_up = link_module._HANG_UP_TIMEOUT
     poll = coordinator_module._RECONNECT_INTERVAL.total_seconds()
@@ -2581,6 +2668,10 @@ def test_no_path_holds_the_lock_longer_than_a_command_will_wait() -> None:
     # finished before the next tick or the ticks pile up on top of each other.
     assert connect < poll
     assert ask < poll
+    # A link that died without the stack noticing is found only by asking it,
+    # so this is how long the entities can go on showing a lamp that is not
+    # there. Five minutes was agreed; another number wants a reason of its own.
+    assert link_module._PROBE_INTERVAL == 300
     # A write retry waits for the hang-up of the client it gave up on, inside
     # the command's budget and before it dials. A hang-up allowed as long as
     # the command leaves the retry no time to happen in exactly the case it is
@@ -3652,7 +3743,7 @@ async def test_a_connect_that_fails_half_way_hangs_up_outside_its_deadline(
     """
     coordinator, _ = _connected_coordinator(hass)
     coordinator._client = None
-    monkeypatch.setattr(coordinator_module, "_CONNECT_TIMEOUT", 0.05)
+    monkeypatch.setattr(link_module, "_CONNECT_TIMEOUT", 0.05)
     client = _fresh_client()
     client.start_notify = AsyncMock(side_effect=BleakError("subscribe failed"))
     released = asyncio.Event()
@@ -3707,7 +3798,7 @@ async def test_a_deadline_that_falls_on_a_held_link_leaves_it_and_calls_it_held(
     """
     coordinator, _ = _connected_coordinator(hass)
     coordinator._client = None
-    monkeypatch.setattr(coordinator_module, "_CONNECT_TIMEOUT", 0.05)
+    monkeypatch.setattr(link_module, "_CONNECT_TIMEOUT", 0.05)
     client = _fresh_client()
     client.write_gatt_char = AsyncMock(side_effect=_never_returns)
     dial = _dialling(coordinator, client)
@@ -3741,7 +3832,7 @@ async def test_a_deadline_that_falls_after_priming_says_the_link_is_primed(
     """
     coordinator, _ = _connected_coordinator(hass)
     coordinator._client = None
-    monkeypatch.setattr(coordinator_module, "_CONNECT_TIMEOUT", 0.05)
+    monkeypatch.setattr(link_module, "_CONNECT_TIMEOUT", 0.05)
     client = _fresh_client()
     _answers(coordinator, client, {KEY_POWER: True, KEY_ACTIVATED: True})
     client.read_gatt_char = AsyncMock(side_effect=_never_returns)
@@ -3767,7 +3858,7 @@ async def test_a_deadline_spent_waiting_behind_a_command_that_connected_is_no_fa
     """
     coordinator, client = _connected_coordinator(hass)
     coordinator._client = None
-    monkeypatch.setattr(coordinator_module, "_CONNECT_TIMEOUT", 0.05)
+    monkeypatch.setattr(link_module, "_CONNECT_TIMEOUT", 0.05)
     dial = _dialling(coordinator)
     caplog.set_level(logging.DEBUG)
 
@@ -3793,7 +3884,7 @@ async def test_a_connect_that_gets_no_link_is_still_called_a_failed_connect(
     """The deadline running out with nothing held is the failure it always was."""
     coordinator, _ = _connected_coordinator(hass)
     coordinator._client = None
-    monkeypatch.setattr(coordinator_module, "_CONNECT_TIMEOUT", 0.05)
+    monkeypatch.setattr(link_module, "_CONNECT_TIMEOUT", 0.05)
     lamp_of(coordinator).dials_through(_never_returns)
     caplog.set_level(logging.DEBUG)
 
@@ -4038,7 +4129,7 @@ async def test_a_connect_cancelled_half_way_is_hung_up_but_not_waited_for(
     """
     coordinator, _ = _connected_coordinator(hass)
     coordinator._client = None
-    monkeypatch.setattr(coordinator_module, "_CONNECT_TIMEOUT", 0.05)
+    monkeypatch.setattr(link_module, "_CONNECT_TIMEOUT", 0.05)
     client = _fresh_client()
     released = asyncio.Event()
     finished: list[int] = []

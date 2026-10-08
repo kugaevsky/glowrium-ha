@@ -1,16 +1,19 @@
-"""The link to one lamp: taken, held and let go of.
+"""The link to one lamp: taken, held, asked and let go of.
 
-Stage 1 of splitting the coordinator in two (#21). What is here was the
-coordinator's: the client and the lock around it, the hang-up and the closing
-of the client's bus, the Bluetooth stack that will not hang up, and whether
-the lamp is in reach. Nothing here knows Home Assistant or the lamp's
-protocol; what it needs of either it is handed.
+Splitting the coordinator in two (#21). What is here was the coordinator's:
+the client and the lock around it, the hang-up and the closing of the
+client's bus, the Bluetooth stack that will not hang up, whether the lamp is
+in reach - and when a link is dialled, when the first exchange is made on it
+and when one that has gone silent is asked whether it is still there. Nothing
+here knows Home Assistant or the lamp's protocol; what it needs of either it
+is handed.
 
-The exchanges - a command, the first exchange on a new link, the question for
-a silent one - are still made by the coordinator. For this one stage it
-therefore reaches the link's state by name, and those attributes are public;
-they close when the exchanges move here too. What it imports from here by an
-underscored name keeps the name it had when it was the coordinator's.
+What is said in the first exchange and to a silent link is the coordinator's:
+two callables it hands in, each given a ``Turn``. A command is still
+delivered by the coordinator. Until that has moved here too it reaches the
+link's state by name, and those attributes are public. What it imports from
+here by an underscored name keeps the name it had when it was the
+coordinator's.
 """
 
 from __future__ import annotations
@@ -35,10 +38,10 @@ _RECONNECT_INTERVAL = timedelta(seconds=30)
 # bleak-retry-connector defaults to 4 connect attempts, each of which can sit
 # through a 20 s bleak timeout plus a backoff. Against an unreachable device
 # that adds up to minutes while the link's lock is held, so a queued command
-# cannot even start. It is the coordinator's ceiling on a connect that bounds a
-# dial; the attempts are for the
-# ones that fail fast. On a weak link a connect is often made and lost within
-# a second or two, and the next try inside the same dial is what gets through.
+# cannot even start. It is the ceiling on a connect (_CONNECT_TIMEOUT) that
+# bounds a dial; the attempts are for the ones that fail fast. On a weak link
+# a connect is often made and lost within a second or two, and the next try
+# inside the same dial is what gets through.
 _CONNECT_ATTEMPTS = 3
 # Ceiling on each thing unload waits for - the lock, then the hang-up - so
 # reloading the integration does not wait out whatever connect currently holds
@@ -69,6 +72,45 @@ _STACK_FAULT_AFTER = 3
 # doubles from the poll interval up to this. A command is never held back, and
 # the first answer from the lamp ends it.
 _STACK_FAULT_BACKOFF_MAX = 300.0
+# Ceiling on a background connect: the wait for the lock, the wait for a
+# hang-up still under way (see Link.open), the dial, the subscription and the
+# first exchange. Without it a connect to an unreachable device holds the lock
+# indefinitely, and everything else that needs the lock waits behind it with
+# no deadline of its own.
+#
+# It is deliberately SHORTER than the coordinator's _COMMAND_TIMEOUT, and the
+# relationship is the point rather than the number: a background connect holds
+# the lock while a command waits for it inside its own budget, so a holder
+# allowed longer than the waiter means pressing a switch during a background
+# connect reports failure on a reachable lamp, having attempted nothing. It is
+# also shorter than _RECONNECT_INTERVAL, so the connect spawned by one poll
+# tick is over before the next.
+#
+# And it is no shorter than what the library gives one try of its own
+# (BLEAK_TIMEOUT, 20 s): a ceiling close to what a connect takes on a weak
+# link turns a slow connect into a failed one, tick after tick, for as long as
+# the radio stays marginal. Being no shorter than one try does not hand the
+# library the whole dial - the ceiling also covers the wait for the lock and
+# every try after the first, so a slow try can still be cut from outside. What
+# was measured under 10 s and under 20 s, and why it is not raised further:
+# ARCHITECTURE.md, "Reconnect".
+# test_no_path_holds_the_lock_longer_than_a_command_will_wait pins all three.
+_CONNECT_TIMEOUT = 20.0
+# Ceiling on asking a link that is already held for its state - the first
+# exchange on one a command made, the question for one that has gone silent -
+# including the wait for the lock. There is no dial in it, so it need not be
+# as long as a connect, and a probe that is slow to give its verdict keeps a
+# dead link held meanwhile.
+_ASK_TIMEOUT = 10.0
+# How long BlueZ gets to report a link dropped once it has called it "not
+# connected". Normally two to three seconds (see _REFUSAL_MARKERS). When the
+# report never comes, the client is held with is_connected True and nothing
+# dials again: on the real host that lasted five hours, until a command.
+_LOST_GRACE = 10.0
+# How long a held link may stay silent before it is asked whether it is still
+# there. The lamp only speaks when something changes, so silence is normal -
+# and it is also all a link gives off that died without BlueZ noticing.
+_PROBE_INTERVAL = 300.0
 # What a lost link looks like from here. Besides its own errors and timeouts,
 # bleak passes on whatever the bus raised. When the lamp drops the link the
 # disconnected callback hangs the client up at once, which closes its D-Bus
@@ -86,6 +128,12 @@ type Dial = Callable[
     [Callable[[BleakClientWithServiceCache], None]],
     Awaitable[BleakClientWithServiceCache],
 ]
+
+# What the device half says on a link. It is given a turn, and what it does
+# with it is its own: the link decides when the lamp is spoken to - the first
+# exchange on a new link, the question for one that has gone silent - and
+# hears the verdict (``Turn.answered``).
+type Talk = Callable[[Turn], Awaitable[None]]
 
 
 def dial_by_bluetooth(
@@ -323,10 +371,18 @@ class Turn:
     ``_gatt_call``), and comes back as one of two things when it fails.
     """
 
-    def __init__(self, link: Link, client: BleakClientWithServiceCache) -> None:
-        """Take the link and the client this turn is on."""
+    def __init__(
+        self,
+        link: Link,
+        client: BleakClientWithServiceCache,
+        answered: Callable[[], None] | None = None,
+    ) -> None:
+        """Take the link, the client this turn is on, and what an answer sets off."""
         self._link = link
         self._client = client
+        self._on_answered = answered
+        # Whether the device half has called the lamp answering (see answered).
+        self.got_an_answer = False
 
     async def write(self, uuid: str, frame: bytes) -> None:
         """Write ``frame`` and wait for the lamp to acknowledge it.
@@ -360,9 +416,23 @@ class Turn:
         """Note that this link failed a call and was not reported lost.
 
         The link is going, and BlueZ normally says so within seconds. Noted
-        in case it never does (the coordinator's ``_LOST_GRACE``).
+        in case it never does (``_LOST_GRACE``).
         """
         self._link.lost = (self._client, monotonic())
+
+    def answered(self) -> None:
+        """Say that the lamp answered what it was asked: this link works.
+
+        The device half's verdict on the exchange it was given the turn for,
+        as distinct from the proof of life the link takes for itself from
+        every acknowledged write. An exchange that ends without it was held
+        on a link that answers nothing, and the link lets go of it. Said
+        before anything is read: on BlueZ a read ends this lamp's link, and
+        nothing that comes after un-says this.
+        """
+        self.got_an_answer = True
+        if self._on_answered is not None:
+            self._on_answered()
 
 
 class Unclosed:
@@ -429,8 +499,11 @@ class Link:
         *,
         notify_uuid: str,
         heard: Callable[[Any, bytearray], None],
+        greet: Talk,
+        probe: Talk,
         reach_changed: Callable[[], None],
         stack_fault: Callable[[int | None], None],
+        spawn: Callable[[Coroutine[Any, Any, None], str], None],
         run_lasting: Callable[[Coroutine[Any, Any, None], str], asyncio.Task[None]],
         unclosed: Unclosed | None = None,
     ) -> None:
@@ -438,20 +511,29 @@ class Link:
 
         ``dial`` makes a link (see ``Dial``). ``notify_uuid`` is the
         characteristic the lamp reports on, and ``heard`` is given each frame
-        it sends. ``reach_changed`` is called wherever a link is let go of
-        because it was lost. ``stack_fault`` is given the count of hang-ups
-        left unanswered when a run of them is called a fault, and None when
-        the lamp answers again. ``run_lasting`` runs a hang-up where nothing
-        that ends the caller can end it. ``unclosed`` is what links to this
-        lamp before this one could not let go of (see ``Unclosed``); left
-        out, the link keeps its own, as the bench's does.
+        it sends. ``greet`` is the first exchange on a new link and ``probe``
+        the question for one that has gone silent: each is given a turn, and
+        says on it whether the lamp answered (see ``Talk``). ``reach_changed``
+        is called wherever the entities have something to learn of the link:
+        it was let go of because of what it did, the first exchange was made
+        on it, the lamp began or stopped advertising. ``stack_fault`` is given
+        the count of hang-ups left unanswered when a run of them is called a
+        fault, and None when the lamp answers again. ``spawn`` runs the
+        background work - a connect, a first exchange, a probe - for no longer
+        than whoever watches the lamp does; ``run_lasting`` runs a hang-up
+        where nothing that ends the caller can end it. ``unclosed`` is what
+        links to this lamp before this one could not let go of (see
+        ``Unclosed``); left out, the link keeps its own, as the bench's does.
         """
         self.address = address
         self._dial = dial
         self._notify_uuid = notify_uuid
         self._heard = heard
+        self._greet = greet
+        self._probe = probe
         self._reach_changed = reach_changed
         self._stack_fault = stack_fault
+        self._spawn = spawn
         self._run_lasting = run_lasting
         self.client: BleakClientWithServiceCache | None = None
         self.lock = asyncio.Lock()
@@ -472,11 +554,17 @@ class Link:
         # repair - and so has an episode to call over (see note_answer).
         self.fault_announced = False
         # The client whose link BlueZ called "not connected" without reporting
-        # it dropped, and when (the coordinator's _LOST_GRACE).
+        # it dropped, and when (_LOST_GRACE).
         self.lost: tuple[BleakClientWithServiceCache, float] | None = None
-        # When the lamp last answered anything (the coordinator's
-        # _PROBE_INTERVAL).
+        # When the lamp last answered anything (_PROBE_INTERVAL).
         self.last_answer = monotonic()
+        # Whether a background connect is on its way: one at a time, however
+        # often the lamp advertises and the tick comes round.
+        self.reconnecting = False
+        # The client the first exchange has been made on. A command takes a
+        # link without one (see connect_locked), so this is how the tick
+        # notices a link whose lamp was never asked for its state.
+        self.primed: BleakClientWithServiceCache | None = None
         self.present = False
         # What the log last said about the lamp being in reach (see
         # log_reach). Starts as "in reach", so a lamp that is absent from the
@@ -534,11 +622,11 @@ class Link:
     async def open(self) -> BleakClientWithServiceCache:
         """Dial, subscribe, and only then keep the client; return it.
 
-        The caller holds ``lock`` and has seen that no client is held: the
-        coordinator's connect and its write path both come through here, so
-        a command can never race a background connect. What the coordinator
-        does on the new link - the first exchange, or a command's own write
-        and nothing else - is its business and comes after.
+        The caller holds ``lock`` and has seen that no client is held. That
+        is ``connect_locked``, which a background connect and a command both
+        come through, so that neither can race the other. What is done on
+        the new link - the first exchange, or a command's own write and
+        nothing else - comes after, and is not this method's business.
         """
         self._refuse_what_must_not_be_dialled()
         under_way = self._kept.under_way()
@@ -587,10 +675,248 @@ class Link:
     def turn(self, client: BleakClientWithServiceCache) -> Turn:
         """Return a turn at the lamp on ``client``.
 
-        For the coordinator, while the exchanges are still its own: it is
-        handed a client by ``open`` and makes its calls through this.
+        For a command's write, while the coordinator still delivers it: it
+        makes that one call through this, on the client the link holds.
         """
         return Turn(self, client)
+
+    async def connect(self) -> None:
+        """Connect if not already connected, under a bounded wait for the lock.
+
+        Every background connect - setup, the tick and an advertisement -
+        funnels through here, so the ceiling applies to all of them. It has
+        to cover the wait for ``lock`` too: the starvation that hung setup
+        was one holder grinding through connect attempts to an unreachable
+        lamp while another waited on the lock with no deadline.
+        """
+        if self.connected:
+            return
+        async with asyncio.timeout(_CONNECT_TIMEOUT), self.lock:
+            await self.connect_locked()
+
+    async def connect_locked(self, *, greet: bool = True) -> None:
+        """Establish the GATT link, and unless told otherwise greet the lamp.
+
+        The caller must hold ``lock``; ``connect`` and the coordinator's
+        write path both funnel through here so a command can never race a
+        background connect.
+
+        A command passes ``greet=False``. It needs the link and its own write,
+        nothing else - and the first exchange is expensive: the state request
+        and the wait for its answer, up to 3 s waiting for the activation flag
+        and, the first time, the device-info read, all before the write is
+        even attempted and all inside the command budget. On a lamp where the
+        connect alone is marginal, that is what turns a working command into a
+        reported failure. The tick picks the first exchange up afterwards
+        (see ``tick``).
+        """
+        if self.connected:
+            return
+        client = await self.open()
+        if not greet:
+            return
+        if await self._greet_on(client, "%s: connected and primed"):
+            self._reach_changed()
+
+    async def _greet_on(self, client: BleakClientWithServiceCache, primed: str) -> bool:
+        """Make the first exchange on ``client``; return whether the lamp answered.
+
+        What is said in it is the device half's (``greet``). ``primed`` is
+        the line for the log once the device half has called the lamp
+        answering: from then on ``client`` is one the first exchange has been
+        made on, whatever comes after - and what comes after is the read that
+        the link does not outlive on BlueZ.
+
+        An exchange that raises - a write lost half-way, the caller's
+        deadline - leaves the link held and not primed, and the next tick
+        takes it from there.
+        """
+
+        def _answered() -> None:
+            self.primed = client
+            _LOGGER.debug(primed, self.address)
+
+        turn = Turn(self, client, _answered)
+        await self._greet(turn)
+        if turn.got_an_answer:
+            return True
+        # Established, but it answers nothing, however connected it claims to
+        # be: bleak can hand back a client that reports itself connected while
+        # every call on it answers "not connected". Dropped here rather than
+        # held until the tick comes round. The tick rebuilds it either way,
+        # and in the meantime ``connected`` would claim a link a command would
+        # write into before failing - and on a link a command made, nothing
+        # would reconnect or greet again at all, leaving the entities frozen
+        # for the whole life of a link that never worked.
+        _LOGGER.debug("%s: link answers nothing, dropping", self.address)
+        self._drop(client)
+        return False
+
+    async def prime_held(self) -> None:
+        """Make the first exchange on a link that was established by a command."""
+        try:
+            async with asyncio.timeout(_ASK_TIMEOUT), self.lock:
+                client = self.client
+                if client is None or client is self.primed:
+                    return
+                if not await self._greet_on(client, "%s: primed a link a command made"):
+                    # Told where it was let go of: this return skips the else
+                    # at the end.
+                    return
+        except _LINK_ERRORS as err:
+            _LOGGER.debug("Priming state of %s failed: %s", self.address, _reason(err))
+        else:
+            self._reach_changed()
+
+    async def probe_held(self) -> None:
+        """Ask a link that has been silent whether it is still there.
+
+        With the device half's question (``probe``): the lamp is asked for
+        its state, which costs one write, proves the link if it answers, and
+        refreshes the mirror for free. A link that does not answer - or keeps
+        the question waiting until the deadline - is dropped, and the tick
+        rebuilds it.
+        """
+        client: BleakClientWithServiceCache | None = None
+        alive = False
+        try:
+            async with asyncio.timeout(_ASK_TIMEOUT), self.lock:
+                held = self.client
+                if held is None or (monotonic() - self.last_answer < _PROBE_INTERVAL):
+                    return
+                client = held
+                turn = Turn(self, client)
+                await self._probe(turn)
+                alive = turn.got_an_answer
+        except _LINK_ERRORS as err:
+            _LOGGER.debug(
+                "Probing the link to %s failed: %s", self.address, _reason(err)
+            )
+        if client is None:
+            return  # never got as far as asking; nothing was learnt
+        if alive:
+            _LOGGER.debug("%s: the held link answers", self.address)
+            return
+        _LOGGER.debug("%s: the held link no longer answers, dropping", self.address)
+        if client is self.client:
+            self._drop(client)
+
+    async def initial_connect(self) -> None:
+        """Connect once at start-up, off the setup path."""
+        try:
+            await self.connect()
+        except _LINK_ERRORS as err:
+            self._log_connect_ended("Initial connect", err)
+
+    async def reconnect(self) -> None:
+        """Connect in the background: what an advertisement or a tick set off."""
+        try:
+            await self.connect()
+        except _LINK_ERRORS as err:
+            self._log_connect_ended("Reconnect", err)
+        finally:
+            self.reconnecting = False
+
+    def _log_connect_ended(self, what: str, err: Exception) -> None:
+        """Say how a background connect ended, when it did not end as meant.
+
+        Time can run out with the link already taken: during its first
+        exchange, during the device-info read after it, or because a command
+        got the lock first and connected. That link is held, and what becomes
+        of it is the tick's business - it greets one that was not, drops one
+        that answers nothing, probes one that is silent. Calling that a failed
+        connect sent whoever read the log looking for a lamp out of range: on
+        the G7's host (2026-10-06) the line was written of a link that was held
+        for ten seconds more, until the radio lost it.
+        """
+        if isinstance(err, TimeoutError) and self.connected:
+            _LOGGER.debug(
+                "%s to %s ran out of time, but the link is held (%s); "
+                "it is left to the poll",
+                what,
+                self.address,
+                "primed" if self.client is self.primed else "not primed yet",
+            )
+            return
+        _LOGGER.debug("%s to %s failed: %s", what, self.address, _reason(err))
+
+    def advertising(self, present: bool) -> None:
+        """Hear that the lamp is advertising, or that it has stopped.
+
+        What the entities' availability goes by when no link is held (see
+        ``in_reach``), and the sooner of the two things that set a connect
+        off: the other is the tick.
+        """
+        if not present:
+            # The device stopped advertising (powered off / out of range).
+            self.present = False
+            self._reach_changed()
+            return
+        was_present = self.present
+        self.present = True
+        # Reconnect when the device reappears, but only one attempt at a time
+        # (advertisements arrive ~every second; don't spawn a connect storm).
+        if (
+            not self.connected
+            and not self.reconnecting
+            and monotonic() >= self.dial_not_before
+        ):
+            self.reconnecting = True
+            self._spawn(self.reconnect(), "reconnect")
+        if not was_present:
+            self._reach_changed()
+
+    def tick(self) -> None:
+        """Look the link over: what the poll does every ``_RECONNECT_INTERVAL``.
+
+        Advertisement callbacks are throttled, so a link that dropped is
+        dialled again from here whatever the lamp is heard to do. And a link
+        that is held is not thereby one that works: one a command made has
+        had no first exchange yet, one that failed a call and was never
+        reported lost has to be let go of, and one that has been silent for
+        long enough is asked.
+        """
+        for client in tuple(self.unclosed):
+            # Still holding a bus nothing could close. The stack may have
+            # come round since, and until this goes through nothing dials.
+            self.hang_up(client)
+        if not self.connected:
+            # Held back only while BlueZ will not hang up (note_stuck_hang_up).
+            if not self.reconnecting and monotonic() >= self.dial_not_before:
+                self.reconnecting = True
+                self._spawn(self.reconnect(), "reconnect")
+            return
+        lost, self.lost = self.lost, None
+        if lost is not None and lost[0] is self.client:
+            if monotonic() - lost[1] < _LOST_GRACE:
+                self.lost = lost
+            else:
+                # BlueZ said "not connected" and then never reported the link
+                # dropped. Waiting any longer is waiting for ever.
+                _LOGGER.debug(
+                    "%s: the state request failed on this link and it was "
+                    "never reported dropped; dropping it",
+                    self.address,
+                )
+                self._drop(lost[0])
+                return
+        # Connected, but by a command, which skips the first exchange to stay
+        # fast. Make it now, off the command's critical path.
+        if self.client is not self.primed:
+            self._spawn(self.prime_held(), "prime")
+        elif monotonic() - self.last_answer >= _PROBE_INTERVAL:
+            self._spawn(self.probe_held(), "probe")
+
+    def _drop(self, client: BleakClientWithServiceCache) -> None:
+        """Hang ``client`` up, and say that the lamp's reach may have changed.
+
+        For a link let go of because of what it did: lost, answering nothing,
+        silent for too long. A stop says nothing (see ``let_go`` and
+        ``shut_down``), and a command tells the entities itself, once it
+        knows how it ended.
+        """
+        self.hang_up(client)
+        self._reach_changed()
 
     def _refuse_what_must_not_be_dialled(self) -> None:
         """Raise the link's own "no" where a dial is known to be wrong."""
@@ -854,5 +1180,4 @@ class Link:
         _LOGGER.debug("%s disconnected", self.address)
         # The link is down, but the client still holds its D-Bus connection
         # (see hang_up).
-        self.hang_up(client)
-        self._reach_changed()
+        self._drop(client)
