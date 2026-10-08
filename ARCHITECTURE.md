@@ -61,7 +61,8 @@ Home Assistant entities are stateless views over that coordinator.
 flowchart TD
     CF["config_flow.py<br/>discovers Glowrium-*<br/>creates ConfigEntry {address}"]
     INIT["__init__.py · async_setup_entry<br/>builds GlowriumCoordinator<br/>entry.runtime_data = coordinator<br/>forwards PLATFORMS"]
-    COORD["coordinator.py · GlowriumCoordinator<br/>BLE transport + state: dict int→value"]
+    COORD["coordinator.py · GlowriumCoordinator<br/>exchanges with the lamp + state: dict int→value"]
+    LINK["link.py · Link<br/>the client, the lock, dial and hang-up"]
     CBOR["cbor.py<br/>encode / decode"]
     PLAT["platforms<br/>light · select · number · switch<br/>button · time · sensor · binary_sensor"]
     ENT["entity.py · GlowriumEntity<br/>DeviceInfo · availability · updates"]
@@ -69,6 +70,7 @@ flowchart TD
 
     CF --> INIT
     INIT --> COORD
+    COORD -->|"holds and lets go through"| LINK
     INIT --> PLAT
     PLAT -. "entry.runtime_data" .-> COORD
     PLAT --> ENT
@@ -546,7 +548,7 @@ Since the device advertises continuously, presence is a far better availability
 signal.
 
 ```python
-available = self._is_connected or self._present
+available = link.connected or link.present  # Link.in_reach
 ```
 
 - `_present` is maintained from the Bluetooth stack: seeded with
@@ -580,9 +582,10 @@ there as it stood: `Link.open()` is the first half of what `_connect_locked`
 was (the refusals, the dial, subscribe-then-keep), `Link.hang_up()` is
 `_hang_up`, and so on. The exchanges - a command, the first exchange on a new
 link, the probe - and the poll are still the coordinator's and reach the link
-by the names used below, which the coordinator keeps as forwards. So the names
-in this section are still the names in the code; which file each lives in is
-the only thing that has changed. The link is handed its dial, so that it can
+by the names used below, which the coordinator keeps as forwards. So most
+names in this section are still names in the code, in one file or the other;
+what only the link itself reads has lost its underscore there
+(`Link.stopped`, `Link.fault_announced`). The link is handed its dial, so that it can
 stand on something other than a Bluetooth adapter: in the tests, a scripted
 lamp.
 
@@ -726,9 +729,19 @@ somebody's host. A client kept this way is kept for the lamp, by its address
 and with what is behind it, for as long as Home Assistant runs (`Unclosed`):
 a reload of the entry makes a new coordinator, and that one is handed what its
 predecessor could not let go of, does not dial over it, and goes on trying to
-close it. One limit is known: the hang-up that parks such a client finishes
-after the connect that gave it up has released the lock, so one more dial can
-get in first.
+close it. So a reload no longer gets a lamp dialled again while such a client
+is kept: the stack letting go of it does, or a restart of Home Assistant.
+
+One limit is known, and it has two faces. A client is kept only when its
+hang-up has run out its ceiling, and until then nothing knows that it will
+not close. Within one coordinator, that hang-up finishes after the connect
+that gave the client up has released the lock, so one more dial can get in
+first. And across a reload: a link held when the entry is unloaded is hung up
+in the background, the unload waits three seconds for it and no longer, and
+the coordinator that follows dials at once - over a client that is kept a few
+seconds later, if the stack would not hang up. Either way it is one client
+more, and then none. Closing the window means a dial that waits for a hang-up
+still under way, which changes when a lamp is dialled; it has not been done.
 
 **A hang-up is the one piece of background work not tied to the config entry.**
 Everything else dies with the entry, because a connect that outlives its
@@ -800,7 +813,7 @@ coordinator stops watching. A coordinator that has stopped watching announces
 no episode at all: a hang-up is given longer than an unload waits for it, so
 the third unanswered one can come in afterwards, and a repair raised then
 would have nobody left to take it down. Nor does it end one: an episode is
-called over by the coordinator that announced it (`_fault_announced`), since
+called over by the coordinator that announced it (`Link.fault_announced`), since
 the repair standing under the entry's id after a reload is the next
 coordinator's. It is not persistent - the next start finds out for itself.
 The lamp's name goes into it through `identity.as_text`: a repair is rendered

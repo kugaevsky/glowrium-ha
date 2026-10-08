@@ -164,11 +164,11 @@ async def _polls(
     await hass.async_block_till_done()
 
 
-def _a_link(**handed: Any) -> link_module.Link:
+def _a_link() -> link_module.Link:
     """Return a link with no coordinator and no Home Assistant behind it.
 
-    What it is handed does nothing, unless a test hands it something else: a
-    test that only takes a client and lets go of it needs no more.
+    What it is handed does nothing: a test that only plants a client and
+    lets go of it needs no more.
     """
 
     def _on_the_loop(coro: Any, name: str) -> asyncio.Task[None]:
@@ -176,13 +176,12 @@ def _a_link(**handed: Any) -> link_module.Link:
 
     return link_module.Link(
         "AA:BB:CC:DD:EE:FF",
-        handed.pop("dial", AsyncMock()),
+        AsyncMock(),
         notify_uuid=NOTIFY_UUID,
-        heard=handed.pop("heard", lambda _characteristic, _data: None),
-        reach_changed=handed.pop("reach_changed", lambda: None),
-        stack_fault=handed.pop("stack_fault", lambda _count: None),
+        heard=lambda _characteristic, _data: None,
+        reach_changed=lambda: None,
+        stack_fault=lambda _count: None,
         run_lasting=_on_the_loop,
-        **handed,
     )
 
 
@@ -394,7 +393,7 @@ async def test_what_would_not_close_is_not_dialled_over_by_the_next_coordinator(
     monkeypatch.setattr(coordinator_module, "_CONFIRM_TIMEOUT", 0.01)
     first = lamp.coordinator(hass, unclosed=held)
     await _polls(first, hass, 1)
-    assert first._unreleased
+    assert held.clients
     await first.async_stop()
 
     second = lamp.coordinator(hass, unclosed=held)
@@ -438,7 +437,7 @@ async def test_what_is_handed_on_can_still_be_closed_by_the_one_it_is_handed_to(
     monkeypatch.setattr(link_module, "_STACK_FAULT_AFTER", 10**6)
     first = lamp.coordinator(hass, unclosed=held)
     await _polls(first, hass, 1)
-    assert first._unreleased
+    assert held.clients
     await first.async_stop()
     stuck = host.clients[0]
     backend = stuck._backend
@@ -451,7 +450,7 @@ async def test_what_is_handed_on_can_still_be_closed_by_the_one_it_is_handed_to(
     await _polls(second, hass, 3)
 
     assert host.bus_of[stuck].closed  # closed through what was handed on
-    assert second._unreleased == set()
+    assert held.clients == set()
     assert held.backends == {}  # and nothing is kept of it once it is let go
     assert len(host.clients) > 1  # and dialling again
 
@@ -630,7 +629,7 @@ def _bleaks_own_client(bus: _StubBus) -> tuple[BleakClientBlueZDBus, list[str]]:
     return backend, removed
 
 
-def test_bleak_still_calls_these_what_the_coordinator_calls_them() -> None:
+def test_bleak_still_calls_these_what_the_link_calls_them() -> None:
     """The private names _close_bus reaches for, on a client bleak built itself.
 
     The test below sets them by hand, so a rename in bleak would pass it
@@ -904,6 +903,37 @@ _GATT_CALLS = frozenset(
         "write_gatt_descriptor",
     }
 )
+
+
+def test_the_link_knows_neither_home_assistant_nor_the_protocol() -> None:
+    """What the link module imports: the standard library and the Bluetooth one.
+
+    The split (#21) put the link where it can be tested through what it is
+    handed. An import of Home Assistant, or of this integration's codec,
+    constants or coordinator, would be the two halves growing back together.
+    """
+    tree = ast.parse(Path(link_module.__file__).read_text(encoding="utf-8"))
+    imported: set[str] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            imported.update(alias.name.split(".")[0] for alias in node.names)
+        elif isinstance(node, ast.ImportFrom):
+            # A relative import is one of this integration's own modules.
+            imported.add("." if node.level else (node.module or "").split(".")[0])
+
+    assert imported <= {
+        "__future__",
+        "asyncio",
+        "bleak",
+        "bleak_retry_connector",
+        "collections",
+        "contextlib",
+        "datetime",
+        "enum",
+        "logging",
+        "time",
+        "typing",
+    }
 
 
 def test_every_gatt_call_is_made_where_a_closed_bus_is_a_lost_link() -> None:

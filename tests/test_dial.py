@@ -56,6 +56,26 @@ async def test_what_the_lamp_says_reaches_the_mirror(hass: HomeAssistant) -> Non
     assert coordinator.brightness_percent == 70
 
 
+async def test_a_frame_goes_to_what_takes_frames_when_it_arrives(
+    hass: HomeAssistant,
+) -> None:
+    """Not to what took them when the coordinator was built.
+
+    The bench taps the frames by replacing the coordinator's intake before it
+    connects. The link is handed its listener once, at construction, so that
+    listener has to look the intake up each time.
+    """
+    lamp = ScriptedLamp()
+    coordinator = lamp.coordinator(hass)
+    tapped: list[bytes] = []
+    coordinator._on_notify = lambda _characteristic, data: tapped.append(bytes(data))
+
+    await coordinator.async_set_power(True)
+    lamp.say(b"\xa0")
+
+    assert tapped == [b"\xa0"]
+
+
 async def test_a_link_the_dial_reports_lost_is_let_go_of(hass: HomeAssistant) -> None:
     """The dial is given the coordinator's own callback for a lost link.
 

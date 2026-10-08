@@ -20,6 +20,7 @@ from bleak.exc import BleakError
 from homeassistant.core import HomeAssistant
 
 from custom_components.glowrium.coordinator import GlowriumCoordinator
+from custom_components.glowrium.link import Unclosed
 
 ADDRESS = "AA:BB:CC:DD:EE:FF"
 
@@ -102,11 +103,15 @@ class ScriptedLamp:
         hass: HomeAssistant | None,
         name: str = "Glowrium-G7",
         model_id: str | None = None,
-        **handed: Any,
+        unclosed: Unclosed | None = None,
     ) -> GlowriumCoordinator:
-        """Return a coordinator that dials this lamp, handed whatever else is given."""
+        """Return a coordinator that dials this lamp.
+
+        ``unclosed`` is what coordinators for the lamp before this one could
+        not let go of, when a test has two of them in turn.
+        """
         coordinator = GlowriumCoordinator(
-            hass, ADDRESS, name, model_id, dial=self.dial, **handed
+            hass, ADDRESS, name, model_id, dial=self.dial, unclosed=unclosed
         )
         _LAMPS[coordinator] = self
         return coordinator

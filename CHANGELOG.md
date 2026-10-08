@@ -8,14 +8,18 @@ All notable changes to this project are documented here. The format is based on
 
 ### Fixed
 
-- **A client that could be neither hung up nor closed is not dialled over
-  after a reload.** When the Bluetooth stack will not hang up and the
-  connection behind a client cannot be closed either, the client is kept and
-  nothing more is dialled, so that the system bus is short of one connection
-  and not of one more at every try. It was kept by the part of the
-  integration that a reload replaces, and what replaced it knew nothing of
-  the client and dialled. It is kept for the lamp now, for as long as Home
-  Assistant runs, together with what is needed to close it later
+- **A client that is kept because it could be neither hung up nor closed is
+  not dialled over after a reload.** When the Bluetooth stack will not hang
+  up and the connection behind a client cannot be closed either, the client
+  is kept and nothing more is dialled, so that the system bus is short of
+  one connection and not of one more at every try. It was kept by the part
+  of the integration that a reload replaces, and what replaced it knew
+  nothing of the client and dialled. It is kept for the lamp now, for as
+  long as Home Assistant runs, together with what is needed to close it
+  later. Reloading the integration therefore no longer gets such a lamp
+  dialled again: the stack letting go does - the repair says how - or a
+  restart of Home Assistant. A client that is still being hung up when the
+  reload happens is not kept yet, and can still be dialled over once
   ([#21](https://github.com/kugaevsky/glowrium-ha/issues/21)).
 
 ## [0.3.1] - 2026-10-08

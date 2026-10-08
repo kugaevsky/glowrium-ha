@@ -36,7 +36,7 @@ from pytest_homeassistant_custom_component.common import (
     mock_restore_cache,
 )
 
-from custom_components.glowrium import PLATFORMS, cbor, models
+from custom_components.glowrium import _UNCLOSED, PLATFORMS, cbor, models
 from custom_components.glowrium.const import (
     DOMAIN,
     KEY_ACTIVATED,
@@ -230,7 +230,7 @@ async def test_a_reload_hands_on_what_would_not_close(hass: HomeAssistant) -> No
     entry = await _setup_without_bluetooth(hass)
     first = entry.runtime_data
     stuck = object()
-    first._unreleased.add(stuck)
+    hass.data[_UNCLOSED][ADDRESS].keep(stuck, None)
 
     assert await hass.config_entries.async_unload(entry.entry_id)
     await _setup_without_bluetooth(hass, entry)
@@ -244,8 +244,34 @@ async def test_a_reload_hands_on_what_would_not_close(hass: HomeAssistant) -> No
     await _setup_without_bluetooth(hass, other)
 
     assert entry.runtime_data is not first
-    assert entry.runtime_data._unreleased == {stuck}
-    assert other.runtime_data._unreleased == set()
+    assert _would_not_close(entry) == 1
+    assert _would_not_close(other) == 0
+
+
+async def test_a_lamp_set_up_again_is_still_the_lamp_whose_client_would_not_close(
+    hass: HomeAssistant,
+) -> None:
+    """By the lamp's address, not by the entry.
+
+    A lamp removed and set up again gets a new entry. It is the same lamp,
+    and the client nothing could close is still holding its bus.
+    """
+    entry = await _setup_without_bluetooth(hass)
+    hass.data[_UNCLOSED][ADDRESS].keep(object(), None)
+
+    assert await hass.config_entries.async_remove(entry.entry_id)
+    await hass.async_block_till_done()
+    again = _entry()
+    again.add_to_hass(hass)
+    await _setup_without_bluetooth(hass, again)
+
+    assert again.entry_id != entry.entry_id
+    assert _would_not_close(again) == 1
+
+
+def _would_not_close(entry: MockConfigEntry) -> int:
+    """Return how many clients the entry's coordinator says would not close."""
+    return entry.runtime_data.diagnostics()["link"]["clients_that_would_not_close"]
 
 
 async def test_every_platform_produces_entities(hass: HomeAssistant) -> None:

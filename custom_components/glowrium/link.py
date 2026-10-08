@@ -8,8 +8,9 @@ protocol; what it needs of either it is handed.
 
 The exchanges - a command, the first exchange on a new link, the question for
 a silent one - are still made by the coordinator. For this one stage it
-therefore reaches what it needs here by name, and those names are public.
-They close when the exchanges move here too.
+therefore reaches the link's state by name, and those attributes are public;
+they close when the exchanges move here too. What it imports from here by an
+underscored name keeps the name it had when it was the coordinator's.
 """
 
 from __future__ import annotations
@@ -33,8 +34,9 @@ _LOGGER = logging.getLogger(f"{__package__}.coordinator")
 _RECONNECT_INTERVAL = timedelta(seconds=30)
 # bleak-retry-connector defaults to 4 connect attempts, each of which can sit
 # through a 20 s bleak timeout plus a backoff. Against an unreachable device
-# that adds up to minutes while _lock is held, so a queued command cannot even
-# start. It is the ceiling below that bounds a dial; the attempts are for the
+# that adds up to minutes while the link's lock is held, so a queued command
+# cannot even start. It is the coordinator's ceiling on a connect that bounds a
+# dial; the attempts are for the
 # ones that fail fast. On a weak link a connect is often made and lost within
 # a second or two, and the next try inside the same dial is what gets through.
 _CONNECT_ATTEMPTS = 3
@@ -42,14 +44,16 @@ _CONNECT_ATTEMPTS = 3
 # reloading the integration does not wait out whatever connect currently holds
 # the lock, or a link that is slow to close. There it bounds the waits, not the
 # hang-up. It is also the ceiling on a hang-up itself once Home Assistant is
-# stopping (see async_shutdown).
+# stopping (see ``Link.shut_down``).
 _STOP_TIMEOUT = 3.0
-# Ceiling on hanging up a link the coordinator has given up on (see _hang_up).
+# Ceiling on hanging up a client the link is finished with (see
+# ``Link.hang_up``).
 # It runs in the background, so nothing waits this out except a write retry
 # and an unload, each under a deadline of its own - and Home Assistant when it
 # is stopping, which is why a hang-up then gets _STOP_TIMEOUT instead. It
 # matches how long bleak itself waits for BlueZ to confirm a disconnect, and it
-# has to stay below _COMMAND_TIMEOUT, or a link that will not confirm it has
+# has to stay below the coordinator's ceiling on a command, or a link that will
+# not confirm it has
 # closed leaves the retry no time to dial.
 _HANG_UP_TIMEOUT = 10.0
 # How many hang-ups in a row BlueZ may leave unanswered before it is taken for
@@ -70,11 +74,11 @@ _STACK_FAULT_BACKOFF_MAX = 300.0
 # disconnected callback hangs the client up at once, which closes its D-Bus
 # connection, and a call still waiting for its reply on that connection gets
 # EOFError - or, with the socket gone, "Bad file descriptor" - rather than a
-# BleakError. To the coordinator all of these say the same thing: this link is
-# gone. (TimeoutError is an OSError and is named only so that it can be read.)
+# BleakError. To whoever made the call all of these say the same thing: this
+# link is gone. (TimeoutError is an OSError and is named only so that it can be read.)
 _LINK_ERRORS = (BleakError, TimeoutError, EOFError, OSError)
 
-# What the coordinator dials through. It is given the callback for a link that
+# What a link is made through. It is given the callback for a link that
 # is lost, and returns a connected client or raises one of ``_LINK_ERRORS``.
 # Handed in, so that the link can be made to stand on something other than a
 # Bluetooth adapter: the bench's own scan, and in the tests a scripted lamp.
@@ -120,7 +124,8 @@ def _gatt_call(client: BleakClientWithServiceCache) -> Iterator[None]:
     abandoned, on a link that is going. bleak answers by sleeping ten
     milliseconds and trying again, for as long as it takes, and begins every
     try by asserting that it still has its bus. A link reported lost during
-    that pause is hung up at once, which closes the bus (see ``_hang_up``),
+    that pause is hung up at once, which closes the bus (see
+    ``Link.hang_up``),
     and the try that follows ends on the assertion: an ``AssertionError``,
     which says nothing of a link and is not among ``_LINK_ERRORS``. Seen on
     the G7's host four times in thirty hours (2026-10-07), as "Task exception
@@ -142,7 +147,7 @@ def _gatt_call(client: BleakClientWithServiceCache) -> Iterator[None]:
 
 
 class _NoNewLinkError(BleakError):
-    """The coordinator's own "no" to a new link: nothing the radio did.
+    """The link's own "no" to a new client: nothing the radio did.
 
     It has been stopped, or the last client it let go of could not be closed
     and nothing is dialled over that. Still a ``BleakError``, so that every
@@ -272,6 +277,16 @@ class Unclosed:
         self.clients: set[BleakClientWithServiceCache] = set()
         self.backends: dict[BleakClientWithServiceCache, Any] = {}
 
+    def keep(self, client: BleakClientWithServiceCache, backend: Any) -> None:
+        """Keep ``client``, with what is behind it."""
+        self.clients.add(client)
+        self.backends[client] = backend
+
+    def forget(self, client: BleakClientWithServiceCache) -> None:
+        """Forget ``client``: it has been let go of."""
+        self.clients.discard(client)
+        self.backends.pop(client, None)
+
 
 class Link:
     """One lamp's link: who holds the client, and how it is let go of."""
@@ -340,7 +355,7 @@ class Link:
         # takes no new client (see open). Nothing would ever let go of it.
         self.stopped = False
         # Set when Home Assistant itself is stopping (see shut_down).
-        self.shutting_down = False
+        self._shutting_down = False
 
     @property
     def connected(self) -> bool:
@@ -349,12 +364,10 @@ class Link:
 
     @property
     def in_reach(self) -> bool:
-        """Entity availability: the device is advertising, or there is a link.
+        """Return True while the lamp is advertising, or a client is held.
 
-        A GATT link to this lamp does not last, and tying availability to it
-        makes every entity flap to ``unavailable`` on each reconnect. The
-        device advertises continuously, so "present, or currently connected"
-        is treated as available and the link is rebuilt silently underneath.
+        What the entities' availability goes by (the coordinator's ``available``
+        says why it is not the link alone).
         """
         return self.connected or self.present
 
@@ -445,7 +458,7 @@ class Link:
         """Hang up as Home Assistant stops: at once, and without waiting.
 
         Home Assistant does not unload its config entries when it stops, so
-        ``stop`` never runs then, and nothing hangs the link up but bleak on
+        ``let_go`` never runs then, and nothing hangs the link up but bleak on
         the way out of a stop that runs to its end. One that is cut short - a
         container is given ten seconds - leaves BlueZ holding a link to a
         lamp with a single slot, which reads as connected and answers
@@ -460,7 +473,7 @@ class Link:
         closed would cost the rest of the shutdown. The bus is not worth
         waiting for either - the process is leaving.
         """
-        self.shutting_down = True
+        self._shutting_down = True
         client, self.client = self.client, None
         # Said either way: nothing else will tell, afterwards, whether a link
         # was held at this moment and let go of.
@@ -472,7 +485,7 @@ class Link:
         if client is not None:
             self.hang_up(client)
 
-    async def stop(self) -> None:
+    async def let_go(self) -> None:
         """Let go of the client, if one is held: the letting-go half of a stop.
 
         The coordinator has stopped watching the lamp before it calls this,
@@ -501,7 +514,7 @@ class Link:
         # The ceiling is on how long unload waits, not on the hang-up, which is
         # why it is shielded: a disconnect cancelled here has asked BlueZ to
         # drop the link and left the client's D-Bus connection open (see
-        # _hang_up), once for every reload that meets a slow link.
+        # hang_up), once for every reload that meets a slow link.
         held = False
         try:
             with contextlib.suppress(TimeoutError):
@@ -537,13 +550,12 @@ class Link:
         hours; after it nothing running as that user could reach the bus at
         all, Bluetooth included.
 
-        So this is called for every client the coordinator is finished with,
+        So this is called for every client the link is finished with,
         including one whose link is already gone - then it costs nothing, as
         bleak has no device left to disconnect and only closes the bus.
 
         The task is run where nothing that ends the caller can end it
-        (``run_lasting``): on Home Assistant itself, not on the entry like the
-        rest of the background work, and its caller's deadline cannot cancel it. That
+        (``run_lasting``), and its caller's deadline cannot cancel it. That
         rule exists because a connect that outlives its coordinator claims the
         lamp's slot for nobody; a hang-up that outlives it gives the slot back,
         and one cut short is exactly the leak described above.
@@ -564,12 +576,12 @@ class Link:
         call, the bus is closed here (see ``_close_bus``).
 
         If that cannot be done either, the client is not forgotten: it stays in
-        ``_unreleased``, nothing is dialled over it, and the poll tries it
+        ``unclosed``, nothing is dialled over it, and the poll tries it
         again. One connection is then held for as long as the stack stays
         wedged - instead of one more every time the poll comes round.
         """
         # Short once Home Assistant is stopping: it waits for this task.
-        ceiling = _STOP_TIMEOUT if self.shutting_down else _HANG_UP_TIMEOUT
+        ceiling = _STOP_TIMEOUT if self._shutting_down else _HANG_UP_TIMEOUT
         backend = self.backends.get(client)
         if backend is None:
             # One a link before this one could not let go of.
@@ -592,11 +604,9 @@ class Link:
             bus = _close_bus(backend, self.address)
             if hung_up or bus is not _Bus.OPEN:
                 self.backends.pop(client, None)
-                self.unclosed.discard(client)
-                self._kept.backends.pop(client, None)
+                self._kept.forget(client)
             else:
-                self.unclosed.add(client)
-                self._kept.backends[client] = backend
+                self._kept.keep(client, backend)
             if unanswered and bus is not _Bus.CLEAR and _is_bluez(backend):
                 # BlueZ's own client, its bus still open, and no answer at
                 # all: BlueZ would not hang up. An error would have been an
@@ -607,7 +617,7 @@ class Link:
                 self.note_stuck_hang_up()
             elif hung_up and self.stuck_hang_ups < _STACK_FAULT_AFTER:
                 # "In a row" means in a row. Once it has been called a
-                # fault, only the lamp answering ends it (_note_answer).
+                # fault, only the lamp answering ends it (note_answer).
                 self.stuck_hang_ups = 0
 
     def note_stuck_hang_up(self) -> None:
@@ -652,7 +662,7 @@ class Link:
             self.fault_announced = False
             # At the level the episode was announced at, or whoever read
             # that warning never learns it is over. Only an episode this
-            # coordinator announced: a count can reach the mark after it has
+            # link announced: a count can reach the mark after it has
             # stopped, without a word, and the repair standing under the
             # entry's id by then is the next coordinator's.
             _LOGGER.warning(
@@ -685,6 +695,6 @@ class Link:
             return
         _LOGGER.debug("%s disconnected", self.address)
         # The link is down, but the client still holds its D-Bus connection
-        # (see _hang_up).
+        # (see hang_up).
         self.hang_up(client)
         self._reach_changed()

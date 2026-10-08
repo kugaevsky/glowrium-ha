@@ -108,7 +108,8 @@ _ASK_TIMEOUT = 10.0
 # notification arrived 22-32 ms BEFORE the error was raised, so this is grace
 # for a slower link rather than a wait anyone should routinely pay.
 _CONFIRM_TIMEOUT = 2.0
-# Where the repair raised for that fault sends the reader for what to do.
+# Where the repair for a Bluetooth stack that will not hang up sends the
+# reader for what to do.
 _TROUBLESHOOTING_URL = "https://github.com/kugaevsky/glowrium-ha#troubleshooting"
 # Said wherever the log asks for a frame to be posted (see _for_the_log).
 _BLANKED = (
@@ -556,7 +557,7 @@ class GlowriumCoordinator:
         if count is None:
             self._async_clear_stack_issue()
         else:
-            self._async_raise_stack_issue()
+            self._async_raise_stack_issue(count)
 
     def _run_lasting(
         self, coro: Coroutine[Any, Any, None], name: str
@@ -860,7 +861,7 @@ class GlowriumCoordinator:
         """Cancel watching and disconnect."""
         # Before anything is awaited.
         self._async_stop_watching()
-        await self._link.stop()
+        await self._link.let_go()
 
     @property
     def _stack_issue_id(self) -> str:
@@ -875,7 +876,7 @@ class GlowriumCoordinator:
         return f"bluetooth_stack_stuck_{self._entry.entry_id}"
 
     @callback
-    def _async_raise_stack_issue(self) -> None:
+    def _async_raise_stack_issue(self, count: int) -> None:
         """Put the wedged stack in front of the user, as a repair.
 
         The log line is for whoever goes looking. This is for everyone else:
@@ -897,7 +898,7 @@ class GlowriumCoordinator:
             translation_placeholders={
                 # As text: the description is rendered as Markdown.
                 "name": identity.as_text(self._plain_name),
-                "count": str(self._stuck_hang_ups),
+                "count": str(count),
             },
         )
 
