@@ -60,6 +60,8 @@ from custom_components.glowrium.light import GlowriumLight
 from custom_components.glowrium.models import GlowriumModel
 from custom_components.glowrium.select import GlowriumLightingModeSelect
 
+from .lamp import turn_over
+
 ADDRESS = "AA:BB:CC:DD:EE:FF"
 G7_INFO = b"brand:INLEDCO;pkey:Glowrium-C051;devid:CST-0001;mac:x;version:4;;"
 
@@ -683,7 +685,9 @@ async def test_what_the_lamp_says_about_itself_reaches_the_device_page(
     entry = await _setup_without_bluetooth(hass)
     assert _device(hass).model_id is None  # nothing read yet
 
-    await entry.runtime_data._async_read_device_info(_naming_itself(G7_INFO))
+    await entry.runtime_data._async_read_device_info(
+        turn_over(entry.runtime_data, _naming_itself(G7_INFO))
+    )
 
     assert _described(_device(hass)) == (
         "Glowrium G7",
@@ -737,7 +741,9 @@ async def test_the_model_is_remembered_from_one_start_to_the_next(
     """
     entry = await _setup_without_bluetooth(hass)
     assert entry.runtime_data.model.name == "Glowrium"  # generic until read
-    await entry.runtime_data._async_read_device_info(_naming_itself(G7_INFO))
+    await entry.runtime_data._async_read_device_info(
+        turn_over(entry.runtime_data, _naming_itself(G7_INFO))
+    )
     assert entry.data[CONF_MODEL_ID] == "Glowrium-C051"
 
     assert await hass.config_entries.async_unload(entry.entry_id)
@@ -758,7 +764,9 @@ async def test_a_remembered_model_does_not_stand_in_for_reading_it(
     await _setup_without_bluetooth(hass, entry)
     client = _naming_itself(G7_INFO.replace(b"version:4", b"version:5"))
 
-    await entry.runtime_data._async_read_device_info(client)
+    await entry.runtime_data._async_read_device_info(
+        turn_over(entry.runtime_data, client)
+    )
 
     client.read_gatt_char.assert_awaited_once()
     assert _device(hass).sw_version == "5"
@@ -771,7 +779,10 @@ async def test_a_model_without_a_profile_still_shows_what_it_is(
     entry = await _setup_without_bluetooth(hass)
 
     await entry.runtime_data._async_read_device_info(
-        _naming_itself(b"brand:INLEDCO;pkey:Glowrium-C064;devid:CST-9;version:2;;")
+        turn_over(
+            entry.runtime_data,
+            _naming_itself(b"brand:INLEDCO;pkey:Glowrium-C064;devid:CST-9;version:2;;"),
+        )
     )
 
     assert _described(_device(hass)) == ("Glowrium", "Glowrium-C064", "2", "CST-9")
@@ -796,7 +807,9 @@ async def test_a_read_that_fails_leaves_the_device_page_alone(
     client = MagicMock()
     client.read_gatt_char = AsyncMock(side_effect=BleakError("Not connected"))
 
-    await entry.runtime_data._async_read_device_info(client)
+    await entry.runtime_data._async_read_device_info(
+        turn_over(entry.runtime_data, client)
+    )
 
     assert _described(_device(hass)) == (
         "Glowrium G7",
@@ -828,7 +841,7 @@ async def test_the_presets_offered_are_the_ones_of_the_lamp_that_answered(
     assert "sun_sync" in hass.states.get(select).attributes["options"]
 
     await coordinator._async_read_device_info(
-        _naming_itself(b"pkey:Glowrium-TEST;version:1;;")
+        turn_over(coordinator, _naming_itself(b"pkey:Glowrium-TEST;version:1;;"))
     )
     coordinator._async_notify_listeners()  # as the connect does after the read
     await hass.async_block_till_done()
@@ -1310,7 +1323,7 @@ async def test_what_the_lamp_left_out_this_time_is_left_as_it_was(
     await _setup_without_bluetooth(hass, entry)
 
     await entry.runtime_data._async_read_device_info(
-        _naming_itself(b"pkey:Glowrium-C051;;")
+        turn_over(entry.runtime_data, _naming_itself(b"pkey:Glowrium-C051;;"))
     )
 
     assert _described(_device(hass)) == (
@@ -1455,7 +1468,7 @@ async def test_a_string_that_names_no_model_leaves_the_one_on_record(
     await _setup_without_bluetooth(hass, entry)
 
     await entry.runtime_data._async_read_device_info(
-        _naming_itself(b"brand:INLEDCO;version:7;;")
+        turn_over(entry.runtime_data, _naming_itself(b"brand:INLEDCO;version:7;;"))
     )
 
     assert _described(_device(hass)) == ("Glowrium G8", "Glowrium-C064", "7", None)

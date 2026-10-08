@@ -25,7 +25,7 @@ from time import monotonic
 from typing import Any
 
 from bleak.backends.device import BLEDevice
-from bleak.exc import BleakError
+from bleak.exc import BleakError, BleakGATTProtocolError, BleakGATTProtocolErrorCode
 from bleak_retry_connector import BleakClientWithServiceCache, establish_connection
 
 # Under the coordinator's name, as these lines always were: a log filter that
@@ -256,6 +256,115 @@ def _reason(err: BaseException) -> str:
     return str(err) or repr(err)
 
 
+# Only an error that looks like the device answering "no" counts as a refusal.
+# Two cheaper tests were tried on real hardware and both were wrong: a
+# successful read does not prove the device is still there (the link drops
+# between the read and the write), and bleak's is_connected lags reality - on a
+# G7 it still read True at the moment a write failed with "not connected", with
+# the disconnect callback arriving two seconds later. So the test is inverted:
+# recognise a refusal, treat everything else as the link. Muting a working lamp
+# silently costs it every property a read of the state does not carry; asking
+# an exotic device once too often costs a reconnect.
+_REFUSAL_MARKERS = ("authorization", "authentication", "not permitted")
+# The same, where the error is bleak's own and says which ATT error it was.
+_REFUSAL_CODES = frozenset(
+    {
+        BleakGATTProtocolErrorCode.READ_NOT_PERMITTED,
+        BleakGATTProtocolErrorCode.WRITE_NOT_PERMITTED,
+        BleakGATTProtocolErrorCode.INSUFFICIENT_AUTHENTICATION,
+        BleakGATTProtocolErrorCode.INSUFFICIENT_AUTHORIZATION,
+    }
+)
+
+
+def _looks_like_a_refusal(err: Exception) -> bool:
+    """Return True if ``err`` reads as the device declining, not as a lost link.
+
+    Deliberately narrow: an unrecognised error is treated as the link, because
+    the cost of guessing wrong that way is one more request on the next connect,
+    while guessing wrong the other way silences a working lamp for the session.
+
+    bleak's own protocol error carries the ATT error code, and is judged by
+    that alone: its wording is bleak's to change. Any other error - a
+    Bluetooth proxy's, for one - has only its text to be told by.
+    """
+    if isinstance(err, BleakGATTProtocolError):
+        return err.code in _REFUSAL_CODES
+    text = str(err).lower()
+    return any(marker in text for marker in _REFUSAL_MARKERS)
+
+
+class LinkLostError(BleakError):
+    """What a turn raises when the link under it is gone, or was never there.
+
+    It says what the Bluetooth library said, or what that was where it said
+    nothing (see ``_reason``). Still a ``BleakError`` for as long as the
+    coordinator's own flows catch ``_LINK_ERRORS``; that ends with the split
+    (#21), and with it the coordinator's last word about the library.
+    """
+
+
+class RefusedError(BleakError):
+    """What a write raises when the lamp said no, and the link stands.
+
+    An ATT refusal: a G8 answers the state request with ``Insufficient
+    authorization``. Told from a lost link by ``_looks_like_a_refusal``, once
+    and here. A ``BleakError`` for the same reason, and for as long, as
+    ``LinkLostError`` is.
+    """
+
+
+class Turn:
+    """One go at the lamp, on a client the link holds.
+
+    What the device half is given in place of the client: it writes a frame,
+    reads a characteristic, and says what it made of the answer. Every call
+    is made under the guard that turns a closed bus into a lost link (see
+    ``_gatt_call``), and comes back as one of two things when it fails.
+    """
+
+    def __init__(self, link: Link, client: BleakClientWithServiceCache) -> None:
+        """Take the link and the client this turn is on."""
+        self._link = link
+        self._client = client
+
+    async def write(self, uuid: str, frame: bytes) -> None:
+        """Write ``frame`` and wait for the lamp to acknowledge it.
+
+        An acknowledged write is an answer, and is noted as one: the link is
+        alive, and the stack with it.
+        """
+        try:
+            with _gatt_call(self._client):
+                await self._client.write_gatt_char(uuid, frame, response=True)
+        except _LINK_ERRORS as err:
+            if _looks_like_a_refusal(err):
+                raise RefusedError(_reason(err)) from err
+            raise LinkLostError(_reason(err)) from err
+        self._link.note_answer()
+
+    async def read(self, uuid: str) -> bytes:
+        """Read a characteristic.
+
+        On BlueZ a read of this lamp ends the link two seconds later (see the
+        coordinator's ``_request_state``); what is read here is read knowing
+        that. A read that fails is a lost link, whatever it failed with.
+        """
+        try:
+            with _gatt_call(self._client):
+                return bytes(await self._client.read_gatt_char(uuid))
+        except _LINK_ERRORS as err:
+            raise LinkLostError(_reason(err)) from err
+
+    def in_doubt(self) -> None:
+        """Note that this link failed a call and was not reported lost.
+
+        The link is going, and BlueZ normally says so within seconds. Noted
+        in case it never does (the coordinator's ``_LOST_GRACE``).
+        """
+        self._link.lost = (self._client, monotonic())
+
+
 class Unclosed:
     """What would neither hang up nor have its bus closed, kept for one lamp.
 
@@ -474,6 +583,14 @@ class Link:
         # reports as connected forever while no state ever arrives again.
         self.client = client
         return client
+
+    def turn(self, client: BleakClientWithServiceCache) -> Turn:
+        """Return a turn at the lamp on ``client``.
+
+        For the coordinator, while the exchanges are still its own: it is
+        handed a client by ``open`` and makes its calls through this.
+        """
+        return Turn(self, client)
 
     def _refuse_what_must_not_be_dialled(self) -> None:
         """Raise the link's own "no" where a dial is known to be wrong."""

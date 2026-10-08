@@ -11,7 +11,7 @@ from time import monotonic
 from typing import Any
 
 from bleak.backends.device import BLEDevice
-from bleak.exc import BleakError, BleakGATTProtocolError, BleakGATTProtocolErrorCode
+from bleak.exc import BleakError
 from bleak_retry_connector import BleakClientWithServiceCache
 from homeassistant.components import bluetooth
 from homeassistant.config_entries import ConfigEntry
@@ -57,8 +57,9 @@ from .link import (
     _RECONNECT_INTERVAL,
     Dial,
     Link,
+    RefusedError,
+    Turn,
     Unclosed,
-    _gatt_call,
     _NoNewLinkError,
     _reason,
     dial_by_bluetooth,
@@ -165,27 +166,6 @@ _STATE_REQUEST_ATTEMPTS = 3
 _STATE_REQUEST_COOLDOWN = 600.0
 
 
-# Only an error that looks like the device answering "no" counts as a refusal.
-# Two cheaper tests were tried on real hardware and both were wrong: a
-# successful read does not prove the device is still there (the link drops
-# between the read and the write), and bleak's is_connected lags reality - on a
-# G7 it still read True at the moment a write failed with "not connected", with
-# the disconnect callback arriving two seconds later. So the test is inverted:
-# recognise a refusal, treat everything else as the link. Muting a working lamp
-# silently costs it every property a read of the state does not carry; asking
-# an exotic device once too often costs a reconnect.
-_REFUSAL_MARKERS = ("authorization", "authentication", "not permitted")
-# The same, where the error is bleak's own and says which ATT error it was.
-_REFUSAL_CODES = frozenset(
-    {
-        BleakGATTProtocolErrorCode.READ_NOT_PERMITTED,
-        BleakGATTProtocolErrorCode.WRITE_NOT_PERMITTED,
-        BleakGATTProtocolErrorCode.INSUFFICIENT_AUTHENTICATION,
-        BleakGATTProtocolErrorCode.INSUFFICIENT_AUTHORIZATION,
-    }
-)
-
-
 class _Asked(Enum):
     """What came of asking the lamp to report its state."""
 
@@ -193,23 +173,6 @@ class _Asked(Enum):
     SILENT = auto()  # it acknowledged the request and reported nothing
     REFUSED = auto()  # it answered the request with a refusal
     LOST = auto()  # the request met a link that is gone
-
-
-def _looks_like_a_refusal(err: Exception) -> bool:
-    """Return True if ``err`` reads as the device declining, not as a lost link.
-
-    Deliberately narrow: an unrecognised error is treated as the link, because
-    the cost of guessing wrong that way is one more request on the next connect,
-    while guessing wrong the other way silences a working lamp for the session.
-
-    bleak's own protocol error carries the ATT error code, and is judged by
-    that alone: its wording is bleak's to change. Any other error - a
-    Bluetooth proxy's, for one - has only its text to be told by.
-    """
-    if isinstance(err, BleakGATTProtocolError):
-        return err.code in _REFUSAL_CODES
-    text = str(err).lower()
-    return any(marker in text for marker in _REFUSAL_MARKERS)
 
 
 def _private_at(frame: bytes, at: int) -> tuple[int, int]:
@@ -979,7 +942,8 @@ class GlowriumCoordinator:
                 client = self._client
                 if client is None or client is self._primed_client:
                     return
-                if not await self._request_state(client):
+                turn = self._link.turn(client)
+                if not await self._request_state(turn):
                     # The link answers nothing, however connected it claims to
                     # be. Drop it so the poll rebuilds one: _is_connected would
                     # otherwise stay True and nothing would reconnect or
@@ -994,7 +958,7 @@ class GlowriumCoordinator:
                 await self._async_sync_clock_if_needed()
                 self._primed_client = client
                 _LOGGER.debug("%s: primed a link a command made", self.address)
-                await self._async_read_device_info(client)
+                await self._async_read_device_info(turn)
         except _LINK_ERRORS as err:
             _LOGGER.debug("Priming state of %s failed: %s", self.address, _reason(err))
         else:
@@ -1016,7 +980,7 @@ class GlowriumCoordinator:
                 if held is None or (monotonic() - self._last_answer < _PROBE_INTERVAL):
                     return
                 client = held
-                alive = await self._request_state(client)
+                alive = await self._request_state(self._link.turn(client))
         except _LINK_ERRORS as err:
             _LOGGER.debug(
                 "Probing the link to %s failed: %s", self.address, _reason(err)
@@ -1104,7 +1068,8 @@ class GlowriumCoordinator:
         client = await self._link.open()
         if not prime:
             return
-        if not await self._request_state(client):
+        turn = self._link.turn(client)
+        if not await self._request_state(turn):
             # Established, but it answers nothing - see _request_state. Drop it
             # here rather than holding a link that serves nothing until the
             # poll comes round: the poll rebuilds it either way, and in the
@@ -1118,7 +1083,7 @@ class GlowriumCoordinator:
         await self._async_sync_clock_if_needed()
         self._primed_client = client
         _LOGGER.debug("%s: connected and primed", self.address)
-        await self._async_read_device_info(client)
+        await self._async_read_device_info(turn)
         self._async_notify_listeners()
 
     def _require_read(self, value: Any, translation_key: str) -> Any:
@@ -1141,9 +1106,7 @@ class GlowriumCoordinator:
             )
         return value
 
-    async def _async_read_device_info(
-        self, client: BleakClientWithServiceCache
-    ) -> None:
+    async def _async_read_device_info(self, turn: Turn) -> None:
         """Read the device-info string - once, and after everything else.
 
         It names the model, the firmware and the serial, and it is the one thing
@@ -1155,14 +1118,13 @@ class GlowriumCoordinator:
         if self.device_info:
             return
         try:
-            with _gatt_call(client):
-                raw = await client.read_gatt_char(INFO_UUID)
+            raw = await turn.read(INFO_UUID)
         except _LINK_ERRORS as err:
             _LOGGER.debug(
                 "Device-info read from %s failed: %s", self.address, _reason(err)
             )
             return
-        self.device_info = _parse_device_info(bytes(raw))
+        self.device_info = _parse_device_info(raw)
         _LOGGER.debug(
             "%s: device info read; on BlueZ this link does not outlive a read",
             self.address,
@@ -1203,7 +1165,7 @@ class GlowriumCoordinator:
                 entry, data={**entry.data, CONF_MODEL_ID: model_id}
             )
 
-    async def _request_state(self, client: BleakClientWithServiceCache) -> bool:
+    async def _request_state(self, turn: Turn) -> bool:
         """Prime the state mirror: ask the lamp to report, read only if it will not.
 
         Writing the ids in ``STATE_KEYS`` to ``NOTIFY_UUID`` makes the lamp
@@ -1236,51 +1198,35 @@ class GlowriumCoordinator:
         answers "not connected", and such a link is not a working one.
         """
         if self._state_request_muted or self._state_request_failures:
-            read_ok, carried = await self._async_read_state(client)
+            read_ok, carried = await self._async_read_state(turn)
             if not carried.issuperset(STATE_KEYS) and not self._state_request_muted:
                 # Judged on what this read carried rather than on the mirror:
                 # the mirror accumulates, so a key seen once would look
                 # covered for the rest of the session.
-                await self._async_ask_state(client)
+                await self._async_ask_state(turn)
             return read_ok
-        asked = await self._async_ask_state(client)
+        asked = await self._async_ask_state(turn)
         if asked is _Asked.REPORTED:
             return True
-        read_ok, _ = await self._async_read_state(client)
+        read_ok, _ = await self._async_read_state(turn)
         return read_ok or asked in (_Asked.SILENT, _Asked.REFUSED)
 
-    async def _async_read_state(
-        self, client: BleakClientWithServiceCache
-    ) -> tuple[bool, frozenset[int]]:
+    async def _async_read_state(self, turn: Turn) -> tuple[bool, frozenset[int]]:
         """Read the state map; return whether it answered and what it carried."""
         try:
-            with _gatt_call(client):
-                raw = bytes(await client.read_gatt_char(NOTIFY_UUID))
+            raw = await turn.read(NOTIFY_UUID)
         except _LINK_ERRORS as err:
             _LOGGER.debug("%s state read failed: %s", self.address, _reason(err))
             return False, frozenset()
         return True, self._ingest(raw)
 
-    async def _async_ask_state(self, client: BleakClientWithServiceCache) -> _Asked:
+    async def _async_ask_state(self, turn: Turn) -> _Asked:
         """Write the state request and wait for the lamp to report."""
         self._carried.clear()
         before = self._reports
         try:
-            with _gatt_call(client):
-                await client.write_gatt_char(
-                    NOTIFY_UUID, bytes(STATE_KEYS), response=True
-                )
-        except _LINK_ERRORS as err:
-            if not _looks_like_a_refusal(err):
-                _LOGGER.debug(
-                    "%s state request failed, but not by refusing: %s",
-                    self.address,
-                    _reason(err),
-                )
-                # The link is going, and BlueZ normally says so within seconds.
-                # Noted in case it never does (see _LOST_GRACE).
-                self._lost = (client, monotonic())
-                return _Asked.LOST
+            await turn.write(NOTIFY_UUID, bytes(STATE_KEYS))
+        except RefusedError as err:
             self._state_request_failures += 1
             if self._state_request_failures < _STATE_REQUEST_ATTEMPTS:
                 _LOGGER.debug(
@@ -1309,8 +1255,17 @@ class GlowriumCoordinator:
                 else f"Pausing it for {int(_STATE_REQUEST_COOLDOWN // 60)} minutes.",
             )
             return _Asked.REFUSED
-        self._state_request_failures = 0
-        self._note_answer()  # the write was acknowledged
+        except _LINK_ERRORS as err:
+            _LOGGER.debug(
+                "%s state request failed, but not by refusing: %s",
+                self.address,
+                _reason(err),
+            )
+            # The link is going, and BlueZ normally says so within seconds.
+            # Noted in case it never does (see _LOST_GRACE).
+            turn.in_doubt()
+            return _Asked.LOST
+        self._state_request_failures = 0  # and the write was acknowledged
         try:
             async with asyncio.timeout(_REPORT_TIMEOUT):
                 while True:
@@ -1479,11 +1434,7 @@ class GlowriumCoordinator:
         if self._client is None:
             raise BleakError("write attempted while disconnected")
         self._writes_sent += 1  # counted before, so a raising write still counts
-        with _gatt_call(self._client):
-            await self._client.write_gatt_char(
-                WRITE_UUID, cbor.encode(payload), response=True
-            )
-        self._note_answer()
+        await self._link.turn(self._client).write(WRITE_UUID, cbor.encode(payload))
         # Optimistic local echo; the device also notifies its new state.
         self._mirror(payload)
 

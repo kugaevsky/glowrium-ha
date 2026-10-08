@@ -41,6 +41,7 @@ from custom_components.glowrium import (
 )
 from custom_components.glowrium.const import (
     DOMAIN,
+    INFO_UUID,
     KEY_ACTIVATED,
     KEY_POWER,
     NOTIFY_UUID,
@@ -48,7 +49,7 @@ from custom_components.glowrium.const import (
 )
 from custom_components.glowrium.coordinator import GlowriumCoordinator
 
-from .lamp import ScriptedLamp, lamp_of
+from .lamp import ScriptedLamp, lamp_of, turn_over
 
 _NOT_CONNECTED = "[org.bluez.Error.Failed] Not connected"
 
@@ -1001,8 +1002,12 @@ async def test_a_call_waiting_its_turn_when_the_link_drops_ends_as_a_lost_link(
     caplog.set_level(logging.DEBUG, logger=coordinator_module.__name__)
     exchanges = {
         "the state request": coordinator._async_prime,
-        "the state read": lambda: coordinator._async_read_state(client),
-        "the device-info read": lambda: coordinator._async_read_device_info(client),
+        "the state read": lambda: coordinator._async_read_state(
+            turn_over(coordinator, client)
+        ),
+        "the device-info read": lambda: coordinator._async_read_device_info(
+            turn_over(coordinator, client)
+        ),
     }
 
     waiting = asyncio.create_task(exchanges[exchange]())
@@ -1072,7 +1077,7 @@ async def test_an_assertion_on_a_link_that_is_up_is_nobodys_lost_link(
     with pytest.raises(AssertionError, match="not about the bus"):
         await coordinator.async_set_power(True)
     with pytest.raises(AssertionError, match="not about the bus"):
-        await coordinator._async_read_device_info(client)
+        await coordinator._async_read_device_info(turn_over(coordinator, client))
     with pytest.raises(AssertionError, match="not about the bus"):
         await coordinator._async_prime()
 
@@ -1129,10 +1134,13 @@ def test_every_gatt_call_is_made_where_a_closed_bus_is_a_lost_link() -> None:
     call left outside brings the traceback back for that call alone. This
     reads the integration's source, so a call added later is seen here - and
     a guard given one client around a call made on another guards nothing.
+
+    Since the split (#21) there are three, all in the link's module: a GATT
+    call made anywhere else is a client that left it.
     """
     package = Path(coordinator_module.__file__).parent
     bare: list[str] = []
-    calls = 0
+    made_in: list[str] = []
     for source in sorted(package.rglob("*.py")):
         guarded: set[int] = set()
         tree = ast.parse(source.read_text(encoding="utf-8"))
@@ -1161,12 +1169,14 @@ def test_every_gatt_call_is_made_where_a_closed_bus_is_a_lost_link() -> None:
                 and isinstance(node.func, ast.Attribute)
                 and node.func.attr in _GATT_CALLS
             ):
-                calls += 1
+                made_in.append(source.name)
                 if id(node) not in guarded:
                     bare.append(f"{source.name}:{node.lineno} {node.func.attr}")
 
     assert bare == []
-    assert calls >= 5  # the request, two reads, the command, the subscription
+    # And each is the link's own: the subscription when a client is taken, and
+    # the write and the read of a turn at the lamp. The device half makes none.
+    assert made_in == ["link.py"] * 3
 
 
 async def test_a_hang_up_cancelled_half_way_still_closes_the_bus(
@@ -1971,7 +1981,9 @@ async def test_a_link_called_not_connected_and_never_dropped_is_let_go(
     coordinator._state_request_failures = 1  # a lamp that is read first
     client.write_gatt_char = AsyncMock(side_effect=BleakError(_NOT_CONNECTED))
 
-    assert await coordinator._request_state(client)  # the read did answer
+    assert await coordinator._request_state(
+        turn_over(coordinator, client)
+    )  # the read did answer
     clock.now += 5
     await _tick(coordinator, hass)  # inside the grace BlueZ is given
     assert coordinator._client is client
@@ -1997,7 +2009,7 @@ async def test_a_lamp_that_speaks_again_is_not_let_go(
     client.write_gatt_char = AsyncMock(
         side_effect=BleakError("GATT Protocol Error: Unlikely Error")
     )
-    await coordinator._request_state(client)
+    await coordinator._request_state(turn_over(coordinator, client))
 
     clock.now += 5
     coordinator._on_notify(None, _STATE)  # and it is still talking
@@ -2016,7 +2028,7 @@ async def test_a_link_bluez_did_report_dropped_is_not_hung_up_twice(
     coordinator._state_request_failures = 1
     client.write_gatt_char = AsyncMock(side_effect=BleakError(_NOT_CONNECTED))
     lamp_of(coordinator).dials_through(AsyncMock())
-    await coordinator._request_state(client)
+    await coordinator._request_state(turn_over(coordinator, client))
     assert coordinator._lost is not None
 
     coordinator._async_on_disconnect(client)  # two seconds later, as usual
@@ -2147,6 +2159,28 @@ async def test_a_link_that_is_talking_is_not_asked(
     assert _asked(client) == 0
 
 
+async def test_a_read_alone_is_not_taken_for_the_lamp_answering(
+    hass: HomeAssistant, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """What is read counts where it is taken in, not for having been read.
+
+    A state that was read is a frame from the lamp, and is noted as an answer
+    where it is taken in. The device info is the other thing that is read,
+    and is not: on BlueZ it is the read this link does not outlive, so a link
+    that has just been read is the last one to call alive. Counting every
+    read was proposed with the split (#21), and is not done unless it is
+    named there first.
+    """
+    coordinator, client, clock = _holding(hass, monkeypatch)
+
+    clock.now += coordinator_module._PROBE_INTERVAL - 10
+    await turn_over(coordinator, client).read(INFO_UUID)  # and nothing taken in
+    clock.now += 20
+    await _tick(coordinator, hass)
+
+    assert _asked(client) == 1  # silent for five minutes, read or not
+
+
 async def test_a_refusal_is_not_taken_for_a_link_that_is_going(
     hass: HomeAssistant, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -2157,7 +2191,7 @@ async def test_a_refusal_is_not_taken_for_a_link_that_is_going(
         side_effect=BleakError("Insufficient authorization (8)")
     )
 
-    await coordinator._request_state(client)
+    await coordinator._request_state(turn_over(coordinator, client))
     clock.now += 60
     await _tick(coordinator, hass)
 

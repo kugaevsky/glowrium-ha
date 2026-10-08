@@ -20,7 +20,7 @@ from bleak.exc import BleakError
 from homeassistant.core import HomeAssistant
 
 from custom_components.glowrium.coordinator import GlowriumCoordinator
-from custom_components.glowrium.link import Unclosed
+from custom_components.glowrium.link import Turn, Unclosed
 
 ADDRESS = "AA:BB:CC:DD:EE:FF"
 
@@ -134,6 +134,16 @@ class ScriptedLamp:
         """Lose every link that is up."""
         for link in self.links:
             link.lose()
+
+
+def turn_over(coordinator: GlowriumCoordinator, client: Any) -> Turn:
+    """Return a turn at the lamp on ``client``, for a test that built one by hand.
+
+    The device half's exchanges take a turn, which the link makes over a client
+    it holds. A test that calls one of them directly on a client of its own
+    making has the same made here.
+    """
+    return Turn(coordinator._link, client)
 
 
 def lamp_of(coordinator: GlowriumCoordinator) -> ScriptedLamp:

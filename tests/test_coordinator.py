@@ -54,7 +54,7 @@ from custom_components.glowrium.coordinator import (
     _parse_device_info,
 )
 
-from .lamp import ScriptedLamp, lamp_of
+from .lamp import ScriptedLamp, lamp_of, turn_over
 
 
 def _connected_coordinator(
@@ -501,15 +501,15 @@ async def test_state_request_abandoned_only_after_repeated_refusal(
     client = _refusing_client()
 
     for _ in range(coordinator_module._STATE_REQUEST_ATTEMPTS):
-        await coordinator._request_state(client)
+        await coordinator._request_state(turn_over(coordinator, client))
     assert (
         client.write_gatt_char.await_count == coordinator_module._STATE_REQUEST_ATTEMPTS
     )
     assert coordinator._state_request_muted is True
 
     # Later connects must not re-send it.
-    await coordinator._request_state(client)
-    await coordinator._request_state(client)
+    await coordinator._request_state(turn_over(coordinator, client))
+    await coordinator._request_state(turn_over(coordinator, client))
     assert (
         client.write_gatt_char.await_count == coordinator_module._STATE_REQUEST_ATTEMPTS
     )
@@ -533,7 +533,9 @@ async def test_one_dropped_link_does_not_abandon_the_state_request(
         side_effect=BleakError("[org.bluez.Error.Failed] Not connected")
     )
 
-    assert await coordinator._request_state(client) is False  # nothing answered
+    assert (
+        await coordinator._request_state(turn_over(coordinator, client)) is False
+    )  # nothing answered
     assert coordinator._state_request_muted is False  # and one failure means nothing
     assert coordinator._state_request_failures == 0  # it is not even counted
 
@@ -541,7 +543,7 @@ async def test_one_dropped_link_does_not_abandon_the_state_request(
     # never adds up to a silenced request.
     coordinator._state_request_failures = coordinator_module._STATE_REQUEST_ATTEMPTS - 1
     _answers(coordinator, client)
-    await coordinator._request_state(client)
+    await coordinator._request_state(turn_over(coordinator, client))
     assert coordinator._state_request_failures == 0
 
 
@@ -561,7 +563,7 @@ async def test_a_lamp_that_reports_is_asked_and_never_read(hass: HomeAssistant) 
     asked = _answers(coordinator, client, {KEY_POWER: True, KEY_BRIGHTNESS: 70})
 
     async with asyncio.timeout(1):  # the answer is there when the write returns
-        assert await coordinator._request_state(client) is True
+        assert await coordinator._request_state(turn_over(coordinator, client)) is True
 
     asked.assert_awaited_once_with(NOTIFY_UUID, bytes(STATE_KEYS), response=True)
     client.read_gatt_char.assert_not_awaited()
@@ -616,7 +618,7 @@ async def test_partial_read_still_sends_the_request(hass: HomeAssistant) -> None
     client.read_gatt_char = AsyncMock(side_effect=_read)
     client.write_gatt_char = AsyncMock(side_effect=_refuse)
 
-    await coordinator._request_state(client)
+    await coordinator._request_state(turn_over(coordinator, client))
 
     # Read before it is asked again: it was reported of a G8 that the refused
     # request takes the link with it, and then there is nothing left to read.
@@ -640,8 +642,10 @@ async def test_read_covering_every_key_skips_the_request(hass: HomeAssistant) ->
         return_value=bytearray(cbor.encode(dict.fromkeys(STATE_KEYS, 0)))
     )
 
-    await coordinator._request_state(client)
-    await coordinator._request_state(client)  # nor on the next connect
+    await coordinator._request_state(turn_over(coordinator, client))
+    await coordinator._request_state(
+        turn_over(coordinator, client)
+    )  # nor on the next connect
 
     assert client.read_gatt_char.await_count == 2
     client.write_gatt_char.assert_not_awaited()
@@ -656,7 +660,7 @@ async def test_falls_back_to_request_when_read_fails(hass: HomeAssistant) -> Non
     client.read_gatt_char = AsyncMock(side_effect=BleakError("not readable"))
     client.write_gatt_char = AsyncMock(side_effect=BleakError("rejected"))
 
-    await coordinator._request_state(client)
+    await coordinator._request_state(turn_over(coordinator, client))
     assert client.write_gatt_char.await_count == 1
     client.write_gatt_char.assert_awaited_with(
         NOTIFY_UUID, bytes(STATE_KEYS), response=True
@@ -673,7 +677,7 @@ async def test_a_refused_request_falls_back_to_the_read(hass: HomeAssistant) -> 
     coordinator = GlowriumCoordinator(hass, "AA:BB:CC:DD:EE:FF", "Glowrium-G8")
     client = _refusing_client()
 
-    assert await coordinator._request_state(client) is True
+    assert await coordinator._request_state(turn_over(coordinator, client)) is True
 
     client.write_gatt_char.assert_awaited_once()  # asked first
     client.read_gatt_char.assert_awaited_once_with(NOTIFY_UUID)  # then read
@@ -700,7 +704,7 @@ async def test_a_lamp_that_acknowledges_and_says_nothing_is_read(
     )
 
     async with asyncio.timeout(1):
-        assert await coordinator._request_state(client) is True
+        assert await coordinator._request_state(turn_over(coordinator, client)) is True
 
     client.read_gatt_char.assert_awaited_once_with(NOTIFY_UUID)
     assert coordinator.state[KEY_POWER] is True
@@ -709,7 +713,7 @@ async def test_a_lamp_that_acknowledges_and_says_nothing_is_read(
     # link answered, so it is not dropped as one that answers nothing.
     client.read_gatt_char = AsyncMock(side_effect=BleakError("unreadable"))
     async with asyncio.timeout(1):
-        assert await coordinator._request_state(client) is True
+        assert await coordinator._request_state(turn_over(coordinator, client)) is True
 
 
 async def test_a_report_from_before_the_request_is_not_its_answer(
@@ -732,7 +736,7 @@ async def test_a_report_from_before_the_request_is_not_its_answer(
     everything = bytearray(cbor.encode(dict.fromkeys(STATE_KEYS, 0)))
     coordinator._on_notify(None, everything)  # before the request went out
 
-    await coordinator._request_state(client)
+    await coordinator._request_state(turn_over(coordinator, client))
 
     client.read_gatt_char.assert_awaited_once_with(NOTIFY_UUID)
 
@@ -765,7 +769,7 @@ async def test_an_answer_in_two_notifications_is_waited_for(
 
     client.write_gatt_char = AsyncMock(side_effect=_write)
 
-    assert await coordinator._request_state(client) is True
+    assert await coordinator._request_state(turn_over(coordinator, client)) is True
 
     assert coordinator.state[second[-1]] == 2  # it waited for the second one
     client.read_gatt_char.assert_not_awaited()
@@ -787,7 +791,7 @@ async def test_a_partial_answer_is_not_topped_up_by_a_read(
     _answers(coordinator, client, {KEY_POWER: True}, only=(KEY_POWER, KEY_BRIGHTNESS))
 
     async with asyncio.timeout(1):
-        assert await coordinator._request_state(client) is True
+        assert await coordinator._request_state(turn_over(coordinator, client)) is True
 
     assert coordinator.state[KEY_POWER] is True
     client.read_gatt_char.assert_not_awaited()
@@ -1287,7 +1291,7 @@ async def test_a_report_read_only_in_part_is_still_the_answer_to_the_request(
         return_value=bytearray(cbor.encode({KEY_POWER: False}))
     )
 
-    assert await coordinator._request_state(client) is True
+    assert await coordinator._request_state(turn_over(coordinator, client)) is True
 
     client.read_gatt_char.assert_not_awaited()
     assert coordinator.state == {KEY_POWER: True, KEY_BRIGHTNESS: 70}
@@ -1482,16 +1486,16 @@ async def test_muted_state_request_recovers_after_the_cooldown(
     client = _refusing_client()
 
     for _ in range(coordinator_module._STATE_REQUEST_ATTEMPTS):
-        await coordinator._request_state(client)
+        await coordinator._request_state(turn_over(coordinator, client))
     assert coordinator._state_request_muted is True
 
     sent = client.write_gatt_char.await_count
-    await coordinator._request_state(client)
+    await coordinator._request_state(turn_over(coordinator, client))
     assert client.write_gatt_char.await_count == sent  # silent while muted
 
     await asyncio.sleep(0.06)
     assert coordinator._state_request_muted is False
-    await coordinator._request_state(client)
+    await coordinator._request_state(turn_over(coordinator, client))
     assert client.write_gatt_char.await_count == sent + 1  # and asks again
 
 
@@ -2731,7 +2735,7 @@ async def test_a_dead_link_never_counts_as_a_refusal(hass: HomeAssistant) -> Non
     client.write_gatt_char = AsyncMock(side_effect=BleakError("Not connected"))
 
     for _ in range(coordinator_module._STATE_REQUEST_ATTEMPTS * 3):
-        await coordinator._request_state(client)
+        await coordinator._request_state(turn_over(coordinator, client))
 
     assert coordinator._state_request_muted is False
     assert coordinator._state_request_failures == 0
@@ -2751,17 +2755,17 @@ async def test_a_model_that_keeps_refusing_is_left_alone_for_the_session(
     client = _refusing_client()
 
     for _ in range(coordinator_module._STATE_REQUEST_ATTEMPTS):
-        await coordinator._request_state(client)
+        await coordinator._request_state(turn_over(coordinator, client))
     assert coordinator._state_request_muted is True
 
     await asyncio.sleep(0.06)  # the cooldown expires
     assert coordinator._state_request_muted is False
     for _ in range(coordinator_module._STATE_REQUEST_ATTEMPTS):
-        await coordinator._request_state(client)
+        await coordinator._request_state(turn_over(coordinator, client))
 
     sent = client.write_gatt_char.await_count
     await asyncio.sleep(0.06)
-    await coordinator._request_state(client)
+    await coordinator._request_state(turn_over(coordinator, client))
     assert client.write_gatt_char.await_count == sent  # never again this session
 
 
@@ -2774,7 +2778,7 @@ async def _the_three_warnings(
         coordinator._ingest(_PARTLY_READABLE)
         client = _refusing_client()
         for _ in range(coordinator_module._STATE_REQUEST_ATTEMPTS):
-            await coordinator._request_state(client)
+            await coordinator._request_state(turn_over(coordinator, client))
     said = [r.getMessage() for r in caplog.records if r.levelno == logging.WARNING]
     assert len(said) == 3
     assert "trailing bytes" in said[0]
@@ -2878,7 +2882,7 @@ async def test_a_link_that_dies_after_the_read_is_not_a_refusal(
 
     for _ in range(coordinator_module._STATE_REQUEST_ATTEMPTS * 2):
         client.is_connected = True
-        await coordinator._request_state(client)
+        await coordinator._request_state(turn_over(coordinator, client))
 
     assert coordinator._state_request_muted is False
     assert coordinator._state_request_failures == 0
@@ -2917,7 +2921,7 @@ async def test_only_an_application_level_refusal_silences_the_request(
         client.write_gatt_char = AsyncMock(side_effect=BleakError(message))
 
         for _ in range(coordinator_module._STATE_REQUEST_ATTEMPTS):
-            await coordinator._request_state(client)
+            await coordinator._request_state(turn_over(coordinator, client))
 
         assert coordinator._state_request_muted is should_mute, message
 
@@ -2976,7 +2980,7 @@ async def test_a_protocol_error_is_judged_by_its_code_and_not_by_its_wording(
     client.write_gatt_char = AsyncMock(side_effect=error)
 
     for _ in range(coordinator_module._STATE_REQUEST_ATTEMPTS):
-        await coordinator._request_state(client)
+        await coordinator._request_state(turn_over(coordinator, client))
 
     assert coordinator._state_request_muted is is_a_refusal
 
@@ -2994,11 +2998,11 @@ async def test_the_request_is_repeated_on_every_connect(hass: HomeAssistant) -> 
     asked = _answers(coordinator, client)
     client.read_gatt_char = AsyncMock()
 
-    await coordinator._request_state(client)
+    await coordinator._request_state(turn_over(coordinator, client))
     assert asked.await_count == 1
     assert all(key in coordinator.state for key in STATE_KEYS)  # all known now
 
-    await coordinator._request_state(client)
+    await coordinator._request_state(turn_over(coordinator, client))
     assert asked.await_count == 2, "a later connect must ask again"
     client.read_gatt_char.assert_not_awaited()
 
@@ -3484,7 +3488,7 @@ async def test_reading_the_device_info_does_not_need_home_assistant() -> None:
         return_value=bytearray(b"pkey:Glowrium-C051;version:4;;")
     )
 
-    await coordinator._async_read_device_info(client)
+    await coordinator._async_read_device_info(turn_over(coordinator, client))
 
     assert coordinator.model_id == "Glowrium-C051"
     assert coordinator.sw_version == "4"
@@ -3873,7 +3877,10 @@ async def test_an_exchange_that_fails_without_a_word_is_called_by_its_name(
     caplog.set_level(logging.DEBUG)
 
     client.read_gatt_char = AsyncMock(side_effect=EOFError())
-    assert await coordinator._async_read_state(client) == (False, frozenset())
+    assert await coordinator._async_read_state(turn_over(coordinator, client)) == (
+        False,
+        frozenset(),
+    )
     assert "AA:BB:CC:DD:EE:FF state read failed: EOFError()" in caplog.text
 
     coordinator._request_state = AsyncMock(side_effect=TimeoutError())
