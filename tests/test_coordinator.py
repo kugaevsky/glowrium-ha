@@ -104,6 +104,13 @@ def _refusing(lamp: ScriptedLamp) -> None:
     lamp.readable(NOTIFY_UUID, cbor.encode({KEY_POWER: True}))
 
 
+# What a call receives when its client's bus is closed underneath it. Run against
+# dbus-fast with a bus that is shut while a call is waiting for its reply: the
+# call ends in EOFError, and with the socket gone, in "Bad file descriptor".
+# Neither is a BleakError, and bleak passes both on as they are.
+_BUS_CLOSED = (EOFError(), OSError(9, "Bad file descriptor"))
+
+
 @pytest.mark.parametrize(
     ("switch", "value", "frame"),
     [
@@ -565,34 +572,76 @@ async def test_model_resolution(hass: HomeAssistant) -> None:
     assert "sun_sync" in coordinator.model.lighting_modes
 
 
-async def test_write_retries_once_after_a_dropped_link(hass: HomeAssistant) -> None:
-    """A write that fails once reconnects and retries before succeeding."""
-    coordinator, lamp = _at_a_lamp(hass)
-    lamp.fails_writes(BleakError("dropped"), times=1)
+@pytest.mark.parametrize("behind_it", ["Home Assistant", "nothing: the bench"])
+@pytest.mark.parametrize(
+    "failure",
+    [BleakError("dropped"), *_BUS_CLOSED],
+    ids=["dropped", "eof", "bad-fd"],
+)
+async def test_write_retries_once_after_a_dropped_link(
+    hass: HomeAssistant, behind_it: str, failure: Exception
+) -> None:
+    """A write that fails once hangs up its link, reconnects, retries and succeeds.
+
+    When the lamp drops the link, the disconnected callback hangs the client
+    up at once, which closes its D-Bus connection. A write still waiting for
+    its reply on that connection does not get the BleakError a lost link
+    usually produces: it gets whatever the bus raised - EOFError, and with
+    the socket gone "Bad file descriptor". Caught as nothing in particular,
+    that went straight out of the command: no retry, and a bare EOFError
+    where the user should read "cannot connect". Without Home Assistant
+    behind the coordinator too: a command on a link that drops under it is
+    what tools/bench.py exists to exercise, and the retry waits for the
+    hang-up before it dials again (0.2.1 scheduled that hang-up on hass).
+    """
+    with_hass = behind_it == "Home Assistant"
+    coordinator, lamp, first = await _holding_a_link(
+        hass if with_hass else None, "Glowrium-G7" if with_hass else "bench"
+    )
+    lamp.fails_writes(failure, times=1)
 
     await coordinator.async_set_power(True)
+
     assert len(lamp.written) == 2  # failed, then retried
     assert lamp.dials == 2  # a reconnect happened before the retry
     assert coordinator.state[KEY_POWER] is True
+    assert first.hung_up == 1
+    assert link_of(coordinator).client is lamp.links[1]
 
 
+@pytest.mark.parametrize(
+    ("failure", "said"),
+    [
+        pytest.param(BleakError("Not connected"), "Not connected", id="a lost link"),
+        pytest.param(EOFError(), "EOFError()", id="eof"),
+        pytest.param(
+            OSError(9, "Bad file descriptor"),
+            "[Errno 9] Bad file descriptor",
+            id="bad-fd",
+        ),
+    ],
+)
 async def test_write_raises_after_two_failures(
-    hass: HomeAssistant, monkeypatch: pytest.MonkeyPatch
+    hass: HomeAssistant, monkeypatch: pytest.MonkeyPatch, failure: Exception, said: str
 ) -> None:
-    """A write that keeps failing is reported as a readable HA error."""
+    """A write that keeps failing is reported as a readable HA error.
+
+    Silence is not success: with no confirmation the error still surfaces,
+    in the user's words - and when the retry meets the same bus closed under
+    it as the first try did, the same words. The error is kept: as what the
+    link made of it, and under that as the library raised it.
+    """
     coordinator, lamp = _at_a_lamp(hass)
     # Nothing will confirm this write, so do not sit out the whole grace window.
     monkeypatch.setattr(link_module, "_CONFIRM_TIMEOUT", 0.01)
-    lamp.fails_writes(BleakError("down"))
+    lamp.fails_writes(failure)
 
     with pytest.raises(HomeAssistantError) as err:
         await coordinator.async_set_power(True)
     assert err.value.translation_key == "cannot_connect"
-    # The BLE error is kept: as what the link made of it, and under that as
-    # the library raised it.
     assert isinstance(err.value.__cause__, link_module.LinkLostError)
-    assert str(err.value.__cause__) == "down"
-    assert isinstance(err.value.__cause__.__cause__, BleakError)
+    assert str(err.value.__cause__) == said
+    assert isinstance(err.value.__cause__.__cause__, type(failure))
     assert len(lamp.written) == 2  # tried twice, then gave up
 
 
@@ -944,48 +993,36 @@ async def test_a_ramp_that_was_refused_is_not_remembered(
     ]
 
 
+@pytest.mark.parametrize(
+    "held_up_by", ["a dial that never connects", "the lock a background connect holds"]
+)
 async def test_command_gives_up_instead_of_hanging(
-    hass: HomeAssistant, monkeypatch: pytest.MonkeyPatch
+    hass: HomeAssistant, monkeypatch: pytest.MonkeyPatch, held_up_by: str
 ) -> None:
     """An unreachable device fails the command promptly, not after minutes.
 
     bleak's own retries can keep a connect attempt alive for minutes, which
-    made a button in the UI look like it had hung; the command budget caps it.
-    """
-    coordinator, lamp = _at_a_lamp(hass)
-    monkeypatch.setattr(link_module, "_COMMAND_TIMEOUT", 0.05)
-    monkeypatch.setattr(link_module, "_CONFIRM_TIMEOUT", 0.01)
-
-    async def _never_connects(*_a: object, **_kw: object) -> None:
-        await asyncio.Event().wait()
-
-    lamp.dials_through(_never_connects)
-    with pytest.raises(HomeAssistantError) as err:
-        await coordinator.async_set_power(True)
-    assert err.value.translation_key == "cannot_connect"
-
-
-async def test_command_budget_covers_waiting_for_the_lock(
-    hass: HomeAssistant, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """A command blocked by a background reconnect gives up too.
-
-    The reconnect poll holds ``_lock`` while it retries, so the budget has to
+    made a button in the UI look like it had hung; the command budget caps
+    it. A command blocked by a background reconnect gives up too: the
+    reconnect holds the link's lock while it dials, so the budget has to
     cover the wait for the lock, not just the write itself.
     """
     coordinator, lamp = _at_a_lamp(hass)
     monkeypatch.setattr(link_module, "_COMMAND_TIMEOUT", 0.05)
     monkeypatch.setattr(link_module, "_CONFIRM_TIMEOUT", 0.01)
-    lamp.dials_when(asyncio.Event())  # a background connect holds the lock, dialling
-    connecting = asyncio.create_task(link_of(coordinator).connect())
-    await asyncio.sleep(0)
+    lamp.dials_when(asyncio.Event())  # a dial that never completes
+    connecting = None
+    if held_up_by == "the lock a background connect holds":
+        connecting = asyncio.create_task(link_of(coordinator).connect())
+        await asyncio.sleep(0)  # it holds the lock, dialling
     try:
         with pytest.raises(HomeAssistantError) as err:
             await coordinator.async_set_power(True)
     finally:
-        connecting.cancel()
-        with contextlib.suppress(asyncio.CancelledError):
-            await connecting
+        if connecting is not None:
+            connecting.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await connecting
     assert err.value.translation_key == "cannot_connect"
 
 
@@ -1364,16 +1401,21 @@ async def test_setup_is_not_held_by_a_connect_that_never_finishes(
 
 
 async def test_lost_acknowledgement_is_not_reported_as_failure(
-    hass: HomeAssistant,
+    hass: HomeAssistant, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """A write the lamp acted on must not be reported as having failed.
+    """A write the lamp acted on is not reported as having failed, nor waited out.
 
     Observed on a real G7 at RSSI -88: both attempts of light.turn_on raised
-    "GATT Protocol Error: Unlikely Error", yet the lamp lit and notified its new
-    state 32 ms BEFORE the error surfaced. The user saw a failure toast, a lit
-    lamp, and an entity reading `on`.
+    "GATT Protocol Error: Unlikely Error", yet the lamp lit and notified its
+    new state 32 ms BEFORE the error surfaced. The user saw a failure toast,
+    a lit lamp, and an entity reading `on`. And the wait for the lamp's word
+    ends with the word: the ceiling is for a lamp that says nothing, and one
+    that reported what the command set before the write had even failed is
+    believed at once - a wait that always ran its full length was proposed
+    with the split (#21), and is not made unless it is named there first.
     """
     coordinator, lamp = _at_a_lamp(hass)
+    monkeypatch.setattr(link_module, "_CONFIRM_TIMEOUT", 30)
     # The device receives the write and reports the new state; only the
     # acknowledgement is lost, so bleak still raises.
     lamp.fails_writes(
@@ -1381,21 +1423,9 @@ async def test_lost_acknowledgement_is_not_reported_as_failure(
         saying=lambda _frame: cbor.encode({KEY_POWER: True}),
     )
 
-    await coordinator.async_set_power(True)  # must not raise
+    async with asyncio.timeout(2):
+        await coordinator.async_set_power(True)  # must not raise, and not wait
     assert coordinator.state[KEY_POWER] is True
-
-
-async def test_a_command_that_truly_failed_still_raises(
-    hass: HomeAssistant, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """Silence is not success: with no confirmation the error still surfaces."""
-    coordinator, lamp = _at_a_lamp(hass)
-    monkeypatch.setattr(link_module, "_CONFIRM_TIMEOUT", 0.05)
-    lamp.fails_writes(BleakError("Not connected"))
-
-    with pytest.raises(HomeAssistantError) as err:
-        await coordinator.async_set_power(True)
-    assert err.value.translation_key == "cannot_connect"
 
 
 def _the_mode_and_the_ramp(frame: bytes) -> bytes:
@@ -2012,21 +2042,6 @@ async def test_stopping_tears_everything_down(hass: HomeAssistant) -> None:
     assert link_of(coordinator).diagnostics()["connected"] is False
 
 
-async def test_a_dropped_link_is_forgotten(hass: HomeAssistant) -> None:
-    """The disconnect callback must clear the client, not just log.
-
-    Everything downstream asks `_is_connected`, which trusts this: a stale
-    client left in place looks connected, so the poll never reconnects and
-    every command writes into a dead handle.
-    """
-    coordinator, _lamp, link = await _holding_a_link(hass)
-    assert link_of(coordinator).diagnostics()["connected"] is True
-
-    link.lose()
-
-    assert link_of(coordinator).diagnostics()["connected"] is False
-
-
 async def test_a_write_on_a_turn_whose_link_is_gone_is_refused_not_dropped(
     hass: HomeAssistant,
 ) -> None:
@@ -2383,65 +2398,33 @@ async def test_the_remembered_ramp_survives_the_device_reporting(
     assert sent[KEY_RAMP] == bytes.fromhex("1518")  # and it is what gets re-applied
 
 
+@pytest.mark.parametrize("filled", ["by hand", "by a report, some time ago"])
 async def test_a_stale_mirror_does_not_vouch_for_a_failed_write(
-    hass: HomeAssistant, monkeypatch: pytest.MonkeyPatch
+    hass: HomeAssistant, monkeypatch: pytest.MonkeyPatch, filled: str
 ) -> None:
     """Confirmation needs a fresh report, not a matching one.
 
-    The mirror is never invalidated - a disconnect clears the client, not the
+    The mirror is never invalidated - a lost link clears the client, not the
     state - so it can be hours old. Asking a lamp to turn off while the stale
-    mirror already says `off` would otherwise report success for a write that
-    failed, leaving the lamp on and removing the only signal the user had that
-    it is unreachable.
+    mirror already says `off` would otherwise report success for a write
+    that failed, leaving the lamp on and removing the only signal the user
+    had that it is unreachable. The same mirror filled the way it is in
+    life: by the lamp, which reported "off" some time ago. That report is
+    the only one there is of what the command sets, and it is older than the
+    command.
     """
     coordinator, lamp = _at_a_lamp(hass)
     monkeypatch.setattr(link_module, "_CONFIRM_TIMEOUT", 0.05)
-    coordinator.state[KEY_POWER] = False  # what the lamp said, some time ago
+    if filled == "by hand":
+        coordinator.state[KEY_POWER] = False  # what the lamp said, some time ago
+    else:
+        coordinator._ingest(cbor.encode({KEY_POWER: False}))  # some time ago
     lamp.fails_writes(BleakError("Not connected"))
 
     with pytest.raises(HomeAssistantError):
         await coordinator.async_set_power(False)
     # A command asks for a bare link: nothing but the command was written.
     assert {uuid for uuid, _frame in lamp.written} == {WRITE_UUID}
-
-
-async def test_a_report_from_before_the_command_does_not_vouch_for_it(
-    hass: HomeAssistant, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """What the lamp said before the command was taken up is not about it.
-
-    The same stale mirror, filled the way it is in life: by the lamp, which
-    reported "off" some time ago. That report is the only one there is of
-    what the command sets, and it is older than the command.
-    """
-    coordinator, lamp = _at_a_lamp(hass)
-    monkeypatch.setattr(link_module, "_CONFIRM_TIMEOUT", 0.05)
-    coordinator._ingest(cbor.encode({KEY_POWER: False}))  # some time ago
-    lamp.fails_writes(BleakError("Not connected"))
-
-    with pytest.raises(HomeAssistantError):
-        await coordinator.async_set_power(False)
-
-
-async def test_a_command_the_lamp_vouches_for_does_not_wait_out_the_ceiling(
-    hass: HomeAssistant, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """The wait for the lamp's word ends with the word.
-
-    The ceiling is for a lamp that says nothing. One that reported what the
-    command set before the write had even failed is believed at once - a
-    wait that always ran its full length was proposed with the split (#21),
-    and is not made unless it is named there first.
-    """
-    coordinator, lamp = _at_a_lamp(hass)
-    monkeypatch.setattr(link_module, "_CONFIRM_TIMEOUT", 30)
-    lamp.fails_writes(  # acted on, and not acknowledged
-        BleakError("Unlikely Error"),
-        saying=lambda _frame: cbor.encode({KEY_POWER: True}),
-    )
-
-    async with asyncio.timeout(2):
-        await coordinator.async_set_power(True)  # must not raise, and not wait
 
 
 async def test_what_else_was_written_meanwhile_vouches_for_no_command(
@@ -2562,71 +2545,114 @@ async def test_a_report_vouches_only_for_what_it_carries(
 async def test_a_command_that_never_reached_the_wire_fails_at_once(
     hass: HomeAssistant, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """An out-of-range lamp fails immediately; there is nothing to wait for.
+    """A lamp the scanner has lost fails the command at once, and as out of range.
 
-    The dial says so without any I/O, so no byte ever left. Waiting
-    the grace window for a notification that cannot arrive - there is no link -
+    The dial says so without any I/O, so no byte ever left. Waiting the
+    grace window for a notification that cannot arrive - there is no link -
     added two seconds to every command an automation sends to a lamp that is
-    off or out of range.
+    off or out of range. Of the reasons a command gets no link, this one is
+    about range: the scanner no longer has the lamp, which is the radio's
+    doing, so the message about range and a proxy is the right one for it,
+    and the command goes round for its second attempt as it always did - the
+    lamp may be heard again by then.
     """
     coordinator, lamp = _at_a_lamp(hass)
-    lamp.out_of_range()
+    lamp.out_of_range()  # nothing held, and the lamp is not in the list
     coordinator.state[KEY_POWER] = True  # and the mirror happens to agree
     monkeypatch.setattr(link_module, "_CONFIRM_TIMEOUT", 30.0)
 
     async with asyncio.timeout(1):  # nowhere near the grace window
-        with pytest.raises(HomeAssistantError):
+        with pytest.raises(HomeAssistantError) as err:
             await coordinator.async_set_power(True)
+    await hass.async_block_till_done()
+
+    assert err.value.translation_key == "cannot_connect"
+    assert err.value.translation_placeholders == {"name": "Glowrium-G7"}
+    assert lamp.dials == 2
 
 
+@pytest.mark.parametrize(
+    "stranger", ["one an earlier attempt gave up on", "one still being connected"]
+)
 async def test_an_old_client_disconnecting_does_not_drop_the_live_one(
-    hass: HomeAssistant,
+    hass: HomeAssistant, stranger: str
 ) -> None:
-    """The disconnect callback must check WHICH client it is being told about.
+    """The callback for a lost link checks WHICH client it is being told about.
 
     A failed write drops its client and the retry establishes another. When
     the OS later notices the first one is gone, bleak fires that client's
-    callback - and clearing `_client` unconditionally there discards the live
-    connection instead. `_is_connected` then reads False, so the poll opens
-    yet another link to a lamp with a single slot, and every attempt fails
-    with "out of connection slots" while the working connection sits there
-    unreferenced until the lamp's own churn drops it.
-    """
-    coordinator, lamp, _first = await _holding_a_link(hass)
-    lamp.fails_writes(BleakError("dropped"), times=1)
-    await coordinator.async_set_power(True)  # retried, on a link of its own
-    superseded, live = lamp.links  # the client an earlier attempt gave up on
-    assert superseded.hung_up == 1
+    callback - and letting go of the held client unconditionally there
+    discarded the live connection instead. The link then read as not
+    connected, so the poll opened yet another link to a lamp with a single
+    slot, and every attempt failed with "out of connection slots" while the
+    working connection sat there unreferenced until the lamp's own churn
+    dropped it.
 
-    link_of(coordinator).on_lost(superseded)
+    And only the client the link holds is hung up from the callback. The
+    first build of this fix hung up whichever client the callback named, as
+    a second chance for a hang-up cut short by its ceiling. On the real lamp
+    it lasted minutes: bleak reports a link lost in the middle of a connect
+    to the same callback, while establish_connection is still working on
+    that client. Disconnecting it there closed the bus underneath bleak's
+    own clean-up - "Failed to cancel connection ... Bad file descriptor" on
+    every such drop, and a retry that died on a bus that was no longer
+    there.
+    """
+    coordinator, lamp, held = await _holding_a_link(hass)
+    if stranger == "one an earlier attempt gave up on":
+        lamp.fails_writes(BleakError("dropped"), times=1)
+        await coordinator.async_set_power(True)  # retried, on a link of its own
+        other, live = lamp.links  # the client an earlier attempt gave up on
+        assert other.hung_up == 1
+    else:
+        live = held
+        other = await lamp.dial(MagicMock())  # still inside establish_connection
+    hang_ups = other.hang_ups
+
+    link_of(coordinator).on_lost(other)
+    await hass.async_block_till_done()
 
     assert link_of(coordinator).client is live
     assert link_of(coordinator).diagnostics()["connected"] is True
     assert live.hang_ups == 0
-    assert superseded.hang_ups == 1  # and not hung up a second time
+    assert other.hang_ups == hang_ups  # not hung up from the callback, nor again
 
     # The live one going down is still heard.
     live.lose()
     assert link_of(coordinator).diagnostics()["connected"] is False
 
 
+@pytest.mark.parametrize("hang_up", ["at once", "slowly, past the deadline"])
 async def test_a_connect_that_fails_half_way_leaves_no_link_behind(
-    hass: HomeAssistant,
+    hass: HomeAssistant, monkeypatch: pytest.MonkeyPatch, hang_up: str
 ) -> None:
     """A connect that cannot finish must hang up, not abandon the link.
 
     The client is established before notifications are subscribed. If that
-    subscription fails - or the connect is cancelled by its deadline at that
-    moment - walking away leaves a connected client holding the lamp's single
-    slot with nothing referencing it: every later attempt then fails for want
-    of a slot until the lamp's own churn drops it.
+    subscription fails, walking away leaves a connected client holding the
+    lamp's single slot with nothing referencing it: every later attempt then
+    fails for want of a slot until the lamp's own churn drops it. And the
+    client of a failed subscription is not disconnected on borrowed time: it
+    was disconnected inline, inside the deadline of whatever was connecting,
+    and a deadline that ran out during that disconnect cancelled it part-way
+    - the bus left open, by the route the hang-up was written to close. The
+    connect still waits for the hang-up, so that a retry does not dial over
+    it; what the deadline ends now is that wait.
     """
     coordinator, lamp = _at_a_lamp(hass)
+    monkeypatch.setattr(link_module, "_CONNECT_TIMEOUT", 0.05)
     lamp.subscription_fails(BleakError("subscribe failed"))
+    released = asyncio.Event()
+    if hang_up != "at once":
+        lamp.hangs_up_when(released)
 
-    with pytest.raises(BleakError):
-        await link_of(coordinator).connect()
+    with pytest.raises(BleakError if hang_up == "at once" else TimeoutError):
+        await link_of(coordinator).connect()  # the deadline, while it waits
 
+    if hang_up != "at once":
+        assert not lamp.links[0].hung_up
+        released.set()
+        await hass.async_block_till_done()
     assert lamp.links[0].hung_up == 1
     # And nothing is left claiming to be live.
     assert link_of(coordinator).diagnostics()["connected"] is False
@@ -2781,78 +2807,67 @@ async def test_stopping_hangs_up_once_not_twice(
     assert link_of(coordinator).diagnostics()["connected"] is False
 
 
-async def test_a_prime_that_got_nothing_does_not_count_as_primed(
-    hass: HomeAssistant,
+@pytest.mark.parametrize("path", ["a background connect", "the poll"])
+@pytest.mark.parametrize(
+    "failure",
+    [BleakError("Not connected"), *_BUS_CLOSED],
+    ids=["not connected", "eof", "bad-fd"],
+)
+async def test_a_link_that_answers_nothing_is_dropped(
+    hass: HomeAssistant, path: str, failure: Exception
 ) -> None:
-    """Priming only counts when the lamp actually answered.
+    """A link that cannot even be read is not a working link, and is hung up.
 
-    Marking the link primed regardless meant one failed attempt stopped the
-    poll ever trying again. Seen on real hardware: establish_connection
-    returned a client whose every operation answered "Not connected" while
-    still reporting itself connected, so the poll saw no reason to reconnect
-    and no reason to prime, and the entities sat at one of fourteen
-    indefinitely.
+    bleak can report a client as connected while BlueZ answers "Not
+    connected" to everything - seen on real hardware: establish_connection
+    returned a client whose every operation answered so while still
+    reporting itself connected. Keeping it means the link reads as
+    connected, so the poll never reconnects and the coordinator is wedged
+    until the device's own churn; marking it primed regardless meant one
+    failed attempt stopped the poll ever trying again, and the entities sat
+    at one of fourteen indefinitely. The link can go under the state request
+    or under the read that follows it, and the bus closing under either is
+    the same dead link, not an exception with a traceback.
+
+    So it is dropped where it is detected - by the poll's priming of a link
+    a command took, or by the connect itself, not a poll tick later:
+    observed live, a connect that kept such a client left a command in the
+    next thirty seconds writing into it before failing and reconnecting.
+    And forgetting a client is not disconnecting it: about two and a half
+    hours after each start the system bus refused every new connection from
+    Home Assistant's user, Bluetooth included, because bleak opens a D-Bus
+    connection per client and closes it only in ``disconnect()``, and every
+    client let go of by clearing the reference kept its connection until
+    the bus's limit of 256 per user was reached. The hang-up is not waited
+    for: both paths run under a deadline and hold the lock, and waiting
+    there would keep the lock for as long as BlueZ takes to confirm and let
+    the deadline cancel the disconnect part-way - the leak again, by the
+    route the fix closes for commands.
     """
-    coordinator, lamp, _link = await _holding_a_link(hass)
-    lamp.fails_writes(BleakError("Not connected"))
+    if path == "the poll":
+        coordinator, lamp, _link = await _holding_a_link(hass)
+    else:
+        coordinator, lamp = _at_a_lamp(hass)
+    lamp.fails_writes(failure)
+    lamp.fails_reads(failure)  # and there is nothing to read
+    released = asyncio.Event()
+    lamp.hangs_up_when(released)  # a real disconnect is not instant either
 
-    await link_of(coordinator).prime_held()
+    async with asyncio.timeout(1):  # returns with the hang-up pending
+        if path == "the poll":
+            await link_of(coordinator).prime_held()
+        else:
+            await link_of(coordinator).connect()
 
+    link = lamp.links[0]
     assert link_of(coordinator).diagnostics()["primed"] is False
-
-
-async def test_a_link_that_answers_nothing_is_dropped(hass: HomeAssistant) -> None:
-    """A link that cannot even be read is not a working link.
-
-    bleak can report a client as connected while BlueZ answers "Not connected"
-    to everything. Keeping it means `_is_connected` stays True, so the poll
-    never reconnects and the coordinator is wedged until the device's own
-    churn. Dropping it lets the poll do its job.
-    """
-    coordinator, lamp, link = await _holding_a_link(hass)
-    lamp.fails_writes(BleakError("Not connected"))
-
-    await link_of(coordinator).prime_held()
-
-    assert link.hung_up
-    assert link_of(coordinator).diagnostics()["connected"] is False
-
-
-async def test_a_connect_whose_read_fails_is_not_primed_either(
-    hass: HomeAssistant,
-) -> None:
-    """The rule holds on the connect path too, not just when the poll primes.
-
-    A link established but never read from is the same wedged link either way;
-    marking it primed here would stop the poll going back for the properties
-    just as surely.
-    """
-    coordinator, lamp = _at_a_lamp(hass)
-    lamp.fails_writes(BleakError("Not connected"))
-
-    await link_of(coordinator).connect()
-
-    assert link_of(coordinator).diagnostics()["primed"] is False
-
-
-async def test_a_connect_that_cannot_be_read_is_dropped_at_once(
-    hass: HomeAssistant,
-) -> None:
-    """A dead link is dropped where it is detected, not a poll tick later.
-
-    Observed live: the connect noticed the lamp answered nothing and kept the
-    client anyway, so for the next thirty seconds `_is_connected` was True over
-    a link that served nothing - and a command in that window wrote into it
-    before failing and reconnecting. The poll rebuilds it either way; there is
-    no reason to hold it in the meantime.
-    """
-    coordinator, lamp = _at_a_lamp(hass)
-    lamp.fails_writes(BleakError("Not connected"))
-
-    await link_of(coordinator).connect()
-
-    assert lamp.links[0].hung_up
-    assert link_of(coordinator).diagnostics()["connected"] is False
+    assert link_of(coordinator).diagnostics()["connected"] is False  # let go at once
+    assert link.hang_ups == 1
+    assert not link_of(coordinator).lock.locked()
+    assert not link.hung_up
+    released.set()
+    await hass.async_block_till_done()
+    assert link.hung_up == 1
 
 
 def _a_protocol_error(
@@ -3197,68 +3212,48 @@ def _counting_connects(coordinator: GlowriumCoordinator) -> list[int]:
     return asked
 
 
-async def test_a_link_the_poll_gives_up_on_is_hung_up(hass: HomeAssistant) -> None:
-    """Forgetting a client is not disconnecting it.
-
-    Found on the real integration: the system bus refused every new connection
-    from Home Assistant's user, Bluetooth included, about two and a half hours
-    after each start. bleak opens a D-Bus connection per client and closes it
-    only in ``disconnect()``; a link that answered nothing was "dropped" by
-    clearing the reference, which closes nothing, and every client let go of
-    that way kept its connection until the bus's limit of 256 per user was
-    reached.
-    """
-    coordinator, lamp, link = await _holding_a_link(hass)
-    lamp.fails_writes(BleakError("Not connected"))  # and there is nothing to read
-
-    await link_of(coordinator).prime_held()
-    await hass.async_block_till_done()
-
-    assert link_of(coordinator).diagnostics()["connected"] is False
-    assert link.hung_up == 1
-
-
-async def test_a_connect_that_cannot_be_read_is_hung_up(hass: HomeAssistant) -> None:
-    """The same on the connect path, which is the one the poll takes every tick."""
-    coordinator, lamp = _at_a_lamp(hass)
-    lamp.fails_writes(BleakError("Not connected"))  # and there is nothing to read
-
-    await link_of(coordinator).connect()
-    await hass.async_block_till_done()
-
-    assert link_of(coordinator).diagnostics()["connected"] is False
-    assert lamp.links[0].hung_up == 1
-
-
-async def test_a_write_retry_hangs_up_before_it_dials_again(
-    hass: HomeAssistant,
+@pytest.mark.parametrize("failed", ["the write", "the subscription"])
+async def test_a_retry_dials_only_after_the_client_it_gave_up_on_is_hung_up(
+    hass: HomeAssistant, failed: str
 ) -> None:
-    """The client a write failed on is closed, and closed before the retry.
+    """The client a command failed on is closed, and closed before the retry dials.
 
-    Order matters as much as the hang-up. The lamp has one slot: a connect made
-    while the old link is still up is handed that same link, and the hang-up
-    then closes it underneath the retry.
+    Order matters as much as the hang-up. The lamp has one slot: while BlueZ
+    still shows the old link as up, a connect is handed that very link - the
+    one being closed - and the hang-up then closes it underneath the retry.
+    Hanging the client of a failed subscription up in the background lost
+    that order: the retry dialled first, which on a link that reports itself
+    connected while answering nothing means a second attempt on the link the
+    first one had just failed on.
     """
-    coordinator, lamp, first = await _holding_a_link(hass)
-    lamp.fails_writes(BleakError("dropped"), times=1)
+    if failed == "the write":
+        coordinator, lamp, _first = await _holding_a_link(hass)
+        lamp.fails_writes(BleakError("dropped"), times=1)
+    else:
+        coordinator, lamp = _at_a_lamp(hass)
+        lamp.subscription_fails(BleakError("Not connected"))
     released = asyncio.Event()
     lamp.hangs_up_when(released)  # a real disconnect is not instant either
 
     command = asyncio.create_task(coordinator.async_set_power(True))
     await asyncio.sleep(0.01)
+    first = lamp.links[0]
     assert first.hang_ups == 1  # being hung up...
     assert lamp.dials == 1  # ...and not dialled again before that is through
+    lamp.subscription_fails(None)  # the next link subscribes
     released.set()
     await command
 
     assert first.hung_up == 1
+    assert lamp.dials == 2
     second = lamp.links[1]
     assert link_of(coordinator).client is second
     assert second.hang_ups == 0  # the link that worked is kept
 
 
+@pytest.mark.parametrize("report", ["inside the failing write", "a moment after it"])
 async def test_a_failed_command_hangs_up_only_after_the_device_could_confirm(
-    hass: HomeAssistant,
+    hass: HomeAssistant, report: str
 ) -> None:
     """The last client is closed too - but not before confirmation has listened.
 
@@ -3269,12 +3264,13 @@ async def test_a_failed_command_hangs_up_only_after_the_device_could_confirm(
     reported as failed again.
 
     So the lamp here does what that window exists for. It acts on the write,
-    the acknowledgement is lost, and its report arrives a moment after the
-    failure - on the link the write failed on, and only if that link is still
-    up: a client that has been hung up delivers nothing.
+    the acknowledgement is lost, and its report arrives - with the failure,
+    or a moment after it - on the link the write failed on, and only if that
+    link is still up: a client that has been hung up delivers nothing. And
+    being told the command worked is no reason to keep the leak: both
+    clients are hung up once it has.
     """
     coordinator, lamp, first = await _holding_a_link(hass)
-    lamp.fails_writes(BleakError("GATT Protocol Error: Unlikely Error"))
     still_up_when_reporting: list[bool] = []
 
     def _report_if_still_connected() -> None:
@@ -3282,76 +3278,69 @@ async def test_a_failed_command_hangs_up_only_after_the_device_could_confirm(
         still_up_when_reporting.append(second.hang_ups == 0)
         lamp.say(cbor.encode({KEY_POWER: True}))  # nothing over a hung-up link
 
-    # Acted on, and not acknowledged: the lamp's report comes a moment after.
-    hass.loop.call_later(0.05, _report_if_still_connected)
+    if report == "inside the failing write":
+        lamp.fails_writes(
+            BleakError("GATT Protocol Error: Unlikely Error"),
+            saying=lambda _frame: cbor.encode({KEY_POWER: True}),
+        )
+    else:
+        lamp.fails_writes(BleakError("GATT Protocol Error: Unlikely Error"))
+        # Acted on, and not acknowledged: the lamp's report comes a moment after.
+        hass.loop.call_later(0.05, _report_if_still_connected)
 
-    await coordinator.async_set_power(True)  # confirmed by the late report
+    await coordinator.async_set_power(True)  # confirmed by the report
     await hass.async_block_till_done()
 
-    assert still_up_when_reporting == [True]  # up while the device could answer
+    if report == "a moment after it":
+        assert still_up_when_reporting == [True]  # up while the device could answer
     assert coordinator.state[KEY_POWER] is True
     assert first.hung_up == 1
     assert lamp.links[1].hung_up == 1  # ...and hung up once it had
     assert link_of(coordinator).diagnostics()["connected"] is False
 
 
-async def test_a_confirmed_command_still_hangs_up_the_client_it_gave_up_on(
-    hass: HomeAssistant,
+@pytest.mark.parametrize("behind_it", ["Home Assistant", "nothing: the bench"])
+async def test_a_link_the_lamp_dropped_is_hung_up_as_well(
+    hass: HomeAssistant, behind_it: str
 ) -> None:
-    """Being told the command worked is no reason to keep the leak."""
-    coordinator, lamp, first = await _holding_a_link(hass)
-    lamp.fails_writes(
-        BleakError("GATT Protocol Error: Unlikely Error"),
-        saying=lambda _frame: cbor.encode({KEY_POWER: True}),
-    )
+    """The link going down by itself lets go of the client, and closes it.
 
-    await coordinator.async_set_power(True)  # confirmed by the report
-    await hass.async_block_till_done()
+    The callback for a lost link lets go of the client there and then:
+    everything downstream goes by the link's ``connected`` (read here
+    through ``link_of(coordinator).diagnostics()``), and a stale client left
+    in place would read as connected, so the poll would never reconnect and
+    every command would write into a dead handle. And bleak leaves the
+    client's D-Bus connection open after the device disconnects; only
+    ``disconnect()`` releases it. This was where the quota actually went: on
+    the lamp it was found on, at the edge of range, the link came up on
+    every poll tick and the lamp dropped it two to ten seconds later - 678
+    times in one night - and each time the callback only cleared the
+    reference.
 
-    assert first.hung_up == 1
-    assert lamp.links[1].hung_up == 1
-
-
-async def test_a_link_the_lamp_dropped_is_hung_up_as_well(hass: HomeAssistant) -> None:
-    """The link going down by itself closes the link, not the client.
-
-    bleak leaves the client's D-Bus connection open after the device
-    disconnects; only ``disconnect()`` releases it. This was where the quota
-    actually went. On the lamp it was found on, at the edge of range, the link
-    came up on every poll tick and the lamp dropped it two to ten seconds
-    later - 678 times in one night - and each time the callback only cleared
-    the reference.
+    With no Home Assistant behind the coordinator too. tools/bench.py builds
+    the real one with ``hass=None`` and takes the paths the integration
+    takes; with the hang-up scheduled on hass, every path that lets go of a
+    client - a link the lamp drops, a connect that answers nothing, a write
+    that needs its retry - ended in "'NoneType' object has no attribute
+    'async_create_task'", with the client still connected. Found by walking
+    those three paths on a coordinator built the way the bench builds it;
+    0.2.1 took all three.
     """
-    coordinator, _lamp, link = await _holding_a_link(hass)
+    with_hass = behind_it == "Home Assistant"
+    coordinator, _lamp, link = await _holding_a_link(
+        hass if with_hass else None, "Glowrium-G7" if with_hass else "bench"
+    )
+    assert link_of(coordinator).diagnostics()["connected"] is True
 
     link.lose()
-    await hass.async_block_till_done()
+    assert link_of(coordinator).diagnostics()["connected"] is False  # at once
+    if with_hass:
+        await hass.async_block_till_done()
+    else:
+        await asyncio.sleep(0)  # nothing to block on without hass; one turn does it
 
     assert link_of(coordinator).diagnostics()["connected"] is False
     assert link.hung_up == 1
-
-
-async def test_a_client_that_is_not_ours_is_left_to_bleak(
-    hass: HomeAssistant,
-) -> None:
-    """Only the client the coordinator holds is hung up from the callback.
-
-    The first build of this fix hung up whichever client the callback named, as
-    a second chance for a hang-up cut short by its ceiling. On the real lamp it
-    lasted minutes: bleak reports a link lost in the middle of a connect to the
-    same callback, while establish_connection is still working on that client.
-    Disconnecting it there closed the bus underneath bleak's own clean-up -
-    "Failed to cancel connection ... Bad file descriptor" on every such drop,
-    and a retry that died on a bus that was no longer there.
-    """
-    coordinator, lamp, live = await _holding_a_link(hass)
-    connecting = await lamp.dial(MagicMock())  # still inside establish_connection
-
-    link_of(coordinator).on_lost(connecting)
-    await hass.async_block_till_done()
-
-    assert connecting.hang_ups == 0
-    assert link_of(coordinator).client is live
 
 
 async def test_a_hang_up_outlives_the_deadline_of_whoever_asked_for_it(
@@ -3416,42 +3405,30 @@ async def test_a_hang_up_that_fails_or_hangs_troubles_nobody(
 
 
 async def test_a_hang_up_is_not_tied_to_the_entry(hass: HomeAssistant) -> None:
-    """The one background task that must survive the entry being unloaded.
+    """The one background task that must survive the entry being unloaded: hass's.
 
     Everything else is created on the entry so that it dies with it (see
     test_background_work_is_tied_to_the_entry): a connect that outlives its
-    coordinator claims the lamp's slot for nobody. A hang-up is the opposite -
-    cancelled by an unload, it leaves the slot taken and the D-Bus connection
-    open.
+    coordinator claims the lamp's slot for nobody. A hang-up is the opposite
+    - cancelled by an unload, it leaves the slot taken and the D-Bus
+    connection open. With Home Assistant behind the coordinator it is
+    hass's task to see through; the standalone path keeps its own task, and
+    this is the other side of that choice. A task hass does not track is
+    one async_block_till_done walks straight past, and that call is how Home
+    Assistant - and every test here - lets pending work settle before it
+    looks at the result.
     """
-    coordinator, _lamp, link = await _holding_a_link(hass)
+    coordinator, lamp, link = await _holding_a_link(hass)
     entry = MagicMock()
     coordinator._entry = entry
+    released = asyncio.Event()
+    lamp.hangs_up_when(released)
+    hass.loop.call_later(0.05, released.set)  # it takes a moment
 
     link_of(coordinator).hang_up(link)
     await hass.async_block_till_done()
 
     entry.async_create_background_task.assert_not_called()
-    assert link.hung_up == 1
-
-
-async def test_hanging_up_does_not_need_home_assistant() -> None:
-    """The bench drives this coordinator with no Home Assistant behind it.
-
-    tools/bench.py builds the real coordinator with ``hass=None`` and takes the
-    paths the integration takes. With the hang-up scheduled on hass, every one
-    that lets go of a client - a link the lamp drops, a connect that answers
-    nothing, a write that needs its retry - ended there in "'NoneType' object
-    has no attribute 'async_create_task'", with the client still connected.
-    Found by walking those three paths on a coordinator built the way the bench
-    builds it; 0.2.1 took all three.
-    """
-    coordinator, _lamp, link = await _holding_a_link(None, "bench")
-
-    link.lose()  # the lamp drops the link
-    await asyncio.sleep(0)  # nothing to block on without hass; one turn does it
-
-    assert link_of(coordinator).diagnostics()["connected"] is False
     assert link.hung_up == 1
 
 
@@ -3468,21 +3445,6 @@ async def test_reading_the_device_info_does_not_need_home_assistant() -> None:
 
     assert coordinator.model_id == "Glowrium-C051"
     assert coordinator.sw_version == "4"
-
-
-async def test_a_retry_hangs_up_without_home_assistant() -> None:
-    """The same for the path that waits for the hang-up before it dials again.
-
-    This is the one the bench exists to exercise: a command on a link that
-    drops under it.
-    """
-    coordinator, lamp, first = await _holding_a_link(None, "bench")
-    lamp.fails_writes(BleakError("dropped"), times=1)
-
-    await coordinator.async_set_power(True)
-
-    assert first.hung_up == 1
-    assert link_of(coordinator).client is lamp.links[1]
 
 
 async def test_background_work_does_not_need_home_assistant() -> None:
@@ -3528,27 +3490,6 @@ async def test_watching_the_lamp_needs_home_assistant() -> None:
         await coordinator.async_start(MagicMock())
 
     assert coordinator._entry is None
-
-
-async def test_home_assistant_waits_for_a_hang_up_in_flight(
-    hass: HomeAssistant,
-) -> None:
-    """With Home Assistant behind it, the hang-up is hass's task to see through.
-
-    The standalone path above keeps its own task; this is the other side of
-    that choice. A task hass does not track is one async_block_till_done walks
-    straight past, and that call is how Home Assistant - and every test here -
-    lets pending work settle before it looks at the result.
-    """
-    coordinator, lamp, link = await _holding_a_link(hass)
-    released = asyncio.Event()
-    lamp.hangs_up_when(released)
-    hass.loop.call_later(0.05, released.set)  # it takes a moment
-
-    link_of(coordinator).hang_up(link)
-    await hass.async_block_till_done()
-
-    assert link.hung_up == 1
 
 
 async def test_stopping_does_not_cut_the_hang_up_short(
@@ -3598,33 +3539,6 @@ async def test_stopping_is_not_broken_by_what_the_bus_raises(
 
         assert link.hang_ups == 1
         assert link_of(coordinator).diagnostics()["connected"] is False
-
-
-async def test_a_connect_that_fails_half_way_hangs_up_outside_its_deadline(
-    hass: HomeAssistant, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """The client of a failed subscription is not disconnected on borrowed time.
-
-    It was disconnected inline, inside the deadline of whatever was connecting.
-    A deadline that ran out during that disconnect cancelled it part-way - the
-    bus left open, by the route the hang-up was written to close. The connect
-    still waits for the hang-up, so that a retry does not dial over it; what
-    the deadline ends now is that wait.
-    """
-    coordinator, lamp = _at_a_lamp(hass)
-    monkeypatch.setattr(link_module, "_CONNECT_TIMEOUT", 0.05)
-    lamp.subscription_fails(BleakError("subscribe failed"))
-    released = asyncio.Event()
-    lamp.hangs_up_when(released)
-
-    with pytest.raises(TimeoutError):  # the deadline, while it waits
-        await link_of(coordinator).connect()
-
-    assert not lamp.links[0].hung_up
-    released.set()
-    await hass.async_block_till_done()
-    assert lamp.links[0].hung_up == 1
-    assert link_of(coordinator).diagnostics()["connected"] is False
 
 
 # The two ways a connect is started in the background, and what each is called
@@ -3916,84 +3830,6 @@ async def test_hanging_up_a_client_we_gave_up_on_leaves_the_one_we_hold(
     assert third.hang_ups == 0
 
 
-async def test_a_connect_does_not_wait_for_the_hang_up_it_started(
-    hass: HomeAssistant,
-) -> None:
-    """A link that answers nothing is hung up in the background.
-
-    The connect path runs under _CONNECT_TIMEOUT and holds the lock. Waiting
-    there for the hang-up would keep the lock for as long as BlueZ takes to
-    confirm, and let the connect's deadline cancel the disconnect part-way -
-    the leak again, by the route the fix closes for commands.
-    """
-    coordinator, lamp = _at_a_lamp(hass)
-    lamp.fails_writes(BleakError("Not connected"))  # a link that answers nothing
-    released = asyncio.Event()
-    lamp.hangs_up_when(released)
-
-    async with asyncio.timeout(1):
-        await link_of(coordinator).connect()  # returns with the hang-up pending
-
-    link = lamp.links[0]
-    assert link.hang_ups == 1
-    assert not link.hung_up
-    released.set()
-    await hass.async_block_till_done()
-    assert link.hung_up == 1
-
-
-async def test_the_poll_does_not_wait_for_the_hang_up_it_started(
-    hass: HomeAssistant,
-) -> None:
-    """The same for priming, which the poll runs under the lock every tick."""
-    coordinator, lamp, link = await _holding_a_link(hass)
-    lamp.fails_writes(BleakError("Not connected"))  # and there is nothing to read
-    released = asyncio.Event()
-    lamp.hangs_up_when(released)
-
-    async with asyncio.timeout(1):
-        await link_of(coordinator).prime_held()  # returns with the hang-up pending
-
-    assert link.hang_ups == 1
-    assert not link_of(coordinator).lock.locked()
-    assert not link.hung_up
-    released.set()
-    await hass.async_block_till_done()
-    assert link.hung_up == 1
-
-
-async def test_a_retry_dials_only_after_a_half_made_connect_is_hung_up(
-    hass: HomeAssistant,
-) -> None:
-    """A subscription that fails is hung up before the command dials again.
-
-    The reason is the one a failed write has (see
-    test_a_write_retry_hangs_up_before_it_dials_again): the lamp has one slot,
-    and while BlueZ still shows the link as up a connect is handed that very
-    link - the one being closed. Hanging this client up in the background lost
-    the order: the retry dialled first, which on a link that reports itself
-    connected while answering nothing means a second attempt on the link the
-    first one had just failed on.
-    """
-    coordinator, lamp = _at_a_lamp(hass)
-    lamp.subscription_fails(BleakError("Not connected"))
-    released = asyncio.Event()
-    lamp.hangs_up_when(released)  # a real disconnect is not instant either
-
-    command = asyncio.create_task(coordinator.async_set_power(True))
-    await asyncio.sleep(0.01)
-    first = lamp.links[0]
-    assert first.hang_ups == 1  # dialled, and being hung up...
-    assert lamp.dials == 1  # ...and not dialled again before that is through
-    lamp.subscription_fails(None)  # the next link subscribes
-    released.set()
-    await command
-
-    assert first.hung_up == 1
-    assert lamp.dials == 2
-    assert link_of(coordinator).client is lamp.links[1]
-
-
 async def test_a_connect_cancelled_half_way_is_hung_up_but_not_waited_for(
     hass: HomeAssistant, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -4130,72 +3966,6 @@ async def test_a_reconnect_started_while_starting_belongs_to_the_entry(
         assert any("reconnect" in name for name in handed_over)
     finally:
         await coordinator.async_stop()
-
-
-# What a call receives when its client's bus is closed underneath it. Run against
-# dbus-fast with a bus that is shut while a call is waiting for its reply: the
-# call ends in EOFError, and with the socket gone, in "Bad file descriptor".
-# Neither is a BleakError, and bleak passes both on as they are.
-_BUS_CLOSED = (EOFError(), OSError(9, "Bad file descriptor"))
-
-
-@pytest.mark.parametrize("failure", _BUS_CLOSED, ids=["eof", "bad-fd"])
-async def test_a_write_on_a_bus_closed_under_it_is_retried_like_a_lost_link(
-    hass: HomeAssistant, failure: Exception
-) -> None:
-    """The bus closing under a write is the link going, and is handled as that.
-
-    When the lamp drops the link, the disconnected callback hangs the client
-    up at once, which closes its D-Bus connection. A write still waiting for
-    its reply on that connection does not get the BleakError a lost link
-    usually produces: it gets whatever the bus raised. Caught as nothing in
-    particular, that went straight out of the command - no retry, and a bare
-    EOFError where the user should read "cannot connect".
-    """
-    coordinator, lamp = _at_a_lamp(hass)
-    lamp.fails_writes(failure, times=1)
-
-    await coordinator.async_set_power(True)  # the retry, on a fresh link, works
-
-    first, second = lamp.links
-    assert first.hung_up
-    assert link_of(coordinator).client is second
-
-
-@pytest.mark.parametrize("failure", _BUS_CLOSED, ids=["eof", "bad-fd"])
-async def test_a_command_that_keeps_meeting_a_closed_bus_fails_readably(
-    hass: HomeAssistant, monkeypatch: pytest.MonkeyPatch, failure: Exception
-) -> None:
-    """...and when the retry meets the same, the user is told in their words."""
-    coordinator, lamp = _at_a_lamp(hass)
-    lamp.fails_writes(failure)
-    monkeypatch.setattr(link_module, "_CONFIRM_TIMEOUT", 0.01)
-
-    with pytest.raises(HomeAssistantError):
-        await coordinator.async_set_power(True)
-
-
-@pytest.mark.parametrize("failure", _BUS_CLOSED, ids=["eof", "bad-fd"])
-async def test_a_connect_whose_reads_meet_a_closed_bus_just_drops_the_link(
-    hass: HomeAssistant, failure: Exception
-) -> None:
-    """The state request and the read, on a bus that closed: a dead link.
-
-    The connect path makes two calls after the subscription - the batched
-    request and, when that brings nothing, the state read - and the link can
-    go under either. Neither may turn that into an exception
-    with a traceback: a link that answers nothing is dropped, and the poll
-    builds another.
-    """
-    coordinator, lamp = _at_a_lamp(hass)
-    lamp.fails_writes(failure)
-    lamp.fails_reads(failure)
-
-    await link_of(coordinator).connect()
-    await hass.async_block_till_done()
-
-    assert link_of(coordinator).diagnostics()["connected"] is False
-    assert lamp.links[0].hung_up == 1
 
 
 @pytest.mark.parametrize("failure", _BUS_CLOSED, ids=["eof", "bad-fd"])
@@ -4377,43 +4147,28 @@ async def test_a_command_overtaken_by_a_stop_says_so_too(
     assert link_of(coordinator).diagnostics()["connected"] is False
 
 
-async def test_a_lamp_the_scanner_has_lost_is_still_said_to_be_out_of_range(
-    hass: HomeAssistant, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """Of the reasons a command gets no link, only this one is about range.
-
-    The scanner no longer has the lamp. That is the radio's doing: the message
-    about range and a proxy is the right one for it, and the command goes
-    round for its second attempt as it always did - the lamp may be heard
-    again by then.
-    """
-    coordinator, lamp = _at_a_lamp(hass)
-    lamp.out_of_range()  # nothing held, and the lamp is not in the list
-    monkeypatch.setattr(link_module, "_CONFIRM_TIMEOUT", 0.01)
-
-    with pytest.raises(HomeAssistantError) as err:
-        await coordinator.async_set_power(True)
-    await hass.async_block_till_done()
-
-    assert err.value.translation_key == "cannot_connect"
-    assert err.value.translation_placeholders == {"name": "Glowrium-G7"}
-    assert lamp.dials == 2
-
-
+@pytest.mark.parametrize(
+    "meanwhile", ["the stack says nothing", "the stack reports it lost"]
+)
 async def test_a_command_that_runs_out_of_time_inside_a_write_lets_go_of_the_link(
-    hass: HomeAssistant, monkeypatch: pytest.MonkeyPatch
+    hass: HomeAssistant, monkeypatch: pytest.MonkeyPatch, meanwhile: str
 ) -> None:
     """A write that has not come back by the deadline is a link not to keep.
 
     The caller is told the command failed. Left held, the link gets the next
     command too, which waits just as long and fails the same way - until the
     probe, minutes later, finds it dead. Let go of, it is hung up, and the
-    next command dials.
+    next command dials. The stack may report the link gone while the write
+    is still waiting: then it has been let go of already, by the callback,
+    and the deadline finds nothing of it left to take - one hang-up, not a
+    second one for a client that is no longer the coordinator's.
     """
     coordinator, lamp, link = await _holding_a_link(hass)
     monkeypatch.setattr(link_module, "_COMMAND_TIMEOUT", 0.05)
     monkeypatch.setattr(link_module, "_CONFIRM_TIMEOUT", 0.01)
     lamp.never_acknowledges_a_write()
+    if meanwhile == "the stack reports it lost":
+        hass.loop.call_later(0.01, link.lose)  # dropped, while the write waits
 
     with pytest.raises(HomeAssistantError) as err:
         await coordinator.async_set_power(True)
@@ -4421,30 +4176,8 @@ async def test_a_command_that_runs_out_of_time_inside_a_write_lets_go_of_the_lin
 
     assert err.value.translation_key == "cannot_connect"
     assert link_of(coordinator).diagnostics()["connected"] is False
-    assert link.hung_up == 1
-
-
-async def test_a_link_reported_lost_while_a_write_waits_is_hung_up_once(
-    hass: HomeAssistant, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """The stack may report the link gone while the write is still waiting.
-
-    Then it has been let go of already, by the callback, and the deadline
-    finds nothing of it left to take: one hang-up, not a second one for a
-    client that is no longer the coordinator's.
-    """
-    coordinator, lamp, link = await _holding_a_link(hass)
-    monkeypatch.setattr(link_module, "_COMMAND_TIMEOUT", 0.05)
-    monkeypatch.setattr(link_module, "_CONFIRM_TIMEOUT", 0.01)
-    lamp.never_acknowledges_a_write()
-    hass.loop.call_later(0.01, link.lose)  # dropped, while the write waits
-
-    with pytest.raises(HomeAssistantError):
-        await coordinator.async_set_power(True)
-    await hass.async_block_till_done()
-
-    assert link_of(coordinator).diagnostics()["connected"] is False
     assert link.hang_ups == 1
+    assert link.hung_up == 1
 
 
 async def test_shutting_down_does_not_hold_home_assistant_up(
