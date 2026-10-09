@@ -310,6 +310,79 @@ _CURVE = bytes(range(0x40, 0x5C))  # 28 bytes of sunrise and sunset times
             "1834" + "57" + "xx" * 23,
             id="a coordinate inside what was taken for the times",
         ),
+        pytest.param(
+            "a2" + "190034" + "581c" + _CURVE.hex() + "06f5",
+            "a2" + "190034" + "581c" + "xx" * 28 + "06f5",
+            id="the times, their id written in two bytes",
+        ),
+        pytest.param(
+            "a1" + "1a00000034" + "581c" + _CURVE.hex(),
+            "a1" + "1a00000034" + "581c" + "xx" * 28,
+            id="the times, their id written in four bytes",
+        ),
+        pytest.param(
+            "a1" + "1b0000000000000034" + "581c" + _CURVE.hex(),
+            "a1" + "1b0000000000000034" + "581c" + "xx" * 28,
+            id="the times, their id written in eight bytes",
+        ),
+        pytest.param(
+            "a2" + "0a" + "c1" + "fb" + _LATITUDE_HEX + "06f5",
+            "a2" + "0a" + "c1" + "fb" + "xx" * 8 + "06f5",
+            id="a coordinate behind a tag",
+        ),
+        pytest.param(
+            "a1" + "0b" + "c1" + "d820" + "fb" + _LONGITUDE_HEX,
+            "a1" + "0b" + "c1" + "d820" + "fb" + "xx" * 8,
+            id="a coordinate behind two tags",
+        ),
+        pytest.param(
+            "a1" + "1834" + "c0" + "581c" + _CURVE.hex(),
+            "a1" + "1834" + "c0" + "581c" + "xx" * 28,
+            id="the times behind a tag",
+        ),
+        pytest.param(
+            "a1" + "1834" + "d9d9f7" + "581c" + _CURVE.hex(),
+            "a1" + "1834" + "d9d9f7" + "581c" + "xx" * 28,
+            id="the times behind a tag of three bytes",
+        ),
+        pytest.param(
+            "a2" + "1834" + "5f" + "581c" + _CURVE.hex() + "ff" + "06f5",
+            "a2" + "1834" + "5f" + "xx" * 30 + "ff" + "06f5",
+            id="the times as a string of indefinite length",
+        ),
+        pytest.param(
+            "a1"
+            + "1834"
+            + "5f"
+            + "4c"
+            + _CURVE[:12].hex()
+            + "50"
+            + _CURVE[12:].hex()
+            + "ff",
+            "a1" + "1834" + "5f" + "xx" * 30 + "ff",
+            id="those, in two pieces",
+        ),
+        pytest.param(
+            # The second byte of the piece reads as the break, and is not one.
+            "a2" + "1834" + "5f" + "44" + "aaffbbcc" + "ff" + "06f5",
+            "a2" + "1834" + "5f" + "xx" * 5 + "ff" + "06f5",
+            id="a piece with a byte in it that reads as the break",
+        ),
+        pytest.param(
+            "a1" + "1834" + "5f" + "581c" + _CURVE[:10].hex(),
+            "a1" + "1834" + "5f" + "xx" * 12,
+            id="a string of indefinite length the frame ends inside",
+        ),
+        pytest.param(
+            "a2" + "1834" + "5a0000001c" + _CURVE.hex() + "06f5",
+            "a2" + "1834" + "5a0000001c" + "xx" * 28 + "06f5",
+            id="times that take four bytes to say how long they are",
+        ),
+        pytest.param(
+            "a1" + "1834" + "5b000000000000001c" + _CURVE.hex(),
+            "a1" + "1834" + "5b000000000000001c" + "xx" * 28,
+            id="times that take eight bytes to say how long they are",
+        ),
         pytest.param("a206f5081846", "a206f5081846", id="nothing of the kind"),
         pytest.param("", "", id="nothing at all"),
     ],

@@ -42,6 +42,16 @@ All notable changes to this project are documented here. The format is based on
   before; of the others, the first sixty-four. The rest is counted: the log
   says so once, and the diagnostics give the number
   ([#23](https://github.com/kugaevsky/glowrium-ha/issues/23)).
+- **What places the lamp is blanked in a printed frame under more of the
+  ways it can be written.** A frame the integration prints in its log has
+  the coordinates the lamp stores, and the sunrise and sunset times it works
+  out from them, shown as `xx`. They were found by the bytes a G7 writes
+  them with. They are found now under any width of their id and behind a
+  tag, and the times also as a string of indefinite length or with a length
+  written in four or eight bytes. No lamp has been seen to write them so. A
+  value in a form nobody has met, or without its id, still cannot be found
+  by looking for it
+  ([#23](https://github.com/kugaevsky/glowrium-ha/issues/23)).
 - **A connect waits for a hang-up that is still under way.** Whether a
   client will close is not known until its hang-up has ended, and only then
   is a client that will not close kept. A connect made in between - by a

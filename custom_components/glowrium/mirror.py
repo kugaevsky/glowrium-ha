@@ -25,7 +25,7 @@ import logging
 from typing import Any, Final
 
 from . import cbor
-from .const import KEY_LATITUDE, KEY_LONGITUDE, KEY_TIME
+from .const import KEY_CURVE, KEY_LATITUDE, KEY_LONGITUDE, KEY_TIME
 
 # The mirror's lines go out under the coordinator's name, as the link's do: the
 # log filters, and the tests' caplog, were set up on that name before either
@@ -45,35 +45,94 @@ _BLANKED = (
     "sunset times it works out from them, is shown as xx; look the frame over "
     "all the same before posting it"
 )
-# The id under which the lamp keeps those times (nothing here reads them), as
-# it stands in a frame: an id above 23 takes a second byte.
-_CURVE_KEY = bytes((0x18, 0x34))
 # How many bytes follow the head of a CBOR float: double, single, half.
 _FLOAT_BYTES = {b"\xfb": 8, b"\xfa": 4, b"\xf9": 2}
 # The head of a CBOR byte string. Up to 23 bytes the length is in the head
-# itself; 0x58 and 0x59 are followed by one and by two bytes of length.
+# itself; 0x58 to 0x5b are followed by one, two, four and eight bytes of
+# length. 0x5f begins one of indefinite length: pieces, each a byte string
+# with a length of its own, up to a break.
 _BYTES_SHORT = range(0x40, 0x58)
-_BYTES_LONGER = {b"\x58": 1, b"\x59": 2}
+_BYTES_LONGER = {0x58: 1, 0x59: 2, 0x5A: 4, 0x5B: 8}
+_BYTES_INDEFINITE = 0x5F
+_BREAK = 0xFF
+# The head of a CBOR tag, which wraps the item after it. Up to 23 the tag's
+# number is in the head; 0xd8 to 0xdb are followed by one, two, four and
+# eight bytes of it.
+_TAGS_SHORT = range(0xC0, 0xD8)
+_TAGS_LONGER = {0xD8: 1, 0xD9: 2, 0xDA: 4, 0xDB: 8}
+
+
+def _past_tags(frame: bytes, at: int) -> int:
+    """Return where the item at ``at`` begins once the tags on it are stepped over.
+
+    A tag wraps the item that follows it, and a decoder that does not read
+    tags stops there: the value behind one is then in a frame that gets
+    printed, with nothing between its id and its head but the tag.
+    """
+    while at < len(frame):
+        if frame[at] in _TAGS_SHORT:
+            at += 1
+        elif frame[at] in _TAGS_LONGER:
+            at += 1 + _TAGS_LONGER[frame[at]]
+        else:
+            break
+    return at
+
+
+def _byte_string_at(frame: bytes, at: int) -> tuple[int, int] | None:
+    """Size the byte string that begins at ``at``: its head, and its value.
+
+    ``None`` when no byte string begins there. One of indefinite length runs
+    up to its break, or to the end of the frame when there is none.
+    """
+    head = frame[at : at + 1]
+    if not head:
+        return None
+    if head[0] in _BYTES_SHORT:
+        return 1, head[0] - _BYTES_SHORT.start
+    if head[0] == _BYTES_INDEFINITE:
+        return 1, _pieces_end(frame, at + 1) - at - 1
+    more = _BYTES_LONGER.get(head[0], 0)
+    length = frame[at + 1 : at + 1 + more]
+    if not more or len(length) < more:
+        return None
+    return 1 + more, int.from_bytes(length, "big")
+
+
+def _pieces_end(frame: bytes, at: int) -> int:
+    """Return where the pieces of a string of indefinite length end: at its break.
+
+    Or at the end of the frame, when there is no break or what stands where
+    a piece should is not one. The pieces are stepped over by their lengths,
+    so that a byte of a piece that reads as the break is not taken for it.
+    """
+    while at < len(frame) and frame[at] != _BREAK:
+        piece = None if frame[at] == _BYTES_INDEFINITE else _byte_string_at(frame, at)
+        if piece is None:
+            return len(frame)
+        at += sum(piece)
+    return min(at, len(frame))
 
 
 def _private_at(frame: bytes, at: int) -> tuple[int, int]:
     """Tell whether a value that says where the lamp is starts at ``at``.
 
-    ``(head, value)``: how many bytes name it - the id and the head of the
-    value - and how many the value itself takes. ``(1, 0)`` when nothing of
-    the kind starts here.
+    ``(head, value)``: how many bytes name it - the id, any tags and the head
+    of the value - and how many the value itself takes. ``(1, 0)`` when
+    nothing of the kind starts here.
+
+    An id is looked for by its last byte. One above 23 is written in two
+    bytes or more - 18 34, 19 00 34 and longer - and a decoder takes them all
+    for the same id; the last byte is the one they share.
     """
     if frame[at] in (KEY_LATITUDE, KEY_LONGITUDE):
-        value = _FLOAT_BYTES.get(frame[at + 1 : at + 2])
-        return (2, value) if value else (1, 0)
-    if frame[at : at + 2] == _CURVE_KEY:
-        head = frame[at + 2 : at + 3]
-        if head and head[0] in _BYTES_SHORT:
-            return 3, head[0] - _BYTES_SHORT.start
-        more = _BYTES_LONGER.get(head, 0)
-        length = frame[at + 3 : at + 3 + more]
-        if more and len(length) == more:
-            return 3 + more, int.from_bytes(length, "big")
+        value_at = _past_tags(frame, at + 1)
+        value = _FLOAT_BYTES.get(frame[value_at : value_at + 1])
+        return (value_at - at + 1, value) if value else (1, 0)
+    if frame[at] == KEY_CURVE:
+        value_at = _past_tags(frame, at + 1)
+        sized = _byte_string_at(frame, value_at)
+        return (value_at - at + sized[0], sized[1]) if sized else (1, 0)
     return 1, 0
 
 
