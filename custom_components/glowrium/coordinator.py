@@ -252,7 +252,7 @@ class GlowriumCoordinator:
         # hass is only awaited at shutdown, and one that outlives its
         # coordinator finishes connecting and claims the lamp's single slot
         # for an owner that no longer exists. The one exception is a hang-up,
-        # which has to outlive the entry - see _hang_up.
+        # which has to outlive the entry - see Link.hang_up.
         self._entry: ConfigEntry | None = None
         # Tasks in flight when there is no hass to keep them: hang-ups, and
         # whatever the poll spawned (see _run_without_hass).
@@ -361,10 +361,11 @@ class GlowriumCoordinator:
 
     # --- The link's own, under the names they had here -----------------------
     #
-    # #21: the link holds these now, and makes the connect, the first exchange
-    # and the probe (link.py). A command below still says self._client and
-    # self._lock, and so do the tests that have not moved yet. Each of these
-    # goes when nothing reaches through it any more.
+    # #21: the link holds these now, and makes the connect, the first exchange,
+    # the probe and the delivery of a command (link.py). Nothing of the
+    # coordinator's own goes by these names any more - a test holds that. They
+    # are kept for the tests and the bench that have not moved yet, each a way
+    # through to the link, and each goes when nothing reaches through it.
 
     @property
     def _client(self) -> BleakClientWithServiceCache | None:

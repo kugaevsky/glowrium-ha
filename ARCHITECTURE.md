@@ -41,8 +41,8 @@ Home Assistant entities are stateless views over that coordinator.
 | --- | --- |
 | `__init__.py` | `async_setup_entry` / `async_unload_entry`; builds the coordinator, stores it in `entry.runtime_data`, forwards platforms, has the coordinator hang up when Home Assistant stops, and keeps for each lamp what could not be closed |
 | `config_flow.py` | Bluetooth auto-discovery + manual picker for `Glowrium-*` devices |
-| `coordinator.py` | The device: the state mirror, all command methods, the clock, activation - and, until the split is finished, the exchanges with the lamp and the reconnect poll |
-| `link.py` | The link: the client and the lock around it, the dial, the hang-up and the closing of the client's bus, the stack that will not hang up, whether the lamp is in reach. No Home Assistant in it and no protocol |
+| `coordinator.py` | The device: the state mirror, all command methods, the clock, activation, the telling of the entities - and what is said to the lamp: the first exchange on a link, the question for a silent one, each command. Home Assistant's watchers stand here and tell the link what they see |
+| `link.py` | The link: the client and the lock around it, the dial, the hang-up and the closing of the client's bus, the stack that will not hang up, whether the lamp is in reach - and when the lamp is spoken to: the background connect, the first exchange, the question for a silent link, the delivery of a command with its one retry, and every deadline. No client leaves it. No Home Assistant in it and no protocol |
 | `cbor.py` | Minimal CBOR encoder/decoder (only the subset the device uses) — the *wire* format |
 | `protocol.py` | Semantic codec — byte layouts (`0x11` slot, `0x2f` ramp, `0x35` daylight saving, `0x05` clock) ↔ values, read and written; the coordinator's typed accessors and setters delegate here |
 | `const.py` | GATT UUIDs, CBOR property keys, byte-layout offsets, mode constants |
@@ -61,8 +61,8 @@ Home Assistant entities are stateless views over that coordinator.
 flowchart TD
     CF["config_flow.py<br/>discovers Glowrium-*<br/>creates ConfigEntry {address}"]
     INIT["__init__.py · async_setup_entry<br/>builds GlowriumCoordinator<br/>entry.runtime_data = coordinator<br/>forwards PLATFORMS"]
-    COORD["coordinator.py · GlowriumCoordinator<br/>exchanges with the lamp + state: dict int→value"]
-    LINK["link.py · Link<br/>the client, the lock, dial and hang-up"]
+    COORD["coordinator.py · GlowriumCoordinator<br/>what is said to the lamp + state: dict int→value"]
+    LINK["link.py · Link<br/>the client, the lock, every deadline:<br/>dial, exchanges, commands, hang-up"]
     CBOR["cbor.py<br/>encode / decode"]
     PLAT["platforms<br/>light · select · number · switch<br/>button · time · sensor · binary_sensor"]
     ENT["entity.py · GlowriumEntity<br/>DeviceInfo · availability · updates"]
@@ -70,7 +70,7 @@ flowchart TD
 
     CF --> INIT
     INIT --> COORD
-    COORD -->|"holds and lets go through"| LINK
+    COORD -->|"speaks through, on a turn"| LINK
     INIT --> PLAT
     PLAT -. "entry.runtime_data" .-> COORD
     PLAT --> ENT
@@ -518,9 +518,9 @@ briefly for the initial state to arrive; if `0x14` reads `False`,
 
 Notes:
 
-- These writes go through `_write_raw` while the connection lock is held (bring-up
-  runs inside the connect path, `_connect_locked`), so it completes as one atomic
-  step before any user command is serviced.
+- These writes are made on the turn of the first exchange, which the link
+  makes while it holds its lock (`Link.connect_locked`, `Link.prime_held`), so
+  the bring-up completes as one step before any user command is serviced.
 - It is **idempotent**: a device already activated (by the app, or a previous HA
   run) reports `0x14 = True` and the sequence is skipped. Activation survives HA
   restarts; `0x14` only clears on a factory reset.
@@ -551,20 +551,23 @@ signal.
 available = link.connected or link.present  # Link.in_reach
 ```
 
-- `_present` is maintained from the Bluetooth stack: seeded with
+- `Link.present` is maintained from the Bluetooth stack: seeded with
   `bluetooth.async_address_present`, set `True` by the advertisement callback, and
   set `False` by `bluetooth.async_track_unavailable` (device powered off / out of
-  range).
+  range). The callbacks are the coordinator's; they hand what they see to
+  `Link.advertising`.
 - Reconnects happen **silently underneath** an entity that stays `available`.
 - When `available` changes, the log says so at INFO, once each way: `is out of
-  reach`, `is back in reach` (`_async_log_reach`). It is judged by the same
+  reach`, `is back in reach` (`Link.log_reach`). It is judged by the same
   expression as the entities, so a lamp that goes quiet while it is connected
   is not reported as gone. The check sits where the listeners are told, and
-  the listeners are told wherever a link is let go of while the lamp is being
-  watched - by the stack reporting a drop, by a probe or a priming that got no
-  answer, and by a command that failed, whose caller gets an error and whose
-  entities would otherwise go on reading as available. A coordinator that is
-  stopping lets go of its link and says nothing.
+  the listeners are told wherever either half of the expression can change
+  while the lamp is being watched: where a link is taken (`Link.open`), and
+  wherever one is let go of - by the stack reporting a drop, by a probe or a
+  first exchange that got no answer (all through one method, `Link._drop`,
+  which hangs up and tells), and by a command that failed, whose caller gets
+  an error and whose entities would otherwise go on reading as available. A
+  coordinator that is stopping lets go of its link and says nothing.
 - Each listener is told on its own. A listener is an entity writing its
   state, and one that raises does not keep the news from the rest, nor does
   its exception reach whoever brought the news - a notification, or a
@@ -575,22 +578,33 @@ available = link.connected or link.present  # Link.in_reach
 
 ### Reconnect
 
-The coordinator is being split in two ([#21](https://github.com/kugaevsky/glowrium-ha/issues/21)):
-the **link** - taking a client, holding it, letting go of it - and the
-**device**. As of the first stage the link's code is in `link.py`, moved
-there as it stood: `Link.open()` is the first half of what `_connect_locked`
-was (the refusals, the dial, subscribe-then-keep), `Link.hang_up()` is
-`_hang_up`, and so on. The exchanges - a command, the first exchange on a new
-link, the probe - and the poll are still the coordinator's and reach the link
-by the names used below, which the coordinator keeps as forwards. So most
-names in this section are still names in the code, in one file or the other;
-what only the link itself reads has lost its underscore there
-(`Link.stopped`, `Link.fault_announced`). The link is handed its dial, so that it can
-stand on something other than a Bluetooth adapter: in the tests, a scripted
-lamp.
+The coordinator is split in two ([#21](https://github.com/kugaevsky/glowrium-ha/issues/21)):
+the **link** (`link.py`) - taking a client, holding it, deciding when the lamp
+is spoken to, letting go of it - and the **device** (`coordinator.py`), which
+knows what is said. No client leaves the link's module, and no error of the
+Bluetooth library does: a lost link is the link's own `LinkLostError` by the
+time the device half hears of it. The device half is handed a **turn**, on
+which it writes, reads and says that the lamp answered - inside the first
+exchange on a link (`_greet`) and the question for a silent one (`_probe`),
+which the link calls when it decides to, and inside a command, which it hands
+to `Link.send`. The link is handed its dial, so that it can stand on
+something other than a Bluetooth adapter: in the tests, a scripted lamp.
+Home Assistant's watchers - the advertisement callback, the presence tracker,
+the timer - are the coordinator's, and tell the link two things: the lamp is
+advertising or is not (`Link.advertising`), and a tick (`Link.tick`).
+
+The code moved as it stood, and most of it kept its name without the
+underscore: `Link.open()` is the first half of what `_connect_locked` was (the
+refusals, the dial, subscribe-then-keep), `Link.hang_up()` is `_hang_up`,
+`Link.connect()` is `_async_ensure_connected`, `Link.prime_held()` and
+`Link.probe_held()` are `_async_prime` and `_async_probe`, `Link.tick()` is
+what the poll decided, `Link.send()` is the delivery of a command. Until the
+tests and the bench have crossed over, the coordinator still keeps the old
+names as ways through to the link; nothing of its own goes by them, and a
+test reads the source to hold that.
 
 Two independent triggers, both funnelling into a single guarded reconnect task
-(`_reconnecting` prevents a connect storm from the ~1 Hz advertisements):
+(`Link.reconnecting` prevents a connect storm from the ~1 Hz advertisements):
 
 1. **Advertisement callback** — when the lamp reappears and there is no live
    connection, kick off a reconnect.
@@ -600,7 +614,7 @@ Two independent triggers, both funnelling into a single guarded reconnect task
 Both stand back while the Bluetooth stack will not hang up (see *A stack that
 will not hang up is a state* below). A command never does.
 
-Establishing a connection (`_async_ensure_connected`, serialized by an
+Establishing a connection (`Link.connect`, serialized by an
 `asyncio.Lock`) uses `bleak_retry_connector.establish_connection`, subscribes to
 notifications, primes state by asking the lamp for `STATE_KEYS` — reading
 `facebd02` only when it will not report — runs activation if needed, corrects
@@ -681,10 +695,12 @@ inside the same dial getting through. The library is given no
 alike), and Home Assistant's client picks the best adapter and device for
 itself at every try.
 
-**Commands are serialized on the same lock** and retried once: `_async_write`
+**Commands are serialized on the same lock** and retried once: `Link.send`
 holds the lock across connect-and-write, so a command cannot race the periodic
-GATT churn; if the write still fails mid-command, the coordinator hangs up,
-reconnects once and retries before surfacing the error.
+GATT churn; if the write still fails mid-command, the link hangs up,
+reconnects once and retries before the error is surfaced. What is written is
+the coordinator's - it hands `send` the write, to make on the turn it is
+given for each try, and the question `send` asks once if the write failed.
 
 **Every client the coordinator lets go of is hung up by one method, and its
 bus is closed whatever comes of that.** bleak's BlueZ backend opens a D-Bus
@@ -693,7 +709,7 @@ client has connected, bleak closes it on the last lines of a `disconnect()`
 that got that far, and nowhere else — not when the reference is dropped, and
 not when the link goes down by itself. The system bus allows one user 256
 connections, and a client left with its one keeps it for the life of the
-process. So nothing clears `_client` without going through `_hang_up`, which
+process. So the link lets go of no client without going through `Link.hang_up`, which
 disconnects the client under a ceiling of its own (`_HANG_UP_TIMEOUT`, 10 s).
 That includes a client whose link is already gone: bleak has no device left
 to disconnect then, and the call only closes the bus.
@@ -856,7 +872,8 @@ command failed. Two checks close that:
   the poll — unless the lamp has said something since, which settles it
   the other way;
 - a held link that has been silent for `_PROBE_INTERVAL` (5 minutes) is
-  asked for its state again (`_async_probe`). The lamp only speaks when
+  asked for its state again (`Link.probe_held`, with the device half's
+  question, `_probe`). The lamp only speaks when
   something changes, so a dead link and an idle one look the same until
   asked; the answer refreshes the mirror for free. A link that does not
   answer, or keeps the question waiting until the deadline (`_ASK_TIMEOUT`),
@@ -911,15 +928,15 @@ starts once it has begun to stop, and the grace period is not the
 coordinator's to spend. Whether this prevents the phantom on a stop that is
 killed has not been measured.
 
-**A command connects without priming** (`_connect_locked(prime=False)`). It needs
+**A command connects without priming** (`Link.send` takes its link bare). It needs
 the link and its own write, nothing else — and priming costs the state request,
 the wait for its answer, up to 3 s waiting for the activation flag and, the
 first time, the device-info read, all before the write is attempted and all
 inside the command budget. On a lamp
 where the connect alone is marginal, that is what turns a working command into a
-reported failure. The reconnect poll notices a link nothing has primed
-(`_primed_client`) and fetches the properties afterwards, off the command's
-critical path.
+reported failure. The tick notices a link nothing has primed
+(`Link.primed`) and has the first exchange made on it afterwards, off the
+command's critical path.
 
 **A failed write is checked against what the device reports before it is
 believed.** Writes use write-with-response, and on a marginal link it is the
@@ -1111,13 +1128,20 @@ Unit tests live in `tests/` and **never touch real Bluetooth**:
   the link, and is silent once hung up. A test with a dial of its own — a
   client built by hand, a stack that will not hang up — puts it behind the
   lamp's. Nothing replaces the library's connect, except the tests of the
-  dial that is made of it.
+  dial that is made of it - and two tests of setup in `test_init.py`, which
+  the integration hands no dial: there the lamp is one whose connect never
+  returns.
 - `test_bus_lifetime.py` — what is left behind when a link is let go of. It
   counts open bus connections rather than calls to `disconnect()`, and runs
   the same against bleak's own BlueZ client with a stub bus, so a bleak
   release that renames what `_close_bus` reaches for fails here. The backoff
   from a stack that will not hang up, and the checks on a held link, are
-  tested here too.
+  tested here too. So is the seam between the link and the device half, by
+  tests that read the source: every GATT call is the link's and made under
+  its guard; nothing outside the link's module connects a client, hangs one
+  up or names what the Bluetooth library raises; the coordinator goes by
+  none of the names it still keeps for the tests; and hanging a link up and
+  telling the entities stand together in one method.
 - `test_init.py` — setup and unload of the config entry, the entities each
   platform produces and the command each control ends in, what is restored
   after a restart, what the lamp says about itself reaching the device
