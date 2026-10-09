@@ -67,21 +67,6 @@ _LOGGER = logging.getLogger(__name__)
 # Where the repair for a Bluetooth stack that will not hang up sends the
 # reader for what to do.
 _TROUBLESHOOTING_URL = "https://github.com/kugaevsky/glowrium-ha#troubleshooting"
-# Said wherever the log asks for a frame to be posted (see _for_the_log).
-_BLANKED = (
-    "What reads as the coordinates stored in the lamp, or as the sunrise and "
-    "sunset times it works out from them, is shown as xx; look the frame over "
-    "all the same before posting it"
-)
-# The id under which the lamp keeps those times (nothing here reads them), as
-# it stands in a frame: an id above 23 takes a second byte.
-_CURVE_KEY = bytes((0x18, 0x34))
-# How many bytes follow the head of a CBOR float: double, single, half.
-_FLOAT_BYTES = {b"\xfb": 8, b"\xfa": 4, b"\xf9": 2}
-# The head of a CBOR byte string. Up to 23 bytes the length is in the head
-# itself; 0x58 and 0x59 are followed by one and by two bytes of length.
-_BYTES_SHORT = range(0x40, 0x58)
-_BYTES_LONGER = {b"\x58": 1, b"\x59": 2}
 # How long the lamp gets to report once it has acknowledged the state request.
 # On a G7 the report arrives inside the write call itself. The wait is for a
 # model that splits its map across notifications, and with the dial before it
@@ -118,58 +103,6 @@ class _Asked(Enum):
     SILENT = auto()  # it acknowledged the request and reported nothing
     REFUSED = auto()  # it answered the request with a refusal
     LOST = auto()  # the request met a link that is gone
-
-
-def _private_at(frame: bytes, at: int) -> tuple[int, int]:
-    """Tell whether a value that says where the lamp is starts at ``at``.
-
-    ``(head, value)``: how many bytes name it - the id and the head of the
-    value - and how many the value itself takes. ``(1, 0)`` when nothing of
-    the kind starts here.
-    """
-    if frame[at] in (KEY_LATITUDE, KEY_LONGITUDE):
-        value = _FLOAT_BYTES.get(frame[at + 1 : at + 2])
-        return (2, value) if value else (1, 0)
-    if frame[at : at + 2] == _CURVE_KEY:
-        head = frame[at + 2 : at + 3]
-        if head and head[0] in _BYTES_SHORT:
-            return 3, head[0] - _BYTES_SHORT.start
-        more = _BYTES_LONGER.get(head, 0)
-        length = frame[at + 3 : at + 3 + more]
-        if more and len(length) == more:
-            return 3 + more, int.from_bytes(length, "big")
-    return 1, 0
-
-
-def _for_the_log(frame: bytes) -> str:
-    """Return ``frame`` as hex, with what says where the lamp is put down as xx.
-
-    A frame goes into the log so that it can be posted, and a frame can hold
-    the coordinates the lamp was given and the sunrise and sunset times it
-    works out from them, which give the place away as well. Asking whoever
-    posts it to blank hex by hand is asking for it to be forgotten.
-
-    The frame being logged is one that could not be read to its end, so the
-    values are not found by decoding it: they are looked for by their bytes -
-    an id and the head of its value. A match that was something else costs a
-    few bytes of the dump. Everything else stays as it is and where it is,
-    which is what makes the dump worth having.
-
-    Every offset is looked at, whatever was found before it. Skipping past a
-    value once it is found would be the natural way to walk a frame, and a
-    false match would then carry the search over the id of a real one - whose
-    value would be printed whole. Looked at one by one, a false match can
-    only blank more.
-    """
-    hidden = bytearray(len(frame))
-    for at in range(len(frame)):
-        head, value = _private_at(frame, at)
-        start = at + head
-        hidden[start : start + value] = b"\x01" * len(hidden[start : start + value])
-    return "".join(
-        "xx" if blank else f"{byte:02x}"
-        for byte, blank in zip(frame, hidden, strict=True)
-    )
 
 
 def _named(listener: Callable[[], None]) -> str:
