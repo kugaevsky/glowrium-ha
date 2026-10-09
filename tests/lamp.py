@@ -51,9 +51,9 @@ class LampLink:
     async def write_gatt_char(
         self, uuid: str, data: bytes, response: bool = True
     ) -> None:
-        """Take a write, and note it on the lamp."""
+        """Take a write, and note it on the lamp - which may be scripted to fail it."""
         self._gone_is_an_error()
-        self._lamp.written.append((uuid, bytes(data)))
+        self._lamp.taken(self, uuid, bytes(data))
 
     async def read_gatt_char(self, _uuid: str) -> bytearray:
         """Read a characteristic: nothing, as of a lamp that cannot be read.
@@ -96,6 +96,41 @@ class ScriptedLamp:
         self.written: list[tuple[str, bytes]] = []
         self._in_range = True
         self._through: Callable[..., Awaitable[Any]] | None = None
+        # What the next writes meet, when the lamp is scripted to fail them:
+        # the error, how many writes (None: every one), and what the lamp
+        # reports back first, if it acts on the write (see fails_writes).
+        self._failing: (
+            tuple[Exception, int | None, Callable[[bytes], bytes] | None] | None
+        ) = None
+
+    def fails_writes(
+        self,
+        error: Exception,
+        *,
+        times: int | None = None,
+        saying: Callable[[bytes], bytes] | None = None,
+    ) -> None:
+        """Fail the next ``times`` writes (every one, if not given) with ``error``.
+
+        A failed write was still put to the lamp, and is noted as one. With
+        ``saying``, the lamp reports back first - what it makes of the frame
+        it was written - and only then fails the write: a lamp that acted on
+        it and lost the acknowledgement.
+        """
+        self._failing = (error, times, saying)
+
+    def taken(self, link: LampLink, uuid: str, frame: bytes) -> None:
+        """Note a write ``link`` was given, and fail it if the lamp is scripted to."""
+        self.written.append((uuid, frame))
+        if self._failing is None:
+            return
+        error, left, saying = self._failing
+        if left is not None:
+            left -= 1
+            self._failing = (error, left, saying) if left > 0 else None
+        if saying is not None:
+            link.say(saying(frame))
+        raise error
 
     async def dial(self, lost: Callable[[Any], None]) -> Any:
         """Hand out a link, as the coordinator's dial: this is what it is given."""

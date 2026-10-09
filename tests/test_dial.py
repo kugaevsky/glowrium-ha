@@ -197,6 +197,45 @@ async def test_a_test_takes_the_coordinators_link_through_one_door(
     assert link_of(coordinator).in_reach is coordinator.available
 
 
+async def test_a_write_the_lamp_is_scripted_to_fail_is_taken_and_then_fails() -> None:
+    """A failed write was still put to the lamp: noted, then the error is raised.
+
+    ``times`` writes fail - every one, if it is not given. A lamp at the edge
+    of range fails one write and takes the next, on the link the retry made.
+    """
+    lamp = ScriptedLamp()
+    lamp.fails_writes(BleakError("dropped"), times=1)
+    link = await lamp.dial(MagicMock())
+
+    with pytest.raises(BleakError, match="dropped"):
+        await link.write_gatt_char(WRITE_UUID, b"\xa0")
+    await link.write_gatt_char(WRITE_UUID, b"\xa1")
+
+    assert lamp.written == [(WRITE_UUID, b"\xa0"), (WRITE_UUID, b"\xa1")]
+
+
+async def test_a_lamp_that_acts_on_a_write_and_loses_the_acknowledgement() -> None:
+    """It reports what the write set, and only then is the write called failed.
+
+    ``saying`` is what the lamp reports back, made from the frame it was
+    written: on a G7 at the edge of range the report arrived before the error
+    did, and that is the order here.
+    """
+    lamp = ScriptedLamp()
+    lamp.fails_writes(
+        BleakError("Unlikely Error"), saying=lambda frame: b"\xa1\x06" + frame[-1:]
+    )
+    heard: list[bytes] = []
+    link = await lamp.dial(MagicMock())
+    await link.start_notify("any", lambda _characteristic, data: heard.append(data))
+
+    with pytest.raises(BleakError, match="Unlikely Error"):
+        await link.write_gatt_char(WRITE_UUID, b"\xa1\x06\xf5")
+
+    assert heard == [b"\xa1\x06\xf5"]
+    assert lamp.written == [(WRITE_UUID, b"\xa1\x06\xf5")]
+
+
 def test_a_helper_given_the_coordinator_alone_finds_its_lamp(
     hass: HomeAssistant,
 ) -> None:

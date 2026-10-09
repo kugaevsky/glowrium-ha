@@ -55,7 +55,7 @@ from custom_components.glowrium.coordinator import (
     _parse_device_info,
 )
 
-from .lamp import LampLink, ScriptedLamp, lamp_of, turn_over
+from .lamp import LampLink, ScriptedLamp, lamp_of, link_of, turn_over
 
 
 def _connected_coordinator(
@@ -461,13 +461,12 @@ async def test_model_resolution(hass: HomeAssistant) -> None:
 
 async def test_write_retries_once_after_a_dropped_link(hass: HomeAssistant) -> None:
     """A write that fails once reconnects and retries before succeeding."""
-    coordinator, client = _connected_coordinator(hass)
-    client.write_gatt_char = AsyncMock(side_effect=[BleakError("dropped"), None])
-    dial = _dialling(coordinator, client)
+    coordinator, lamp = _at_a_lamp(hass)
+    lamp.fails_writes(BleakError("dropped"), times=1)
 
     await coordinator.async_set_power(True)
-    assert client.write_gatt_char.await_count == 2  # failed, then retried
-    dial.assert_awaited_once()  # a reconnect happened before the retry
+    assert len(lamp.written) == 2  # failed, then retried
+    assert lamp.dials == 2  # a reconnect happened before the retry
     assert coordinator.state[KEY_POWER] is True
 
 
@@ -475,11 +474,10 @@ async def test_write_raises_after_two_failures(
     hass: HomeAssistant, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """A write that keeps failing is reported as a readable HA error."""
-    coordinator, client = _connected_coordinator(hass)
+    coordinator, lamp = _at_a_lamp(hass)
     # Nothing will confirm this write, so do not sit out the whole grace window.
     monkeypatch.setattr(link_module, "_CONFIRM_TIMEOUT", 0.01)
-    client.write_gatt_char = AsyncMock(side_effect=BleakError("down"))
-    _dialling(coordinator, client)
+    lamp.fails_writes(BleakError("down"))
 
     with pytest.raises(HomeAssistantError) as err:
         await coordinator.async_set_power(True)
@@ -489,7 +487,7 @@ async def test_write_raises_after_two_failures(
     assert isinstance(err.value.__cause__, link_module.LinkLostError)
     assert str(err.value.__cause__) == "down"
     assert isinstance(err.value.__cause__.__cause__, BleakError)
-    assert client.write_gatt_char.await_count == 2  # tried twice, then gave up
+    assert len(lamp.written) == 2  # tried twice, then gave up
 
 
 async def test_state_request_abandoned_only_after_repeated_refusal(
@@ -898,10 +896,10 @@ async def test_a_ramp_that_never_reached_the_lamp_is_not_remembered(
     hass: HomeAssistant, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """What the user was told had failed is not applied behind their back later."""
-    coordinator, client = _connected_coordinator(hass)
+    coordinator, lamp = _at_a_lamp(hass)
     coordinator._ingest(cbor.encode({KEY_LIGHTING_MODE: 5}))
     monkeypatch.setattr(link_module, "_CONFIRM_TIMEOUT", 0.01)
-    client.write_gatt_char.side_effect = BleakError("Not connected")
+    lamp.fails_writes(BleakError("Not connected"))
 
     with pytest.raises(HomeAssistantError):
         await coordinator.async_set_ramp(30)
@@ -917,15 +915,14 @@ async def test_command_gives_up_instead_of_hanging(
     bleak's own retries can keep a connect attempt alive for minutes, which
     made a button in the UI look like it had hung; the command budget caps it.
     """
-    coordinator, _client = _connected_coordinator(hass)
-    coordinator._client = None
+    coordinator, lamp = _at_a_lamp(hass)
     monkeypatch.setattr(link_module, "_COMMAND_TIMEOUT", 0.05)
     monkeypatch.setattr(link_module, "_CONFIRM_TIMEOUT", 0.01)
 
     async def _never_connects(*_a: object, **_kw: object) -> None:
         await asyncio.Event().wait()
 
-    _dialling(coordinator).side_effect = _never_connects
+    lamp.dials_through(_never_connects)
     with pytest.raises(HomeAssistantError) as err:
         await coordinator.async_set_power(True)
     assert err.value.translation_key == "cannot_connect"
@@ -1339,15 +1336,13 @@ async def test_lost_acknowledgement_is_not_reported_as_failure(
     state 32 ms BEFORE the error surfaced. The user saw a failure toast, a lit
     lamp, and an entity reading `on`.
     """
-    coordinator, client = _connected_coordinator(hass)
-
-    async def _write_then_notify(*_args: object, **_kwargs: object) -> None:
-        # The device receives the write and reports the new state; only the
-        # acknowledgement is lost, so bleak still raises.
-        coordinator._ingest(cbor.encode({KEY_POWER: True}))
-        raise BleakError("GATT Protocol Error: Unlikely Error")
-
-    client.write_gatt_char = AsyncMock(side_effect=_write_then_notify)
+    coordinator, lamp = _at_a_lamp(hass)
+    # The device receives the write and reports the new state; only the
+    # acknowledgement is lost, so bleak still raises.
+    lamp.fails_writes(
+        BleakError("GATT Protocol Error: Unlikely Error"),
+        saying=lambda _frame: cbor.encode({KEY_POWER: True}),
+    )
 
     await coordinator.async_set_power(True)  # must not raise
     assert coordinator.state[KEY_POWER] is True
@@ -1357,9 +1352,9 @@ async def test_a_command_that_truly_failed_still_raises(
     hass: HomeAssistant, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """Silence is not success: with no confirmation the error still surfaces."""
-    coordinator, client = _connected_coordinator(hass)
+    coordinator, lamp = _at_a_lamp(hass)
     monkeypatch.setattr(link_module, "_CONFIRM_TIMEOUT", 0.05)
-    client.write_gatt_char = AsyncMock(side_effect=BleakError("Not connected"))
+    lamp.fails_writes(BleakError("Not connected"))
 
     with pytest.raises(HomeAssistantError) as err:
         await coordinator.async_set_power(True)
@@ -1374,20 +1369,19 @@ async def test_confirmation_ignores_keys_the_device_never_reports(
     0x2c and 0x32 are constants the lamp never reports back; requiring them to
     match would mean no mode command could ever be confirmed.
     """
-    coordinator, client = _connected_coordinator(hass)
+    coordinator, lamp = _at_a_lamp(hass)
     monkeypatch.setattr(link_module, "_CONFIRM_TIMEOUT", 0.05)
     coordinator.state[KEY_LIGHTING_MODE] = 1
 
-    async def _write_then_notify(_uuid: str, data: bytes, **_kw: object) -> None:
+    def _what_it_tracks(frame: bytes) -> bytes:
         # The lamp reports back the properties it actually tracks - the mode and
         # the ramp - and never 0x2c or 0x32, which are fixed parameters.
-        sent = cbor.decode(data)
+        sent = cbor.decode(frame)
         reported = {k: v for k, v in sent.items() if k in (KEY_LIGHTING_MODE, 0x2F)}
         assert set(sent) - set(reported) == {0x2C, 0x32}
-        coordinator._ingest(cbor.encode(reported))
-        raise BleakError("Unlikely Error")
+        return cbor.encode(reported)
 
-    client.write_gatt_char = AsyncMock(side_effect=_write_then_notify)
+    lamp.fails_writes(BleakError("Unlikely Error"), saying=_what_it_tracks)
     await coordinator.async_set_lighting_mode(5)  # must not raise
     assert coordinator.state[KEY_LIGHTING_MODE] == 5
 
@@ -1835,11 +1829,9 @@ async def test_confirmation_waits_for_a_report_that_arrives_late(
     delivered - which means actually waiting on the device, not sampling state
     once and giving up.
     """
-    coordinator, client = _connected_coordinator(hass)
-    client.write_gatt_char = AsyncMock(side_effect=BleakError("Unlikely Error"))
+    coordinator, lamp = _at_a_lamp(hass)
+    lamp.fails_writes(BleakError("Unlikely Error"))
     assert KEY_POWER not in coordinator.state  # nothing to match at failure time
-
-    _dialling(coordinator, client)
 
     async def _report_after_the_failure() -> None:
         await asyncio.sleep(0.05)
@@ -1852,9 +1844,7 @@ async def test_confirmation_waits_for_a_report_that_arrives_late(
         await reporter
     assert coordinator.state[KEY_POWER] is True
     # A command asks for a bare link: nothing but the command was written.
-    assert {call.args[0] for call in client.write_gatt_char.await_args_list} == {
-        WRITE_UUID
-    }
+    assert {uuid for uuid, _frame in lamp.written} == {WRITE_UUID}
 
 
 async def test_a_write_with_nothing_reportable_is_never_confirmed(
@@ -1866,17 +1856,14 @@ async def test_a_write_with_nothing_reportable_is_never_confirmed(
     only keys outside STATE_KEYS has no evidence available either way, and
     silence must not be read as success.
     """
-    coordinator, client = _connected_coordinator(hass)
+    coordinator, lamp = _at_a_lamp(hass)
     monkeypatch.setattr(link_module, "_CONFIRM_TIMEOUT", 0.05)
-    client.write_gatt_char = AsyncMock(side_effect=BleakError("down"))
-    _dialling(coordinator, client)
+    lamp.fails_writes(BleakError("down"))
 
     with pytest.raises(HomeAssistantError):
         await coordinator._async_write({0x2C: b"\x02\xd0"})
     # A command asks for a bare link: nothing but the command was written.
-    assert {call.args[0] for call in client.write_gatt_char.await_args_list} == {
-        WRITE_UUID
-    }
+    assert {uuid for uuid, _frame in lamp.written} == {WRITE_UUID}
 
 
 async def test_a_background_connect_primes_once(hass: HomeAssistant) -> None:
@@ -2573,18 +2560,15 @@ async def test_a_stale_mirror_does_not_vouch_for_a_failed_write(
     failed, leaving the lamp on and removing the only signal the user had that
     it is unreachable.
     """
-    coordinator, client = _connected_coordinator(hass)
+    coordinator, lamp = _at_a_lamp(hass)
     monkeypatch.setattr(link_module, "_CONFIRM_TIMEOUT", 0.05)
     coordinator.state[KEY_POWER] = False  # what the lamp said, some time ago
-    client.write_gatt_char = AsyncMock(side_effect=BleakError("Not connected"))
-    _dialling(coordinator, client)
+    lamp.fails_writes(BleakError("Not connected"))
 
     with pytest.raises(HomeAssistantError):
         await coordinator.async_set_power(False)
     # A command asks for a bare link: nothing but the command was written.
-    assert {call.args[0] for call in client.write_gatt_char.await_args_list} == {
-        WRITE_UUID
-    }
+    assert {uuid for uuid, _frame in lamp.written} == {WRITE_UUID}
 
 
 async def test_a_report_from_before_the_command_does_not_vouch_for_it(
@@ -2596,11 +2580,10 @@ async def test_a_report_from_before_the_command_does_not_vouch_for_it(
     reported "off" some time ago. That report is the only one there is of
     what the command sets, and it is older than the command.
     """
-    coordinator, client = _connected_coordinator(hass)
+    coordinator, lamp = _at_a_lamp(hass)
     monkeypatch.setattr(link_module, "_CONFIRM_TIMEOUT", 0.05)
     coordinator._ingest(cbor.encode({KEY_POWER: False}))  # some time ago
-    client.write_gatt_char = AsyncMock(side_effect=BleakError("Not connected"))
-    _dialling(coordinator, client)
+    lamp.fails_writes(BleakError("Not connected"))
 
     with pytest.raises(HomeAssistantError):
         await coordinator.async_set_power(False)
@@ -2616,14 +2599,12 @@ async def test_a_command_the_lamp_vouches_for_does_not_wait_out_the_ceiling(
     wait that always ran its full length was proposed with the split (#21),
     and is not made unless it is named there first.
     """
-    coordinator, client = _connected_coordinator(hass)
+    coordinator, lamp = _at_a_lamp(hass)
     monkeypatch.setattr(link_module, "_CONFIRM_TIMEOUT", 30)
-
-    async def _acted_on_and_not_acknowledged(*_args: object, **_kw: object) -> None:
-        coordinator._ingest(cbor.encode({KEY_POWER: True}))
-        raise BleakError("Unlikely Error")
-
-    client.write_gatt_char = AsyncMock(side_effect=_acted_on_and_not_acknowledged)
+    lamp.fails_writes(  # acted on, and not acknowledged
+        BleakError("Unlikely Error"),
+        saying=lambda _frame: cbor.encode({KEY_POWER: True}),
+    )
 
     async with asyncio.timeout(2):
         await coordinator.async_set_power(True)  # must not raise, and not wait
@@ -2668,11 +2649,10 @@ async def test_a_command_that_failed_is_not_echoed_into_the_mirror(
     show a lamp switched on that never heard the command, under an error
     saying it could not be reached.
     """
-    coordinator, client = _connected_coordinator(hass)
+    coordinator, lamp = _at_a_lamp(hass)
     monkeypatch.setattr(link_module, "_CONFIRM_TIMEOUT", 0.01)
     coordinator._ingest(cbor.encode({KEY_POWER: False}))
-    client.write_gatt_char = AsyncMock(side_effect=BleakError("down"))
-    _dialling(coordinator, client)
+    lamp.fails_writes(BleakError("down"))
 
     with pytest.raises(HomeAssistantError):
         await coordinator.async_set_power(True)
@@ -2689,14 +2669,13 @@ async def test_a_write_is_counted_whether_or_not_the_lamp_took_it(
     nothing from one that is never spoken to. Counted before the write: a
     command whose two tries both failed was put to the lamp twice.
     """
-    coordinator, client = _connected_coordinator(hass)
+    coordinator, lamp = _at_a_lamp(hass)
     monkeypatch.setattr(link_module, "_CONFIRM_TIMEOUT", 0.01)
 
     await coordinator.async_set_power(True)
     assert coordinator.diagnostics()["link"]["writes_sent"] == 1
 
-    client.write_gatt_char = AsyncMock(side_effect=BleakError("down"))
-    _dialling(coordinator, client)
+    lamp.fails_writes(BleakError("down"))
     with pytest.raises(HomeAssistantError):
         await coordinator.async_set_power(False)
     assert coordinator.diagnostics()["link"]["writes_sent"] == 3
@@ -2721,29 +2700,19 @@ async def test_a_report_vouches_only_for_what_it_carries(
     only because nothing has corrected it, and the command was reported as
     delivered to a lamp that never got it.
     """
-    coordinator, client = _connected_coordinator(hass)
+    coordinator, lamp = _at_a_lamp(hass)
     monkeypatch.setattr(link_module, "_CONFIRM_TIMEOUT", 0.05)
     coordinator.state[KEY_POWER] = False  # what the lamp said, some time ago
-
-    async def _fails_and_the_lamp_says_something_else(
-        *_args: object, **_kwargs: object
-    ) -> None:
-        coordinator._ingest(bytes.fromhex(frame))
-        raise BleakError("Not connected")
-
-    client.write_gatt_char = AsyncMock(
-        side_effect=_fails_and_the_lamp_says_something_else
+    # The write fails, and the lamp says something else.
+    lamp.fails_writes(
+        BleakError("Not connected"), saying=lambda _frame: bytes.fromhex(frame)
     )
-
-    _dialling(coordinator, client)
 
     with pytest.raises(HomeAssistantError):
         await coordinator.async_set_power(False)
     assert coordinator.state[KEY_BRIGHTNESS] == 40  # the report itself was taken
     # A command asks for a bare link: nothing but the command was written.
-    assert {call.args[0] for call in client.write_gatt_char.await_args_list} == {
-        WRITE_UUID
-    }
+    assert {uuid for uuid, _frame in lamp.written} == {WRITE_UUID}
 
 
 async def test_a_command_is_vouched_for_by_what_it_changed(
@@ -2755,18 +2724,17 @@ async def test_a_command_is_vouched_for_by_what_it_changed(
     the command carried is not reported again, and need not be: the mode
     was, after the write, and with the value asked for.
     """
-    coordinator, client = _connected_coordinator(hass)
+    coordinator, lamp = _at_a_lamp(hass)
     monkeypatch.setattr(link_module, "_CONFIRM_TIMEOUT", 0.05)
     coordinator._ingest(
         cbor.encode({KEY_LIGHTING_MODE: 1, KEY_RAMP: bytes.fromhex("0e10")})
     )
 
-    async def _write_then_notify(_uuid: str, data: bytes, **_kw: object) -> None:
-        assert cbor.decode(data)[KEY_RAMP] == bytes.fromhex("0e10")
-        coordinator._ingest(cbor.encode({KEY_LIGHTING_MODE: 5}))
-        raise BleakError("Unlikely Error")
+    def _only_what_changed(frame: bytes) -> bytes:
+        assert cbor.decode(frame)[KEY_RAMP] == bytes.fromhex("0e10")
+        return cbor.encode({KEY_LIGHTING_MODE: 5})
 
-    client.write_gatt_char = AsyncMock(side_effect=_write_then_notify)
+    lamp.fails_writes(BleakError("Unlikely Error"), saying=_only_what_changed)
 
     await coordinator.async_set_lighting_mode(5)  # must not raise
     assert coordinator.state[KEY_LIGHTING_MODE] == 5
@@ -2782,12 +2750,10 @@ async def test_a_command_that_never_reached_the_wire_fails_at_once(
     added two seconds to every command an automation sends to a lamp that is
     off or out of range.
     """
-    coordinator, _ = _connected_coordinator(hass)
-    coordinator._client = None
+    coordinator, lamp = _at_a_lamp(hass)
+    lamp.out_of_range()
     coordinator.state[KEY_POWER] = True  # and the mirror happens to agree
     monkeypatch.setattr(link_module, "_CONFIRM_TIMEOUT", 30.0)
-    dial = _dialling(coordinator)
-    dial.side_effect = BleakError("AA:BB:CC:DD:EE:FF is not in range")
 
     async with asyncio.timeout(1):  # nowhere near the grace window
         with pytest.raises(HomeAssistantError):
@@ -4571,16 +4537,14 @@ async def test_a_write_on_a_bus_closed_under_it_is_retried_like_a_lost_link(
     particular, that went straight out of the command - no retry, and a bare
     EOFError where the user should read "cannot connect".
     """
-    coordinator, first = _connected_coordinator(hass)
-    first.write_gatt_char = AsyncMock(side_effect=failure)
-    second = _fresh_client()
-    second.write_gatt_char = AsyncMock()
-    _dialling(coordinator, second)
+    coordinator, lamp = _at_a_lamp(hass)
+    lamp.fails_writes(failure, times=1)
 
     await coordinator.async_set_power(True)  # the retry, on a fresh link, works
 
-    first.disconnect.assert_awaited_once()
-    assert coordinator._client is second
+    first, second = lamp.links
+    assert first.hung_up
+    assert link_of(coordinator).client is second
 
 
 @pytest.mark.parametrize("failure", _BUS_CLOSED, ids=["eof", "bad-fd"])
@@ -4588,11 +4552,8 @@ async def test_a_command_that_keeps_meeting_a_closed_bus_fails_readably(
     hass: HomeAssistant, monkeypatch: pytest.MonkeyPatch, failure: Exception
 ) -> None:
     """...and when the retry meets the same, the user is told in their words."""
-    coordinator, first = _connected_coordinator(hass)
-    first.write_gatt_char = AsyncMock(side_effect=failure)
-    second = _fresh_client()
-    second.write_gatt_char = AsyncMock(side_effect=failure)
-    _dialling(coordinator, second)
+    coordinator, lamp = _at_a_lamp(hass)
+    lamp.fails_writes(failure)
     monkeypatch.setattr(link_module, "_CONFIRM_TIMEOUT", 0.01)
 
     with pytest.raises(HomeAssistantError):
