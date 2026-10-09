@@ -1931,40 +1931,21 @@ async def test_a_dropped_link_is_forgotten(hass: HomeAssistant) -> None:
     assert link_of(coordinator).diagnostics()["connected"] is False
 
 
-async def test_a_write_without_a_link_is_refused_not_dropped(
-    hass: HomeAssistant, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """Writing with no client must raise, so the retry and the user hear about it.
-
-    Returning quietly would make every command look like it succeeded while
-    nothing reached the lamp.
-    """
-    coordinator, _lamp = _at_a_lamp(hass)
-    monkeypatch.setattr(link_module, "_CONFIRM_TIMEOUT", 0.01)
-
-    with pytest.raises(link_module.LinkLostError):
-        await coordinator._write_raw({KEY_POWER: True})
-
-
-async def test_the_bench_takes_a_link_and_writes_with_nothing_asked_of_the_lamp(
+async def test_a_write_on_a_turn_whose_link_is_gone_is_refused_not_dropped(
     hass: HomeAssistant,
 ) -> None:
-    """The two names the bench still comes in by do what they did.
+    """Writing on a turn whose link has gone must raise, so the retry and the user hear.
 
-    It measures the lamp before anything has been asked of it: it takes a
-    link without the first exchange, and writes frames no command of the
-    integration would, holding the lock itself. Both names go when the bench
-    speaks to the link through its own interface (#21, stage 3).
+    Returning quietly would make every command look like it succeeded while
+    nothing reached the lamp. Every write of the device half goes on a turn;
+    the raw write the bench once had for this went with #21, stage 3.
     """
-    coordinator, lamp = _at_a_lamp(hass)
+    coordinator, _lamp, link = await _holding_a_link(hass)
+    turn = turn_over(coordinator, link)
+    link.lose()
 
-    async with link_of(coordinator).lock:
-        await coordinator._connect_locked(prime=False)
-        await coordinator._write_raw({KEY_POWER: True})
-
-    assert link_of(coordinator).client is lamp.links[0]
-    assert link_of(coordinator).diagnostics()["primed"] is False
-    assert lamp.written == [(WRITE_UUID, cbor.encode({KEY_POWER: True}))]
+    with pytest.raises(link_module.LinkLostError):
+        await turn.write(WRITE_UUID, cbor.encode({KEY_POWER: True}))
 
 
 async def test_the_entities_are_told_when_a_link_is_taken(hass: HomeAssistant) -> None:

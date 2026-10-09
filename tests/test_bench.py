@@ -5,6 +5,7 @@ report is what one looks at next to a lamp, and what gets shown to somebody
 else when the lamp does something nobody expected.
 """
 
+import ast
 import io
 import logging
 from types import ModuleType
@@ -22,7 +23,7 @@ from custom_components.glowrium.coordinator import (
     _parse_device_info,
 )
 
-from .conftest import load_tool
+from .conftest import ROOT, load_tool
 
 _CURVE_KEY = 0x34
 # Seven times, seconds from midnight: 06:00 ... 18:00.
@@ -61,6 +62,8 @@ def _a_lamp() -> GlowriumCoordinator:
 
 
 _PRIVATE = ("12.3456", "65.4321", _CURVE.hex(), "06:00", "18:00", _SERIAL, _IN_INFO)
+# Asked for everything, the curve is shown as the times it holds, not as bytes.
+_SHOWN = tuple(private for private in _PRIVATE if private != _CURVE.hex())
 
 
 def test_the_report_leaves_out_what_places_or_identifies_the_lamp(
@@ -72,8 +75,7 @@ def test_the_report_leaves_out_what_places_or_identifies_the_lamp(
     and its serial number are not in it. That they are there is: whoever
     reads the report can see the lamp has them.
     """
-    bench._report(_a_lamp(), None)
-    bench._settle_curve({}, _CURVE, _CURVE)
+    bench._report(_a_lamp())
 
     printed = capsys.readouterr().out
     for private in _PRIVATE:
@@ -94,11 +96,10 @@ def test_the_report_shows_everything_when_asked_to(
     """Next to one's own lamp, the coordinates are what one came to see."""
     monkeypatch.setattr(bench._PRIVACY, "show", True)
 
-    bench._report(_a_lamp(), None)
-    bench._settle_curve({}, _CURVE, _CURVE)
+    bench._report(_a_lamp())
 
     printed = capsys.readouterr().out
-    for private in _PRIVATE:
+    for private in _SHOWN:
         assert private in printed
 
 
@@ -129,7 +130,7 @@ def test_a_model_and_a_firmware_are_printed_as_the_log_says_them(
     coordinator = _a_lamp()
     coordinator.device_info = _parse_device_info(info.encode())
 
-    bench._report(coordinator, None)
+    bench._report(coordinator)
 
     printed = capsys.readouterr().out
     assert _SERIAL not in printed
@@ -185,3 +186,28 @@ def test_before_the_lamp_is_found_there_is_no_address_to_take_out(
     printed = io.StringIO()
     bench._Masked(printed).write("scanning 10s…\n")
     assert printed.getvalue() == "scanning 10s…\n"
+
+
+def test_the_bench_reaches_the_coordinator_by_two_private_names_only() -> None:
+    """The bench speaks to the lamp as Home Assistant does: by the interface.
+
+    Two things it reaches for that are not on it: the flag that keeps the
+    bring-up from ever running on a bench, and the link the coordinator
+    holds, through which it makes the connect Home Assistant would make at
+    start-up - its one door to the link, as ``link_of`` is the tests'. The
+    probes that reached for the client, the lock and the rest were retired
+    with #21: mypy does not read this file, so a reach that outlived its
+    name would only have shown next to a lamp.
+    """
+    tree = ast.parse((ROOT / "tools" / "bench.py").read_text(encoding="utf-8"))
+    reached = sorted(
+        {
+            node.attr
+            for node in ast.walk(tree)
+            if isinstance(node, ast.Attribute)
+            and node.attr.startswith("_")
+            and isinstance(node.value, ast.Name)
+            and node.value.id == "coordinator"
+        }
+    )
+    assert reached == ["_activation_checked", "_link"]

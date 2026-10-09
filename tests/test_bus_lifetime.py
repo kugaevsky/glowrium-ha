@@ -1314,10 +1314,9 @@ def test_only_the_link_connects_hangs_up_or_knows_what_the_library_raises() -> N
 
     Outside it nothing connects a client, nothing disconnects one, and
     nothing names what the Bluetooth library raises: a lost link is the
-    link's own error by the time anything else hears of it (#21). Two of the
-    library's types are still named outside: the device Home Assistant's
-    scanners find, which the dial is handed a lookup for, and the client, in
-    the names the coordinator keeps for tests that have not moved.
+    link's own error by the time anything else hears of it (#21). One of the
+    library's types is still named outside: the device Home Assistant's
+    scanners find, which the dial is handed a lookup for.
     """
     package = Path(coordinator_module.__file__).parent
     found: list[str] = []
@@ -1332,11 +1331,7 @@ def test_only_the_link_connects_hangs_up_or_knows_what_the_library_raises() -> N
             elif isinstance(node, ast.ImportFrom) and (node.module or "").startswith(
                 "bleak"
             ):
-                said = [
-                    one.name
-                    for one in node.names
-                    if one.name not in ("BLEDevice", "BleakClientWithServiceCache")
-                ]
+                said = [one.name for one in node.names if one.name != "BLEDevice"]
             elif isinstance(node, ast.Name) and node.id in (
                 "BleakError",
                 "establish_connection",
@@ -1375,51 +1370,30 @@ _OF_THE_LINK = frozenset(
 )
 
 
-def test_the_coordinator_goes_by_none_of_the_names_it_keeps_for_the_tests() -> None:
-    """What the coordinator kept of the link's is kept for the tests and the bench.
+def test_the_coordinator_holds_no_client_and_reaches_the_link_for_its_offer() -> None:
+    """No client is held in the device half, and of the link it knows its offer.
 
-    The names it had for the client, the lock and the rest stand between two
-    marks in its source, each a way through to the link. Nothing of its own
-    goes by them, names a client or reaches for the link's: the device half
-    is handed a turn, so no client is held in it - and what stands between
-    the marks can go as the tests and the bench cross over (#21, stage 3).
+    The names the coordinator kept of the link's - the client, the lock and
+    the rest, each a way through to the link for the tests and the bench -
+    went as those crossed over (#21, stage 3). The device half is handed a
+    turn, so nothing in it names a client; of the link it reaches for what
+    the link offers it (``_OF_THE_LINK``) and nothing else; and of a turn,
+    nothing that is the turn's own. Nothing else in the integration reaches
+    the link at all.
     """
-    lines = Path(coordinator_module.__file__).read_text(encoding="utf-8").splitlines()
-
-    def _line_of(mark: str) -> int:
-        return next(number for number, line in enumerate(lines, 1) if mark in line)
-
-    first = _line_of("# --- The link's own, under the names they had here")
-    last = _line_of("# --- What the link is handed")
-    tree = ast.parse("\n".join(lines))
-    kept = {
-        node.name
-        for node in ast.walk(tree)
-        if isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef)
-        and first < node.lineno < last
-    }
-    outside = [
-        node
-        for node in ast.walk(tree)
-        if isinstance(node, ast.Attribute | ast.Name) and not first < node.lineno < last
+    tree = ast.parse(Path(coordinator_module.__file__).read_text(encoding="utf-8"))
+    nodes = [
+        node for node in ast.walk(tree) if isinstance(node, ast.Attribute | ast.Name)
     ]
 
-    goes_by = sorted(
-        f"{node.lineno} self.{node.attr}"
-        for node in outside
-        if isinstance(node, ast.Attribute)
-        and node.attr in kept
-        and isinstance(node.value, ast.Name)
-        and node.value.id == "self"
-    )
     names_a_client = sorted(
         node.lineno
-        for node in outside
+        for node in nodes
         if isinstance(node, ast.Name) and node.id == "BleakClientWithServiceCache"
     )
     reaches_for = sorted(
         f"{node.lineno} {ast.unparse(node)}"
-        for node in outside
+        for node in nodes
         if isinstance(node, ast.Attribute)
         and (
             # Of the link, what it offers the device half and nothing else.
@@ -1436,9 +1410,6 @@ def test_the_coordinator_goes_by_none_of_the_names_it_keeps_for_the_tests() -> N
             )
         )
     )
-    assert "_client" in kept  # the marks are where they were
-    assert "_lock" in kept
-    assert goes_by == []
     assert names_a_client == []
     assert reaches_for == []
     # And nothing else in the integration reaches the link at all.

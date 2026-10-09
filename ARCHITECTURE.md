@@ -599,12 +599,12 @@ underscore: `Link.open()` is the first half of what `_connect_locked` was (the
 refusals, the dial, subscribe-then-keep), `Link.hang_up()` is `_hang_up`,
 `Link.connect()` is `_async_ensure_connected`, `Link.prime_held()` and
 `Link.probe_held()` are `_async_prime` and `_async_probe`, `Link.tick()` is
-what the poll decided, `Link.send()` is the delivery of a command. The tests
-have crossed over: they stand a scripted lamp at the dial (`tests/lamp.py`)
-and reach the link a coordinator holds through one door, `link_of`. The
-bench has not yet, and the six names it still comes in by are kept for it
-alone; nothing of the coordinator's own goes by them, and a test reads the
-source to hold that.
+what the poll decided, `Link.send()` is the delivery of a command. The old
+names are gone: the tests stand a scripted lamp at the dial (`tests/lamp.py`)
+and reach the link a coordinator holds through one door, `link_of`; the bench
+connects through that link and speaks through the coordinator's commands. A
+test reads the coordinator's source to hold that it names no client and
+reaches the link for what the link offers it and nothing else.
 
 Two independent triggers, both funnelling into a single guarded reconnect task
 (one at a time, so that the ~1 Hz advertisements do not start a connect storm):
@@ -1163,9 +1163,9 @@ Unit tests live in `tests/` and **never touch real Bluetooth**:
   tested here too, on a `Link` built alone. So is the seam between the link and the device half, by
   tests that read the source: every GATT call is the link's and made under
   its guard; nothing outside the link's module connects a client, hangs one
-  up or names what the Bluetooth library raises; the coordinator goes by
-  none of the names it still keeps for the bench; and hanging a link up and
-  telling the entities stand together in one method.
+  up or names what the Bluetooth library raises; the coordinator names no
+  client and reaches the link for what it offers and nothing else; and
+  hanging a link up and telling the entities stand together in one method.
 - `test_init.py` — setup and unload of the config entry, the entities each
   platform produces and the command each control ends in, what is restored
   after a restart, what the lamp says about itself reaching the device
@@ -1211,7 +1211,8 @@ once a week with nothing pushed: what it tests moves by itself, and
 `_close_bus` reaches into bleak's private attributes.
 Verification against live hardware is separate and not part
 of the automated suite: `tools/bench.py` runs the production coordinator
-against a lamp from the machine it is started on — see
+against a lamp from the machine it is started on, speaking to it as Home
+Assistant does and reading nothing of its own — see
 [CONTRIBUTING.md](CONTRIBUTING.md#testing-on-hardware). Mind the stack it runs
 on: what a read does to the link was invisible from macOS and only showed on
 the BlueZ host.

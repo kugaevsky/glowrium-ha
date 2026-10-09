@@ -11,7 +11,6 @@ from time import monotonic
 from typing import Any
 
 from bleak.backends.device import BLEDevice
-from bleak_retry_connector import BleakClientWithServiceCache
 from homeassistant.components import bluetooth
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import CONF_MODEL_ID
@@ -358,52 +357,6 @@ class GlowriumCoordinator:
         alone reads better.
         """
         return self.name.removesuffix(f" ({self.address})")
-
-    # --- The link's own, under the names they had here -----------------------
-    #
-    # #21: the link holds these now, and makes the connect, the first exchange,
-    # the probe and the delivery of a command (link.py). Nothing of the
-    # coordinator's own goes by these names any more - a test holds that. The
-    # tests have crossed over (stage 3); what is left is kept for the bench,
-    # which has not, each a way through to the link, and each goes when
-    # nothing reaches through it.
-
-    @property
-    def _client(self) -> BleakClientWithServiceCache | None:
-        return self._link.client
-
-    @_client.setter
-    def _client(self, client: BleakClientWithServiceCache | None) -> None:
-        self._link.client = client
-
-    @property
-    def _lock(self) -> asyncio.Lock:
-        return self._link.lock
-
-    @property
-    def _primed_client(self) -> BleakClientWithServiceCache | None:
-        return self._link.primed
-
-    @_primed_client.setter
-    def _primed_client(self, client: BleakClientWithServiceCache | None) -> None:
-        self._link.primed = client
-
-    async def _connect_locked(self, *, prime: bool = True) -> None:
-        if prime:
-            await self._link.connect_locked()
-        elif not self._link.connected:
-            # The bench: a link, and nothing asked on it before it measures.
-            await self._link.open()
-
-    async def _async_prime(self) -> None:
-        await self._link.prime_held()
-
-    async def _write_raw(self, payload: dict[int, Any]) -> None:
-        # For a caller that holds _lock itself and has seen to a link: the
-        # bench, when it writes what no command of the integration would.
-        if self._client is None:
-            raise LinkLostError("write attempted while disconnected")
-        await self._write_on(Turn(self._link, self._client), payload)
 
     # --- What the link is handed ----------------------------------------------
 
