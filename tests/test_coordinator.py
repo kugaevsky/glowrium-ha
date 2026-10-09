@@ -77,6 +77,18 @@ def _connected_coordinator(
     return coordinator, client
 
 
+def _at_a_lamp(hass: HomeAssistant) -> tuple[GlowriumCoordinator, ScriptedLamp]:
+    """Return a coordinator at a scripted lamp in range, with no link yet.
+
+    A command dials the lamp bare - the link and the command's own write,
+    nothing else - so what the lamp has been written is the command and only
+    that (``lamp.written``). The link is taken on the first command, and the
+    entities are told of it then.
+    """
+    lamp = ScriptedLamp()
+    return lamp.coordinator(hass), lamp
+
+
 def _answers(
     coordinator: GlowriumCoordinator,
     client: MagicMock,
@@ -106,106 +118,88 @@ def _answers(
 
 async def test_set_power(hass: HomeAssistant) -> None:
     """Power writes {6: bool} to the command characteristic."""
-    coordinator, client = _connected_coordinator(hass)
+    coordinator, lamp = _at_a_lamp(hass)
     await coordinator.async_set_power(True)
-    client.write_gatt_char.assert_awaited_once_with(
-        WRITE_UUID, bytes.fromhex("a106f5"), response=True
-    )
+    assert lamp.written == [(WRITE_UUID, bytes.fromhex("a106f5"))]
     assert coordinator.state[KEY_POWER] is True
 
 
 async def test_set_brightness_clamped(hass: HomeAssistant) -> None:
     """Brightness is clamped to 0..100 and encoded as {8: n}."""
-    coordinator, client = _connected_coordinator(hass)
+    coordinator, lamp = _at_a_lamp(hass)
     await coordinator.async_set_brightness(150)
-    client.write_gatt_char.assert_awaited_once_with(
-        WRITE_UUID, bytes.fromhex("a1081864"), response=True
-    )
+    assert lamp.written == [(WRITE_UUID, bytes.fromhex("a1081864"))]
     assert coordinator.state[KEY_BRIGHTNESS] == 100
 
 
 async def test_set_light_state_batches(hass: HomeAssistant) -> None:
     """Power + brightness go out as a single CBOR map ({6: bool, 8: n})."""
-    coordinator, client = _connected_coordinator(hass)
+    coordinator, lamp = _at_a_lamp(hass)
     await coordinator.async_set_light_state(True, 25)
-    client.write_gatt_char.assert_awaited_once_with(
-        WRITE_UUID, bytes.fromhex("a206f5081819"), response=True
-    )
+    assert lamp.written == [(WRITE_UUID, bytes.fromhex("a206f5081819"))]
     assert coordinator.state[KEY_POWER] is True
     assert coordinator.state[KEY_BRIGHTNESS] == 25
     # Turning off carries no brightness key.
-    client.write_gatt_char.reset_mock()
+    lamp.written.clear()
     await coordinator.async_set_light_state(False)
-    client.write_gatt_char.assert_awaited_once_with(
-        WRITE_UUID, bytes.fromhex("a106f4"), response=True
-    )
+    assert lamp.written == [(WRITE_UUID, bytes.fromhex("a106f4"))]
 
 
 async def test_set_lighting_mode_matches_capture(hass: HomeAssistant) -> None:
     """Lighting-mode selection matches the captured command frame."""
-    coordinator, client = _connected_coordinator(hass)
+    coordinator, lamp = _at_a_lamp(hass)
     await coordinator.async_set_lighting_mode(5)
-    client.write_gatt_char.assert_awaited_once_with(
-        WRITE_UUID,
-        bytes.fromhex("a4182b05182c4202d0182f420e10183242001e"),
-        response=True,
-    )
+    assert lamp.written == [
+        (WRITE_UUID, bytes.fromhex("a4182b05182c4202d0182f420e10183242001e"))
+    ]
     assert coordinator.state[KEY_LIGHTING_MODE] == 5
 
 
 async def test_set_ramp_preserves_mode(hass: HomeAssistant) -> None:
     """Ramp re-sends the current lighting mode with a new 0x2f (30 min)."""
-    coordinator, client = _connected_coordinator(hass)
+    coordinator, lamp = _at_a_lamp(hass)
     coordinator.state[KEY_LIGHTING_MODE] = 1
     await coordinator.async_set_ramp(30)
-    client.write_gatt_char.assert_awaited_once_with(
-        WRITE_UUID,
-        bytes.fromhex("a4182b01182c4202d0182f420708183242001e"),
-        response=True,
-    )
+    assert lamp.written == [
+        (WRITE_UUID, bytes.fromhex("a4182b01182c4202d0182f420708183242001e"))
+    ]
 
 
 async def test_set_operating_mode_circadian(hass: HomeAssistant) -> None:
     """Circadian mode clears schedule (0x0d) then sets circadian (0x09)."""
-    coordinator, client = _connected_coordinator(hass)
+    coordinator, lamp = _at_a_lamp(hass)
     await coordinator.async_set_operating_mode("circadian")
-    assert client.write_gatt_char.await_count == 2
-    client.write_gatt_char.assert_any_await(
-        WRITE_UUID, bytes.fromhex("a10df4"), response=True
-    )
-    client.write_gatt_char.assert_any_await(
-        WRITE_UUID, bytes.fromhex("a109f5"), response=True
-    )
+    assert len(lamp.written) == 2
+    assert (WRITE_UUID, bytes.fromhex("a10df4")) in lamp.written
+    assert (WRITE_UUID, bytes.fromhex("a109f5")) in lamp.written
     assert coordinator.state[KEY_CIRCADIAN] is True
     assert coordinator.state[KEY_SCHEDULE] is False
 
 
 async def test_circadian_reapplies_ramp(hass: HomeAssistant) -> None:
     """Entering Circadian re-applies the user's ramp (the device resets it)."""
-    coordinator, client = _connected_coordinator(hass)
+    coordinator, lamp = _at_a_lamp(hass)
     coordinator.state[KEY_LIGHTING_MODE] = 1
     await coordinator.async_set_ramp(90)  # 90 min = 5400 s = 0x1518
-    client.write_gatt_char.reset_mock()
+    lamp.written.clear()
     await coordinator.async_set_operating_mode("circadian")
     # {0x0d: False}, {0x09: True}, then the mode payload re-applying the ramp.
-    assert client.write_gatt_char.await_count == 3
-    payload = cbor.decode(client.write_gatt_char.await_args_list[-1].args[1])
+    assert len(lamp.written) == 3
+    payload = cbor.decode(lamp.written[-1][1])
     assert payload[0x2F] == bytes.fromhex("1518")
 
 
 async def test_set_indicator(hass: HomeAssistant) -> None:
     """Indicator writes {0x17: bool}."""
-    coordinator, client = _connected_coordinator(hass)
+    coordinator, lamp = _at_a_lamp(hass)
     await coordinator.async_set_indicator(True)
-    client.write_gatt_char.assert_awaited_once_with(
-        WRITE_UUID, bytes.fromhex("a117f5"), response=True
-    )
+    assert lamp.written == [(WRITE_UUID, bytes.fromhex("a117f5"))]
     assert coordinator.state[KEY_INDICATOR] is True
 
 
 async def test_operating_mode_property(hass: HomeAssistant) -> None:
     """operating_mode is None until read, then reflects circadian/schedule keys."""
-    coordinator, _ = _connected_coordinator(hass)
+    coordinator, _ = _at_a_lamp(hass)
     assert coordinator.operating_mode is None  # state not read yet -> unknown
     coordinator.state[KEY_CIRCADIAN] = False
     coordinator.state[KEY_SCHEDULE] = False
@@ -219,7 +213,7 @@ async def test_operating_mode_property(hass: HomeAssistant) -> None:
 
 async def test_mode_allows_when_mode_unknown(hass: HomeAssistant) -> None:
     """mode_allows keeps mode entities available while the mode is unknown."""
-    coordinator, _ = _connected_coordinator(hass)
+    coordinator, _ = _at_a_lamp(hass)
     # Unknown mode (state not read) -> allowed for every mode, so nothing hides.
     assert coordinator.mode_allows("circadian") is True
     assert coordinator.mode_allows("schedule") is True
@@ -232,17 +226,15 @@ async def test_mode_allows_when_mode_unknown(hass: HomeAssistant) -> None:
 
 async def test_set_dst(hass: HomeAssistant) -> None:
     """DST writes {0x35: [enabled, offset]} - enabled byte 01, offset 3600s."""
-    coordinator, client = _connected_coordinator(hass)
+    coordinator, lamp = _at_a_lamp(hass)
     await coordinator.async_set_dst(True)
-    client.write_gatt_char.assert_awaited_once_with(
-        WRITE_UUID, bytes.fromhex("a11835450100000e10"), response=True
-    )
+    assert lamp.written == [(WRITE_UUID, bytes.fromhex("a11835450100000e10"))]
     assert coordinator.state[KEY_DST] == bytes.fromhex("0100000e10")
 
 
 async def test_dst_enabled_property(hass: HomeAssistant) -> None:
     """The switch asks the coordinator, which knows nothing until the lamp says."""
-    coordinator, _ = _connected_coordinator(hass)
+    coordinator, _ = _at_a_lamp(hass)
     assert coordinator.dst_enabled is None
     await coordinator.async_set_dst(True)
     assert coordinator.dst_enabled is True
@@ -252,13 +244,11 @@ async def test_dst_enabled_property(hass: HomeAssistant) -> None:
 
 async def test_sync_location(hass: HomeAssistant) -> None:
     """Sync writes HA's home coordinates as float64 to keys 0x0a/0x0b."""
-    coordinator, client = _connected_coordinator(hass)
+    coordinator, lamp = _at_a_lamp(hass)
     hass.config.latitude = 12.3456
     hass.config.longitude = 65.4321
     await coordinator.async_sync_location()
-    client.write_gatt_char.assert_awaited_once_with(
-        WRITE_UUID, cbor.encode({0x0A: 12.3456, 0x0B: 65.4321}), response=True
-    )
+    assert lamp.written == [(WRITE_UUID, cbor.encode({0x0A: 12.3456, 0x0B: 65.4321}))]
 
 
 @pytest.mark.parametrize("zero", [0, 0.0], ids=["whole numbers", "floats"])
@@ -273,14 +263,14 @@ async def test_sync_location_refuses_a_home_that_was_never_set(
     place - where the equator meets the prime meridian - and the lamp works
     its sunrise and sunset out for it.
     """
-    coordinator, client = _connected_coordinator(hass)
+    coordinator, lamp = _at_a_lamp(hass)
     hass.config.latitude = zero
     hass.config.longitude = zero
     with pytest.raises(HomeAssistantError) as err:
         await coordinator.async_sync_location()
     assert err.value.translation_key == "home_location_not_set"
     assert err.value.translation_placeholders == {"name": "Glowrium-G7"}
-    client.write_gatt_char.assert_not_awaited()
+    assert lamp.written == []
     assert KEY_LATITUDE not in coordinator.state
     assert KEY_LONGITUDE not in coordinator.state
 
@@ -299,15 +289,13 @@ async def test_sync_location_writes_any_home_but_zero_and_zero(
     where the two cross is a home. Each goes out as a float64, whole number
     or not: the zero here is the whole number Home Assistant starts out with.
     """
-    coordinator, client = _connected_coordinator(hass)
+    coordinator, lamp = _at_a_lamp(hass)
     hass.config.latitude = latitude
     hass.config.longitude = longitude
     await coordinator.async_sync_location()
-    client.write_gatt_char.assert_awaited_once_with(
-        WRITE_UUID,
-        cbor.encode({0x0A: float(latitude), 0x0B: float(longitude)}),
-        response=True,
-    )
+    assert lamp.written == [
+        (WRITE_UUID, cbor.encode({0x0A: float(latitude), 0x0B: float(longitude)}))
+    ]
 
 
 async def test_sync_location_writes_nothing_without_home_assistant() -> None:
@@ -327,26 +315,22 @@ async def test_sync_location_writes_nothing_without_home_assistant() -> None:
 
 async def test_set_timer_start(hass: HomeAssistant) -> None:
     """Setting the schedule start edits only the start bytes of the 0x11 slot."""
-    coordinator, client = _connected_coordinator(hass)
+    coordinator, lamp = _at_a_lamp(hass)
     coordinator.state[KEY_TIMER] = bytes(TIMER_DEFAULT)  # slot must be read first
     await coordinator.async_set_timer_start(7, 15)
     expected = bytearray(TIMER_DEFAULT)
     expected[4], expected[5] = 7, 15
-    client.write_gatt_char.assert_awaited_once_with(
-        WRITE_UUID, cbor.encode({KEY_TIMER: bytes(expected)}), response=True
-    )
+    assert lamp.written == [(WRITE_UUID, cbor.encode({KEY_TIMER: bytes(expected)}))]
 
 
 async def test_set_timer_gradual(hass: HomeAssistant) -> None:
     """Gradual is stored as 2-byte big-endian seconds (5 min -> 300 = 0x012c)."""
-    coordinator, client = _connected_coordinator(hass)
+    coordinator, lamp = _at_a_lamp(hass)
     coordinator.state[KEY_TIMER] = bytes(TIMER_DEFAULT)  # slot must be read first
     await coordinator.async_set_timer_gradual(5)
     expected = bytearray(TIMER_DEFAULT)
     expected[9:11] = (300).to_bytes(2, "big")
-    client.write_gatt_char.assert_awaited_once_with(
-        WRITE_UUID, cbor.encode({KEY_TIMER: bytes(expected)}), response=True
-    )
+    assert lamp.written == [(WRITE_UUID, cbor.encode({KEY_TIMER: bytes(expected)}))]
 
 
 async def test_available_follows_presence_not_connection(hass: HomeAssistant) -> None:
@@ -409,7 +393,7 @@ async def test_the_bring_up_sets_the_clock_to_local_time(hass: HomeAssistant) ->
 
 async def test_activated_property(hass: HomeAssistant) -> None:
     """Activated reflects the device's 0x14 flag."""
-    coordinator, _ = _connected_coordinator(hass)
+    coordinator, _ = _at_a_lamp(hass)
     assert coordinator.activated is None
     coordinator.state[0x14] = False
     assert coordinator.activated is False
@@ -431,7 +415,7 @@ def test_parse_device_info() -> None:
 
 async def test_device_info_properties(hass: HomeAssistant) -> None:
     """model_id/sw_version/serial_number derive from the parsed device-info."""
-    coordinator, _ = _connected_coordinator(hass)
+    coordinator, _ = _at_a_lamp(hass)
     assert coordinator.sw_version is None
     coordinator.device_info = {
         "pkey": "Glowrium-C051",
@@ -445,7 +429,7 @@ async def test_device_info_properties(hass: HomeAssistant) -> None:
 
 async def test_model_resolution(hass: HomeAssistant) -> None:
     """coordinator.model resolves the pkey, with a generic (not G7) fallback."""
-    coordinator, _ = _connected_coordinator(hass)
+    coordinator, _ = _at_a_lamp(hass)
     # Not read yet -> generic profile (reference presets, no false model name).
     assert coordinator.model.name == "Glowrium"
     assert "sun_sync" in coordinator.model.lighting_modes
@@ -829,7 +813,7 @@ async def test_schedule_setters_refuse_when_slot_unread(hass: HomeAssistant) -> 
     The 0x11 slot packs enabled, both times, brightness and fade into one write,
     so falling back to a default silently overwrote settings the user chose.
     """
-    coordinator, client = _connected_coordinator(hass)
+    coordinator, lamp = _at_a_lamp(hass)
     for call in (
         coordinator.async_set_timer_start(7, 30),
         coordinator.async_set_timer_end(19, 0),
@@ -839,7 +823,7 @@ async def test_schedule_setters_refuse_when_slot_unread(hass: HomeAssistant) -> 
         with pytest.raises(HomeAssistantError) as err:
             await call
         assert err.value.translation_key == "schedule_not_read"
-    client.write_gatt_char.assert_not_awaited()
+    assert lamp.written == []
 
 
 async def test_schedule_setters_work_once_slot_is_known(hass: HomeAssistant) -> None:
@@ -850,12 +834,12 @@ async def test_schedule_setters_work_once_slot_is_known(hass: HomeAssistant) -> 
     the default cannot tell "preserved the user's value" from "substituted the
     default", which is the regression this exists to catch.
     """
-    coordinator, client = _connected_coordinator(hass)
+    coordinator, lamp = _at_a_lamp(hass)
     slot = bytes.fromhex("000300fe091111115a0102")
     assert slot != TIMER_DEFAULT
     coordinator.state[KEY_TIMER] = slot
     await coordinator.async_set_timer_start(7, 30)
-    written = cbor.decode(client.write_gatt_char.await_args_list[-1].args[1])[KEY_TIMER]
+    written = cbor.decode(lamp.written[-1][1])[KEY_TIMER]
     assert (written[TIMER_START_H], written[TIMER_START_M]) == (7, 30)
     # Every other byte is the user's, untouched.
     untouched = [i for i in range(len(slot)) if i not in (TIMER_START_H, TIMER_START_M)]
@@ -864,11 +848,11 @@ async def test_schedule_setters_work_once_slot_is_known(hass: HomeAssistant) -> 
 
 async def test_ramp_refuses_when_lighting_mode_unread(hass: HomeAssistant) -> None:
     """Setting the ramp must not silently reset the lighting mode to index 1."""
-    coordinator, client = _connected_coordinator(hass)
+    coordinator, lamp = _at_a_lamp(hass)
     with pytest.raises(HomeAssistantError) as err:
         await coordinator.async_set_ramp(30)
     assert err.value.translation_key == "lighting_mode_not_read"
-    client.write_gatt_char.assert_not_awaited()
+    assert lamp.written == []
 
 
 async def test_a_ramp_that_was_refused_is_not_remembered(hass: HomeAssistant) -> None:
@@ -880,13 +864,13 @@ async def test_a_ramp_that_was_refused_is_not_remembered(hass: HomeAssistant) ->
     re-apply the remembered ramp, which refused again: the user was told the
     switch had failed while watching it take effect.
     """
-    coordinator, client = _connected_coordinator(hass)
+    coordinator, lamp = _at_a_lamp(hass)
     with pytest.raises(HomeAssistantError):
         await coordinator.async_set_ramp(30)
 
     await coordinator.async_set_operating_mode("circadian")
 
-    written = [call.args[1] for call in client.write_gatt_char.await_args_list]
+    written = [frame for _uuid, frame in lamp.written]
     assert written == [
         cbor.encode({KEY_SCHEDULE: False}),
         cbor.encode({KEY_CIRCADIAN: True}),
@@ -1631,7 +1615,7 @@ async def test_a_device_report_reaches_the_entities(hass: HomeAssistant) -> None
     while the coordinator quietly knows better - invisible in any test that
     inspects `state` directly.
     """
-    coordinator, _ = _connected_coordinator(hass)
+    coordinator, _ = _at_a_lamp(hass)
     fired: list[int] = []
     remove = coordinator.async_add_listener(lambda: fired.append(1))
 
@@ -1644,13 +1628,17 @@ async def test_a_device_report_reaches_the_entities(hass: HomeAssistant) -> None
 
 
 async def test_a_command_reaches_the_entities(hass: HomeAssistant) -> None:
-    """A successful command notifies listeners too, on its optimistic echo."""
-    coordinator, _ = _connected_coordinator(hass)
+    """A successful command notifies listeners too, on its optimistic echo.
+
+    Twice here: once when the command takes the link, and once more on the
+    echo - the command is the first thing said to this lamp.
+    """
+    coordinator, _ = _at_a_lamp(hass)
     fired: list[int] = []
     coordinator.async_add_listener(lambda: fired.append(1))
 
     await coordinator.async_set_power(True)
-    assert fired == [1]
+    assert fired == [1, 1]
 
 
 def _listeners_that_fail(coordinator: GlowriumCoordinator, count: int) -> list[int]:
@@ -1683,7 +1671,7 @@ async def test_a_listener_that_fails_does_not_keep_the_news_from_the_rest(
     Every listener here fails, so the order they are told in does not decide
     the outcome.
     """
-    coordinator, _ = _connected_coordinator(hass)
+    coordinator, _ = _at_a_lamp(hass)
     told = _listeners_that_fail(coordinator, 3)
 
     with caplog.at_level(logging.ERROR):
@@ -1704,7 +1692,7 @@ async def test_a_listener_that_keeps_failing_is_named_once(
     Loudly the first time, then quietly - until the listener has managed a
     round, after which a new failure is news again.
     """
-    coordinator, _ = _connected_coordinator(hass)
+    coordinator, _ = _at_a_lamp(hass)
     healthy = [False]
 
     def _listener() -> None:
@@ -1735,7 +1723,7 @@ async def test_a_failure_that_is_not_news_still_leaves_its_trace_at_debug(
     A listener that has not recovered can fail differently the second time,
     and with nothing kept of it there would be no way to learn how.
     """
-    coordinator, _ = _connected_coordinator(hass)
+    coordinator, _ = _at_a_lamp(hass)
     _listeners_that_fail(coordinator, 1)
     coordinator._ingest(cbor.encode({KEY_POWER: True}))
 
@@ -1753,7 +1741,7 @@ async def test_the_request_to_report_a_failure_says_to_look_it_over_first(
     hass: HomeAssistant, caplog: pytest.LogCaptureFixture
 ) -> None:
     """A trace is the one thing asked for that the integration did not word."""
-    coordinator, _ = _connected_coordinator(hass)
+    coordinator, _ = _at_a_lamp(hass)
     _listeners_that_fail(coordinator, 1)
 
     with caplog.at_level(logging.ERROR):
@@ -1773,7 +1761,7 @@ async def test_a_listener_that_left_while_failing_leaves_no_record_behind(
     it is still called. Noted as failing after it had left, it would be
     quiet about its first failure when it came back.
     """
-    coordinator, _ = _connected_coordinator(hass)
+    coordinator, _ = _at_a_lamp(hass)
     leave: list[Callable[[], None]] = []
 
     def _listener() -> None:
@@ -1798,7 +1786,7 @@ async def test_a_listener_added_again_starts_with_a_clean_record(
     hass: HomeAssistant, caplog: pytest.LogCaptureFixture
 ) -> None:
     """What a listener did before it was removed is not held against it."""
-    coordinator, _ = _connected_coordinator(hass)
+    coordinator, _ = _at_a_lamp(hass)
 
     def _listener() -> None:
         raise ValueError("this entity cannot show what it was given")
@@ -1816,12 +1804,12 @@ async def test_a_command_that_went_through_is_not_failed_by_a_listener(
     hass: HomeAssistant,
 ) -> None:
     """The lamp did what it was told; an entity's trouble is not the caller's."""
-    coordinator, client = _connected_coordinator(hass)
+    coordinator, lamp = _at_a_lamp(hass)
     told = _listeners_that_fail(coordinator, 2)
 
     await coordinator.async_set_power(True)
 
-    client.write_gatt_char.assert_awaited_once()
+    assert len(lamp.written) == 1
     assert sorted(set(told)) == [0, 1]
 
 
@@ -2486,25 +2474,23 @@ async def test_switches_send_the_state_they_were_given(hass: HomeAssistant) -> N
     Each of these was only ever exercised in one direction, so a command that
     ignored its argument and always turned the thing on looked correct.
     """
-    coordinator, client = _connected_coordinator(hass)
+    coordinator, lamp = _at_a_lamp(hass)
 
     await coordinator.async_set_indicator(False)
-    assert (
-        cbor.decode(client.write_gatt_char.await_args.args[1])[KEY_INDICATOR] is False
-    )
+    assert cbor.decode(lamp.written[-1][1])[KEY_INDICATOR] is False
 
     await coordinator.async_set_dst(False)
-    assert cbor.decode(client.write_gatt_char.await_args.args[1])[KEY_DST] == DST_OFF
+    assert cbor.decode(lamp.written[-1][1])[KEY_DST] == DST_OFF
 
     await coordinator.async_set_power(False)
-    assert cbor.decode(client.write_gatt_char.await_args.args[1])[KEY_POWER] is False
+    assert cbor.decode(lamp.written[-1][1])[KEY_POWER] is False
 
 
 async def test_brightness_is_clamped_at_both_ends(hass: HomeAssistant) -> None:
     """Only the upper clamp was pinned; a missing lower one sends a negative."""
-    coordinator, client = _connected_coordinator(hass)
+    coordinator, lamp = _at_a_lamp(hass)
     await coordinator.async_set_brightness(-20)
-    assert cbor.decode(client.write_gatt_char.await_args.args[1])[KEY_BRIGHTNESS] == 0
+    assert cbor.decode(lamp.written[-1][1])[KEY_BRIGHTNESS] == 0
 
 
 async def test_every_operating_mode_sets_both_flags(hass: HomeAssistant) -> None:
@@ -2518,11 +2504,11 @@ async def test_every_operating_mode_sets_both_flags(hass: HomeAssistant) -> None
         ("schedule", False, True),
         ("circadian", True, False),
     ):
-        coordinator, client = _connected_coordinator(hass)
+        coordinator, lamp = _at_a_lamp(hass)
         await coordinator.async_set_operating_mode(mode)
         written: dict[int, object] = {}
-        for call in client.write_gatt_char.await_args_list:
-            written.update(cbor.decode(call.args[1]))
+        for _uuid, frame in lamp.written:
+            written.update(cbor.decode(frame))
         assert written[KEY_CIRCADIAN] is circadian, mode
         assert written[KEY_SCHEDULE] is schedule, mode
 
@@ -2536,10 +2522,10 @@ async def test_each_schedule_setter_changes_its_own_field(
         ("async_set_timer_end", (19, 45), TIMER_END_H, 19),
         ("async_set_timer_brightness", (37,), TIMER_BRIGHTNESS, 37),
     ):
-        coordinator, client = _connected_coordinator(hass)
+        coordinator, lamp = _at_a_lamp(hass)
         coordinator.state[KEY_TIMER] = slot
         await getattr(coordinator, setter)(*args)
-        written = cbor.decode(client.write_gatt_char.await_args.args[1])[KEY_TIMER]
+        written = cbor.decode(lamp.written[-1][1])[KEY_TIMER]
         assert written[index] == expected, setter
         assert written != slot, setter
 
@@ -2553,7 +2539,7 @@ async def test_the_remembered_ramp_survives_the_device_reporting(
     remembered at all - so re-seeding it from every report would hand back
     exactly the value the memory exists to override.
     """
-    coordinator, client = _connected_coordinator(hass)
+    coordinator, lamp = _at_a_lamp(hass)
     coordinator.state[KEY_LIGHTING_MODE] = 1
     await coordinator.async_set_ramp(90)  # 5400 s = 0x1518
     assert coordinator._desired_ramp == bytes.fromhex("1518")
@@ -2563,9 +2549,9 @@ async def test_the_remembered_ramp_survives_the_device_reporting(
     )  # device default
     assert coordinator._desired_ramp == bytes.fromhex("1518")  # still the user's
 
-    client.write_gatt_char.reset_mock()
+    lamp.written.clear()
     await coordinator.async_set_lighting_mode(5)
-    sent = cbor.decode(client.write_gatt_char.await_args.args[1])
+    sent = cbor.decode(lamp.written[-1][1])
     assert sent[KEY_RAMP] == bytes.fromhex("1518")  # and it is what gets re-applied
 
 
@@ -3519,13 +3505,13 @@ async def test_the_dst_offset_the_lamp_reports_is_preserved(
     touched, and the lamp had been reporting the right value all along
     (issue #4).
     """
-    coordinator, client = _connected_coordinator(hass)
+    coordinator, lamp = _at_a_lamp(hass)
     half_hour = bytes.fromhex("0000000708")  # flag off, offset 1800 s
     coordinator.state[KEY_DST] = half_hour
 
     await coordinator.async_set_dst(True)
 
-    written = cbor.decode(client.write_gatt_char.await_args.args[1])[KEY_DST]
+    written = cbor.decode(lamp.written[-1][1])[KEY_DST]
     assert written[0] == 1  # the flag we asked for
     assert written[1:] == half_hour[1:], "the lamp's own offset was overwritten"
 
