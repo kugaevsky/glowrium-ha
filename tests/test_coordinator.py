@@ -481,34 +481,37 @@ async def test_presence_callbacks_notify(hass: HomeAssistant) -> None:
     await hass.async_block_till_done()  # the reconnect, failing at debug level
 
 
-async def test_async_activate_sequence(hass: HomeAssistant) -> None:
-    """Bring-up replays the app's sequence: {0x53}, {time, 0x31}, then {0x14}."""
-    coordinator, lamp, link = await _holding_a_link(hass)
-    await coordinator._async_activate(turn_over(coordinator, link))
-    assert len(lamp.written) == 3
-    payloads = [cbor.decode(frame) for _uuid, frame in lamp.written]
-    assert payloads[0] == {0x53: 300}
-    assert payloads[1].keys() == {0x05, 0x31}
-    assert payloads[1][0x31] == 1
-    assert payloads[2] == {0x14: True}
-    assert coordinator.state[0x14] is True
+async def test_a_device_reporting_unactivated_is_brought_up(
+    hass: HomeAssistant,
+) -> None:
+    """A lamp whose 0x14 reads False is activated with the app's sequence.
 
-
-async def test_the_bring_up_sets_the_clock_to_local_time(hass: HomeAssistant) -> None:
-    """The lamp keeps wall-clock time, so the bring-up writes the local hour.
-
-    UTC would run a new lamp's schedule and its circadian curve hours off.
+    This is the whole point of the bring-up: a factory-reset lamp advertises
+    and accepts config writes, but gates its light output on 0x14, so
+    without this it stays dark however many commands it is sent. The
+    sequence replays the app's: {0x53}, {time, 0x31}, then {0x14} - the flag
+    that ungates the light. The lamp keeps wall-clock time, so the clock
+    written is the local hour: UTC would run a new lamp's schedule and its
+    circadian curve hours off.
     """
     await hass.config.async_set_time_zone("Asia/Kolkata")  # 5 h 30 min from UTC
     coordinator, lamp, link = await _holding_a_link(hass)
+    coordinator.state[KEY_ACTIVATED] = False
 
-    await coordinator._async_activate(turn_over(coordinator, link))
+    await coordinator._async_activate_if_needed(turn_over(coordinator, link))
 
-    written = cbor.decode(lamp.written[1][1])
-    clock = protocol.device_time(written)
+    assert len(lamp.written) == 3
+    payloads = [cbor.decode(frame) for _uuid, frame in lamp.written]
+    assert payloads[0] == {0x53: 300}
+    assert payloads[1].keys() == {KEY_TIME, KEY_TIME_SYNCED}
+    assert payloads[1][KEY_TIME_SYNCED] == 1
+    assert payloads[2] == {KEY_ACTIVATED: True}
+    clock = protocol.device_time(payloads[1])
     assert clock is not None
     local = dt_util.now().replace(tzinfo=None)
     assert abs((clock - local).total_seconds()) < 5
+    assert coordinator.state[KEY_ACTIVATED] is True
+    assert coordinator._activation_checked is True
 
 
 async def test_activated_property(hass: HomeAssistant) -> None:
@@ -1582,35 +1585,6 @@ async def test_two_ticks_do_not_make_the_first_exchange_twice(
     assert len(lamp.asked) == 1
 
 
-async def test_a_device_reporting_unactivated_is_brought_up(
-    hass: HomeAssistant,
-) -> None:
-    """A lamp whose 0x14 reads False is activated, not merely noticed.
-
-    This is the whole point of the bring-up: a factory-reset lamp advertises
-    and accepts config writes, but gates its light output on 0x14, so without
-    this it stays dark however many commands it is sent.
-    """
-    coordinator, lamp, link = await _holding_a_link(hass)
-    coordinator.state[KEY_ACTIVATED] = False
-
-    await coordinator._async_activate_if_needed(turn_over(coordinator, link))
-
-    written = [cbor.decode(frame) for _uuid, frame in lamp.written]
-    assert KEY_ACTIVATED in written[-1]
-    assert written[-1][KEY_ACTIVATED] is True  # the flag that ungates the light
-
-
-async def test_an_activated_device_is_left_alone(hass: HomeAssistant) -> None:
-    """A lamp already reporting 0x14 True is not put through the bring-up."""
-    coordinator, lamp, link = await _holding_a_link(hass)
-    coordinator.state[KEY_ACTIVATED] = True
-
-    await coordinator._async_activate_if_needed(turn_over(coordinator, link))
-
-    assert lamp.written == []
-
-
 async def test_unload_does_not_wait_out_a_connect(
     hass: HomeAssistant, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -1949,15 +1923,18 @@ async def test_the_wait_for_the_activation_flag_ends_with_the_link(
 async def test_the_bring_up_is_attempted_once_per_session(
     hass: HomeAssistant,
 ) -> None:
-    """Having settled the activation question, the lamp is not re-interrogated.
+    """A lamp reporting 0x14 True is left alone, and the question stays settled.
 
-    The check costs up to 3 s waiting for 0x14, and it runs on every connect,
-    so repeating it would put that on the command path for the whole session.
+    The check costs up to 3 s waiting for 0x14, and it runs on every
+    connect, so repeating it would put that on the command path for the
+    whole session. Having settled the activation question, the lamp is not
+    re-interrogated.
     """
     coordinator, lamp, link = await _holding_a_link(hass)
     coordinator.state[KEY_ACTIVATED] = True
     await coordinator._async_activate_if_needed(turn_over(coordinator, link))
-    assert lamp.written == []
+    assert lamp.written == []  # not put through the bring-up
+    assert coordinator._activation_checked is True
 
     # Settled. Even a later False must not restart the bring-up.
     coordinator.state[KEY_ACTIVATED] = False
@@ -3110,21 +3087,32 @@ async def test_the_request_is_repeated_on_every_connect(hass: HomeAssistant) -> 
     assert lamp.read == []
 
 
-async def test_a_stale_device_clock_is_corrected(hass: HomeAssistant) -> None:
-    """A lamp whose clock has drifted is put right on connect.
+@pytest.mark.parametrize(
+    "stale",
+    [
+        pytest.param(bytes.fromhex("07ea02010f0e2c"), id="months out"),  # 2026-02-01
+        pytest.param(bytes.fromhex("07ea0d12151823"), id="no date at all"),  # month 13
+    ],
+)
+async def test_a_stale_device_clock_is_corrected(
+    hass: HomeAssistant, stale: bytes
+) -> None:
+    """A lamp whose clock has drifted is put right on connect, in local time.
 
-    The clock was only ever written during first-time bring-up, so a lamp set
-    up months ago runs its schedule and its circadian curve off whatever date
-    it had then - one reporter's was six months out (issue #4). Nothing
-    surfaces it either, because the clock is not an entity.
+    The clock was only ever written during first-time bring-up, so a lamp
+    set up months ago runs its schedule and its circadian curve off whatever
+    date it had then - one reporter's was six months out (issue #4). Nothing
+    surfaces it either, because the clock is not an entity. Thirteen months
+    is a report too, and a wrong one: it is set right, not left - to a date
+    the lamp can keep.
     """
     await hass.config.async_set_time_zone("Asia/Kolkata")  # 5 h 30 min from UTC
     coordinator, lamp, link = await _holding_a_link(hass)
-    stale = bytes.fromhex("07ea02010f0e2c")  # 2026-02-01 15:14:44
     coordinator.state[KEY_TIME] = stale
 
     await coordinator._async_sync_clock_if_needed(turn_over(coordinator, link))
 
+    assert len(lamp.written) == 1
     written = cbor.decode(lamp.written[-1][1])
     assert written[KEY_TIME] != stale
     assert written[KEY_TIME_SYNCED] == 1
@@ -3134,48 +3122,28 @@ async def test_a_stale_device_clock_is_corrected(hass: HomeAssistant) -> None:
     assert abs((corrected - local).total_seconds()) < 5
 
 
-async def test_a_clock_that_is_near_enough_is_left_alone(
-    hass: HomeAssistant,
+@pytest.mark.parametrize("clock", ["near enough", "never read"])
+async def test_a_clock_that_is_right_or_unread_is_left_alone(
+    hass: HomeAssistant, clock: str
 ) -> None:
-    """Writing on every connect would cost a write an hour for nothing.
+    """The clock is written only on a drift that can be judged, and is too large.
 
-    The lamp reconnects itself every half hour or so; correcting a clock that
-    is seconds out would mean a write each time, on a link that is the scarce
-    resource here.
+    Writing on every connect would cost a write an hour for nothing: the
+    lamp reconnects itself every half hour or so, and correcting a clock
+    that is seconds out would mean a write each time, on a link that is the
+    scarce resource here. And with nothing read back there is no drift to
+    judge and nothing to fix: a blind write would be guessing at what the
+    lamp currently believes.
     """
     coordinator, lamp, link = await _holding_a_link(hass)
-    coordinator.state[KEY_TIME] = protocol.encode_device_time(dt_util.now())
+    if clock == "near enough":
+        coordinator.state[KEY_TIME] = protocol.encode_device_time(dt_util.now())
+    else:
+        assert KEY_TIME not in coordinator.state
 
     await coordinator._async_sync_clock_if_needed(turn_over(coordinator, link))
 
     assert lamp.written == []
-
-
-async def test_an_unreadable_clock_is_not_corrected_blind(
-    hass: HomeAssistant,
-) -> None:
-    """With nothing read back, there is no drift to judge and nothing to fix."""
-    coordinator, lamp, link = await _holding_a_link(hass)
-    assert KEY_TIME not in coordinator.state
-
-    await coordinator._async_sync_clock_if_needed(turn_over(coordinator, link))
-
-    assert lamp.written == []
-
-
-async def test_a_clock_that_is_no_date_is_corrected(
-    hass: HomeAssistant,
-) -> None:
-    """Thirteen months is a report, and a wrong one: it is set right, not left."""
-    coordinator, lamp, link = await _holding_a_link(hass)
-    coordinator.state[KEY_TIME] = bytes.fromhex("07ea0d12151823")
-
-    await coordinator._async_sync_clock_if_needed(turn_over(coordinator, link))
-
-    assert len(lamp.written) == 1
-    written = cbor.decode(lamp.written[-1][1])
-    assert protocol.device_time(written) is not None  # a date the lamp can keep
-    assert written[KEY_TIME_SYNCED] == 1
 
 
 async def test_both_priming_paths_check_the_clock(hass: HomeAssistant) -> None:
