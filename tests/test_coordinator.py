@@ -1677,7 +1677,9 @@ async def test_a_listener_that_fails_does_not_keep_the_news_from_the_rest(
     in fact gone through.
 
     Every listener here fails, so the order they are told in does not decide
-    the outcome.
+    the outcome. Each failure is logged with its trace - the one thing asked
+    for that the integration did not word - and the request to report it
+    says to look the trace over first.
     """
     coordinator, _ = _at_a_lamp(hass)
     told = _listeners_that_fail(coordinator, 3)
@@ -1690,6 +1692,9 @@ async def test_a_listener_that_fails_does_not_keep_the_news_from_the_rest(
     failures = [r for r in caplog.records if r.levelno >= logging.ERROR]
     assert len(failures) == 3
     assert all(r.exc_info for r in failures)  # with what it takes to fix it
+    for failure in failures:
+        assert "Please report" in failure.getMessage()
+        assert "before posting" in failure.getMessage()
 
 
 async def test_a_listener_that_keeps_failing_is_named_once(
@@ -1698,7 +1703,11 @@ async def test_a_listener_that_keeps_failing_is_named_once(
     """The lamp reports all day; a trace for every report would bury the log.
 
     Loudly the first time, then quietly - until the listener has managed a
-    round, after which a new failure is news again.
+    round, after which a new failure is news again. Said once is said about
+    the first failure; the next may be another: a listener that has not
+    recovered can fail differently the second time, and with nothing kept of
+    it there would be no way to learn how. So the repeat leaves its trace at
+    debug.
     """
     coordinator, _ = _at_a_lamp(hass)
     healthy = [False]
@@ -1709,55 +1718,25 @@ async def test_a_listener_that_keeps_failing_is_named_once(
 
     coordinator.async_add_listener(_listener)
 
-    def _errors_while_told() -> int:
+    def _told_once_more() -> list[logging.LogRecord]:
         caplog.clear()
-        with caplog.at_level(logging.ERROR):
+        with caplog.at_level(logging.DEBUG, logger=coordinator_module.__name__):
             coordinator._ingest(cbor.encode({KEY_POWER: True}))
-        return len([r for r in caplog.records if r.levelno >= logging.ERROR])
+        return list(caplog.records)
 
-    assert _errors_while_told() == 1
-    assert _errors_while_told() == 0  # the same fault, said once
+    def _errors(records: list[logging.LogRecord]) -> int:
+        return len([r for r in records if r.levelno >= logging.ERROR])
+
+    assert _errors(_told_once_more()) == 1
+    again = _told_once_more()
+    assert _errors(again) == 0  # the same fault, said once
+    (repeat,) = [r for r in again if "failed again" in r.getMessage()]
+    assert repeat.levelno == logging.DEBUG
+    assert repeat.exc_info
     healthy[0] = True
-    assert _errors_while_told() == 0
+    assert _errors(_told_once_more()) == 0
     healthy[0] = False
-    assert _errors_while_told() == 1  # it had recovered: this is a new one
-
-
-async def test_a_failure_that_is_not_news_still_leaves_its_trace_at_debug(
-    hass: HomeAssistant, caplog: pytest.LogCaptureFixture
-) -> None:
-    """Said once is said about the first failure; the next may be another.
-
-    A listener that has not recovered can fail differently the second time,
-    and with nothing kept of it there would be no way to learn how.
-    """
-    coordinator, _ = _at_a_lamp(hass)
-    _listeners_that_fail(coordinator, 1)
-    coordinator._ingest(cbor.encode({KEY_POWER: True}))
-
-    caplog.clear()
-    with caplog.at_level(logging.DEBUG, logger=coordinator_module.__name__):
-        coordinator._ingest(cbor.encode({KEY_POWER: False}))
-
-    again = [r for r in caplog.records if "failed again" in r.getMessage()]
-    assert len(again) == 1
-    assert again[0].levelno == logging.DEBUG
-    assert again[0].exc_info
-
-
-async def test_the_request_to_report_a_failure_says_to_look_it_over_first(
-    hass: HomeAssistant, caplog: pytest.LogCaptureFixture
-) -> None:
-    """A trace is the one thing asked for that the integration did not word."""
-    coordinator, _ = _at_a_lamp(hass)
-    _listeners_that_fail(coordinator, 1)
-
-    with caplog.at_level(logging.ERROR):
-        coordinator._ingest(cbor.encode({KEY_POWER: True}))
-
-    (failure,) = [r for r in caplog.records if r.levelno >= logging.ERROR]
-    assert "Please report" in failure.getMessage()
-    assert "before posting" in failure.getMessage()
+    assert _errors(_told_once_more()) == 1  # it had recovered: this is a new one
 
 
 async def test_a_listener_that_left_while_failing_leaves_no_record_behind(
@@ -2110,15 +2089,28 @@ def _info_lines(caplog: pytest.LogCaptureFixture) -> list[str]:
     ]
 
 
+@pytest.mark.parametrize(
+    ("name", "shown"),
+    [
+        pytest.param("Glowrium-G7", "Glowrium-G7 (AA:BB:CC:DD:EE:FF)", id="discovered"),
+        pytest.param(
+            "Glowrium-G7_DDEEFF (AA:BB:CC:DD:EE:FF)",
+            "Glowrium-G7_DDEEFF (AA:BB:CC:DD:EE:FF)",
+            id="picked from the list",
+        ),
+    ],
+)
 async def test_going_out_of_reach_and_coming_back_are_each_said_once(
-    hass: HomeAssistant, caplog: pytest.LogCaptureFixture
+    hass: HomeAssistant, caplog: pytest.LogCaptureFixture, name: str, shown: str
 ) -> None:
     """The log says when the lamp became unreachable, and when it returned.
 
     Its entities go unavailable and nothing said why or since when. Once
-    each way, however many times the same thing is observed in between.
+    each way, however many times the same thing is observed in between - by
+    the lamp's name, and with its address once: a lamp picked from the list
+    has its address in its title already.
     """
-    coordinator, lamp = _at_a_lamp(hass)
+    coordinator, lamp = _at_a_lamp(hass, name)
     lamp.out_of_range()  # this is about the log, not about dialling
     link_of(coordinator).begin(present=True)
 
@@ -2126,36 +2118,16 @@ async def test_going_out_of_reach_and_coming_back_are_each_said_once(
         link_of(coordinator).advertising(False)
         link_of(coordinator).advertising(False)
         coordinator._async_notify_listeners()
-        assert len(_info_lines(caplog)) == 1
-        assert "out of reach" in _info_lines(caplog)[0]
-        assert "Glowrium-G7" in _info_lines(caplog)[0]
+        (gone,) = _info_lines(caplog)
+        assert gone.startswith(f"{shown} is out of reach")
 
         caplog.clear()
         link_of(coordinator).advertising(True)
         link_of(coordinator).advertising(True)
         coordinator._async_notify_listeners()
-        assert len(_info_lines(caplog)) == 1
-        assert "back in reach" in _info_lines(caplog)[0]
+        (back,) = _info_lines(caplog)
+        assert back == f"{shown} is back in reach"
     await hass.async_block_till_done()  # the dials the advertisements set off
-
-
-async def test_a_lamp_set_up_from_the_list_is_not_named_with_its_address_twice(
-    hass: HomeAssistant, caplog: pytest.LogCaptureFixture
-) -> None:
-    """A lamp picked from the list has its address in its title already."""
-    coordinator, lamp = _at_a_lamp(hass)
-    coordinator.name = "Glowrium-G7_DDEEFF (AA:BB:CC:DD:EE:FF)"
-    lamp.out_of_range()  # this is about the log, not about dialling
-    link_of(coordinator).begin(present=True)
-
-    with caplog.at_level(logging.INFO, logger=coordinator_module.__name__):
-        link_of(coordinator).advertising(False)
-        link_of(coordinator).advertising(True)
-    await hass.async_block_till_done()  # the dial the advertisement set off
-
-    gone, back = _info_lines(caplog)
-    assert gone.startswith("Glowrium-G7_DDEEFF (AA:BB:CC:DD:EE:FF) is out of reach")
-    assert back == "Glowrium-G7_DDEEFF (AA:BB:CC:DD:EE:FF) is back in reach"
 
 
 async def test_a_lamp_with_a_link_is_not_out_of_reach_for_being_quiet(
@@ -2264,50 +2236,27 @@ async def test_a_stopped_coordinator_does_not_say_where_the_lamp_is(
     assert _info_lines(caplog) == []
 
 
-async def test_a_lamp_that_is_absent_at_start_is_said_to_be(
-    hass: HomeAssistant,
-    monkeypatch: pytest.MonkeyPatch,
-    caplog: pytest.LogCaptureFixture,
-) -> None:
-    """Starting with the lamp unplugged is the first time it is out of reach."""
-    coordinator, _lamp = _at_a_lamp(hass)
-    # Picked from the list: its address is in its title already.
-    coordinator.name = "Glowrium-G7_DDEEFF (AA:BB:CC:DD:EE:FF)"
-    fake = MagicMock()
-    fake.async_register_callback.return_value = lambda: None
-    fake.async_track_unavailable.return_value = lambda: None
-    fake.async_address_present.return_value = False
-    monkeypatch.setattr(coordinator_module, "bluetooth", fake)
-    entry = MagicMock()
-    entry.async_create_background_task = lambda _hass, coro, _name: coro.close()
-
-    with caplog.at_level(logging.INFO, logger=coordinator_module.__name__):
-        await coordinator.async_start(entry)
-    try:
-        (said,) = _info_lines(caplog)
-        # By its name, and with its address once.
-        assert said.startswith("Glowrium-G7_DDEEFF (AA:BB:CC:DD:EE:FF) is out of reach")
-    finally:
-        await coordinator.async_stop()
-
-
+@pytest.mark.parametrize("present", [True, False], ids=["advertising", "absent"])
 async def test_a_lamp_that_is_advertising_at_start_is_in_reach_from_the_start(
     hass: HomeAssistant,
     monkeypatch: pytest.MonkeyPatch,
     caplog: pytest.LogCaptureFixture,
+    present: bool,
 ) -> None:
     """What Home Assistant already knows of the lamp is taken as the watching begins.
 
     The entities are built right after, and on a weak link the lamp may not
     be heard again for seconds or connected to for minutes. Until then they
     go by what the scanners knew at the start - and there is nothing for the
-    log to say.
+    log to say. Starting with the lamp unplugged is the first time it is out
+    of reach, and that is said: by its name, and with its address once - a
+    lamp picked from the list has its address in its title already.
     """
-    coordinator, _lamp = _at_a_lamp(hass)
+    coordinator, _lamp = _at_a_lamp(hass, "Glowrium-G7_DDEEFF (AA:BB:CC:DD:EE:FF)")
     fake = MagicMock()
     fake.async_register_callback.return_value = lambda: None
     fake.async_track_unavailable.return_value = lambda: None
-    fake.async_address_present.return_value = True
+    fake.async_address_present.return_value = present
     monkeypatch.setattr(coordinator_module, "bluetooth", fake)
     entry = MagicMock()
     entry.async_create_background_task = lambda _hass, coro, _name: coro.close()
@@ -2315,8 +2264,14 @@ async def test_a_lamp_that_is_advertising_at_start_is_in_reach_from_the_start(
     with caplog.at_level(logging.INFO, logger=coordinator_module.__name__):
         await coordinator.async_start(entry)
     try:
-        assert coordinator.available
-        assert _info_lines(caplog) == []
+        assert coordinator.available is present
+        if present:
+            assert _info_lines(caplog) == []
+        else:
+            (said,) = _info_lines(caplog)
+            assert said.startswith(
+                "Glowrium-G7_DDEEFF (AA:BB:CC:DD:EE:FF) is out of reach"
+            )
     finally:
         await coordinator.async_stop()
 
@@ -2991,67 +2946,67 @@ async def _the_three_warnings(
     return said
 
 
-async def test_no_warning_carries_what_a_lamp_glued_to_its_model_or_firmware(
-    hass: HomeAssistant, caplog: pytest.LogCaptureFixture
-) -> None:
-    """A model id and a firmware are said only when they are what they claim.
-
-    Both come out of the device-info string, where the serial number and the
-    address sit beside them, and where one field ends is only what the parser
-    made of the string. A lamp that separates its fields differently hands
-    over one long field with the others inside it. Three warnings name the
-    model and the firmware, and each of them asks to be reported: the log is
-    held to the shapes the diagnostics file is held to.
-    """
-    coordinator = ScriptedLamp().coordinator(hass, "Glowrium-G8")
-    coordinator.device_info = _parse_device_info(
-        b"brand:INLEDCO;pkey:Glowrium-C051,devid:CST-0001;version:4,mac:A1B2C3;;"
-    )
-    assert "CST-0001" in coordinator.model_id  # the parser took it for the model
-    assert "A1B2C3" in coordinator.sw_version
-
-    for said in await _the_three_warnings(coordinator, caplog):
-        assert "CST-0001" not in said
-        assert "A1B2C3" not in said
-        assert "(model not as expected, firmware not as expected)" in said
-
-
 @pytest.mark.parametrize(
-    ("info", "named"),
+    ("known_by", "named", "hidden"),
     [
-        (
+        pytest.param(
             b"brand:INLEDCO;pkey:Glowrium-C051;devid:CST-0001;mac:x;version:4;;",
             "(model Glowrium-C051, firmware 4)",
+            (),
+            id="a G7, read",
         ),
-        (b"", "(model unknown, firmware unknown)"),  # not read yet
-        (
+        pytest.param(b"", "(model unknown, firmware unknown)", (), id="not read yet"),
+        pytest.param(
             b"pkey:Glowrium-C064;version:1.10.2;;",
             "(model Glowrium-C064, firmware 1.10.2)",
+            (),
+            id="a G8, read",
+        ),
+        pytest.param(
+            b"brand:INLEDCO;pkey:Glowrium-C051,devid:CST-0001;version:4,mac:A1B2C3;;",
+            "(model not as expected, firmware not as expected)",
+            ("CST-0001", "A1B2C3"),
+            id="the serial and the address glued to the model and the firmware",
+        ),
+        pytest.param(
+            "Glowrium-C051;devid:CST-0001",
+            "(model not as expected, firmware unknown)",
+            ("CST-0001",),
+            id="a remembered model id with the serial glued to it",
         ),
     ],
 )
 async def test_a_warning_names_a_model_and_a_firmware_that_are_what_they_claim(
-    hass: HomeAssistant, caplog: pytest.LogCaptureFixture, info: bytes, named: str
+    hass: HomeAssistant,
+    caplog: pytest.LogCaptureFixture,
+    known_by: bytes | str,
+    named: str,
+    hidden: tuple[str, ...],
 ) -> None:
-    """Whoever reads the report needs to know which lamp it came from."""
-    coordinator = ScriptedLamp().coordinator(hass)
-    coordinator.device_info = _parse_device_info(info)
+    """Whoever reads the report needs to know which lamp it came from - and no more.
+
+    A model id and a firmware are said only when they are what they claim.
+    Both come out of the device-info string, where the serial number and the
+    address sit beside them, and where one field ends is only what the
+    parser made of the string. A lamp that separates its fields differently
+    hands over one long field with the others inside it. Three warnings name
+    the model and the firmware, and each of them asks to be reported: the
+    log is held to the shapes the diagnostics file is held to. Until the
+    lamp is read, its model is what an earlier session stored (``known_by``
+    a string rather than the device-info string), held to the same shape.
+    """
+    if isinstance(known_by, bytes):
+        coordinator = ScriptedLamp().coordinator(hass)
+        coordinator.device_info = _parse_device_info(known_by)
+    else:
+        coordinator = ScriptedLamp().coordinator(hass, model_id=known_by)
+    for glued in hidden:  # the parser took it for the model, or the firmware
+        assert glued in (coordinator.model_id or "") + (coordinator.sw_version or "")
 
     for said in await _the_three_warnings(coordinator, caplog):
         assert named in said
-
-
-async def test_a_remembered_model_id_is_held_to_its_shape_in_the_log_too(
-    hass: HomeAssistant, caplog: pytest.LogCaptureFixture
-) -> None:
-    """Until the lamp is read, its model is what an earlier session stored."""
-    coordinator = ScriptedLamp().coordinator(
-        hass, model_id="Glowrium-C051;devid:CST-0001"
-    )
-
-    for said in await _the_three_warnings(coordinator, caplog):
-        assert "CST-0001" not in said
-        assert "(model not as expected, firmware unknown)" in said
+        for glued in hidden:
+            assert glued not in said
 
 
 async def test_the_request_is_repeated_on_every_connect(hass: HomeAssistant) -> None:
@@ -3710,65 +3665,67 @@ async def test_a_connect_that_fails_on_a_held_link_keeps_the_error_it_failed_wit
     assert "the link is held" not in caplog.text
 
 
-@pytest.mark.parametrize(("connect", "named"), _BACKGROUND_CONNECTS)
-async def test_a_connect_that_fails_without_a_word_is_called_by_its_name(
-    hass: HomeAssistant,
-    caplog: pytest.LogCaptureFixture,
-    connect: str,
-    named: str,
-) -> None:
-    """An error with no text of its own still says what it was.
-
-    Running out of time is the commonest way for a connect to fail, and
-    ``TimeoutError`` carries no message: one night on the G7's host left 290
-    lines that ended in "failed: " with nothing after it (2026-10-08).
-    """
-    coordinator, lamp = _at_a_lamp(hass)
-    lamp.dials_through(AsyncMock(side_effect=TimeoutError()))
-    caplog.set_level(logging.DEBUG)
-
-    await getattr(link_of(coordinator), connect)()
-
-    assert f"{named} AA:BB:CC:DD:EE:FF failed: TimeoutError()" in caplog.text
-
-
 @pytest.mark.parametrize(
     ("error", "said"),
     [
-        (TimeoutError(), "TimeoutError()"),  # a deadline
-        (EOFError(), "EOFError()"),  # a bus closed under a call
-        (BleakError("Not connected"), "Not connected"),
-        (OSError(9, "Bad file descriptor"), "[Errno 9] Bad file descriptor"),
+        pytest.param(TimeoutError(), "TimeoutError()", id="a deadline"),
+        pytest.param(EOFError(), "EOFError()", id="a bus closed under a call"),
+        pytest.param(BleakError("Not connected"), "Not connected", id="a lost link"),
+        pytest.param(
+            OSError(9, "Bad file descriptor"),
+            "[Errno 9] Bad file descriptor",
+            id="bad-fd",
+        ),
     ],
 )
-def test_an_error_goes_into_the_log_by_what_it_says_or_else_by_what_it_is(
-    error: Exception, said: str
+@pytest.mark.parametrize(
+    "where", ["a reconnect", "an initial connect", "the state read", "the priming"]
+)
+async def test_an_error_goes_into_the_log_by_what_it_says_or_else_by_what_it_is(
+    hass: HomeAssistant,
+    caplog: pytest.LogCaptureFixture,
+    where: str,
+    error: Exception,
+    said: str,
 ) -> None:
-    """The two errors with nothing to say are the two commonest on a weak link."""
-    assert link_module._reason(error) == said
+    """Every line about a lost link names what lost it: its words, or else its name.
 
-
-async def test_an_exchange_that_fails_without_a_word_is_called_by_its_name(
-    hass: HomeAssistant, caplog: pytest.LogCaptureFixture
-) -> None:
-    """Not the connect alone: every line about a lost link names what lost it.
-
-    Priming that ran out its deadline and a read whose bus was closed under
-    it said "failed: " and stopped there, as the connect did.
+    The two errors with nothing to say are the two commonest on a weak link.
+    Running out of time is the commonest way for a connect to fail, and
+    ``TimeoutError`` carries no message: one night on the G7's host left 290
+    lines that ended in "failed: " with nothing after it (2026-10-08). Not
+    the connect alone: priming that ran out its deadline and a read whose
+    bus was closed under it said "failed: " and stopped there too. And
+    neither background connect lets the error out: they run as tasks nobody
+    awaits, so what escapes one is not handled by anybody - it ends up in
+    the log as an exception with a traceback, on every poll tick for as long
+    as the bus stays the way it is.
     """
-    coordinator, lamp, link = await _holding_a_link(hass)
+    assert link_module._reason(error) == said
     caplog.set_level(logging.DEBUG)
-
-    lamp.fails_reads(EOFError())
-    assert await coordinator._async_read_state(turn_over(coordinator, link)) == (
-        False,
-        frozenset(),
-    )
-    assert "AA:BB:CC:DD:EE:FF state read failed: EOFError()" in caplog.text
-
-    coordinator._request_state = AsyncMock(side_effect=TimeoutError())
-    await link_of(coordinator).prime_held()
-    assert "Priming state of AA:BB:CC:DD:EE:FF failed: TimeoutError()" in caplog.text
+    if where == "the state read":
+        coordinator, lamp, link = await _holding_a_link(hass)
+        lamp.fails_reads(error)
+        assert await coordinator._async_read_state(turn_over(coordinator, link)) == (
+            False,
+            frozenset(),
+        )
+        line = f"AA:BB:CC:DD:EE:FF state read failed: {said}"
+    elif where == "the priming":
+        coordinator, lamp, _link = await _holding_a_link(hass)
+        coordinator._request_state = AsyncMock(side_effect=error)
+        await link_of(coordinator).prime_held()
+        line = f"Priming state of AA:BB:CC:DD:EE:FF failed: {said}"
+    else:
+        coordinator, lamp = _at_a_lamp(hass)
+        lamp.dials_through(AsyncMock(side_effect=error))
+        if where == "a reconnect":
+            await link_of(coordinator).reconnect()  # and nothing is raised
+            line = f"Reconnect to AA:BB:CC:DD:EE:FF failed: {said}"
+        else:
+            await link_of(coordinator).initial_connect()  # nor here
+            line = f"Initial connect to AA:BB:CC:DD:EE:FF failed: {said}"
+    assert line in caplog.text
 
 
 async def test_hanging_up_a_client_we_gave_up_on_leaves_the_one_we_hold(
@@ -3946,23 +3903,6 @@ async def test_a_reconnect_started_while_starting_belongs_to_the_entry(
         assert any("reconnect" in name for name in handed_over)
     finally:
         await coordinator.async_stop()
-
-
-@pytest.mark.parametrize("failure", _BUS_CLOSED, ids=["eof", "bad-fd"])
-async def test_background_connects_that_meet_a_closed_bus_only_log_it(
-    hass: HomeAssistant, failure: Exception
-) -> None:
-    """Neither background connect lets it out.
-
-    These run as tasks nobody awaits, so what escapes one is not handled by
-    anybody: it ends up in the log as an exception with a traceback, on every
-    poll tick for as long as the bus stays the way it is.
-    """
-    coordinator, lamp = _at_a_lamp(hass)
-    lamp.dials_through(AsyncMock(side_effect=failure))
-
-    await link_of(coordinator).initial_connect()
-    await link_of(coordinator).reconnect()
 
 
 @pytest.mark.parametrize("failure", _BUS_CLOSED, ids=["eof", "bad-fd"])
