@@ -593,29 +593,52 @@ async def test_write_raises_after_two_failures(
     assert len(lamp.written) == 2  # tried twice, then gave up
 
 
-async def test_state_request_abandoned_only_after_repeated_refusal(
-    hass: HomeAssistant,
+async def test_a_model_that_keeps_refusing_is_left_alone_for_the_session(
+    hass: HomeAssistant, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """A device that keeps rejecting the request is eventually left alone.
+    """A refusing model is asked a run, paused, asked one more run, then left alone.
 
-    A G8 answers it with ATT "Insufficient authorization" (0x08) every time,
-    and asking on every connect gets nothing from it - but it takes a run of
-    refusals, not one: see the transient-failure test below.
+    A G8 answers the request with ATT "Insufficient authorization" (0x08)
+    every time, and asking on every connect gets nothing from it - but it
+    takes a run of refusals, not one (see the dropped-link test below): on a
+    real G7 three consecutive failures accumulated 70 s after start-up
+    purely from a bad link, and making the silence permanent cost the lamp
+    four properties until Home Assistant was restarted. So the first run
+    pauses the request for a cooldown, and the lamp is not asked while it
+    lasts: the cooldown gives that run the benefit of the doubt. A model
+    that refuses again once it expires is refusing, not unlucky, and asking
+    it again gets nothing - it is not asked again this session.
     """
+    monkeypatch.setattr(coordinator_module, "_STATE_REQUEST_COOLDOWN", 0.05)
     coordinator, lamp, link = await _holding_a_link(hass, "Glowrium-G8")
     # A refusal is told by what the error says. The read is what such a lamp
     # is primed by instead.
     _refusing(lamp)
+    attempts = coordinator_module._STATE_REQUEST_ATTEMPTS
 
-    for _ in range(coordinator_module._STATE_REQUEST_ATTEMPTS):
+    for _ in range(attempts):
         await coordinator._request_state(turn_over(coordinator, link))
-    assert len(lamp.asked) == coordinator_module._STATE_REQUEST_ATTEMPTS
+    assert len(lamp.asked) == attempts
     assert coordinator._state_request_muted is True
 
-    # Later connects must not re-send it.
+    # Later connects must not re-send it while the pause lasts.
     await coordinator._request_state(turn_over(coordinator, link))
     await coordinator._request_state(turn_over(coordinator, link))
-    assert len(lamp.asked) == coordinator_module._STATE_REQUEST_ATTEMPTS
+    assert len(lamp.asked) == attempts
+
+    await asyncio.sleep(0.06)  # the cooldown expires
+    assert coordinator._state_request_muted is False
+    await coordinator._request_state(turn_over(coordinator, link))
+    assert len(lamp.asked) == attempts + 1  # and it asks again
+    for _ in range(attempts - 1):  # a second run of refusals
+        await coordinator._request_state(turn_over(coordinator, link))
+    assert coordinator._state_request_muted is True
+
+    sent = len(lamp.asked)
+    await asyncio.sleep(0.06)
+    assert coordinator._state_request_muted is True  # this time for good
+    await coordinator._request_state(turn_over(coordinator, link))
+    assert len(lamp.asked) == sent  # never again this session
 
 
 async def test_one_dropped_link_does_not_abandon_the_state_request(
@@ -685,52 +708,64 @@ async def test_activation_skipped_when_state_unreadable(hass: HomeAssistant) -> 
     assert coordinator._activation_checked is True  # and must not re-wait
 
 
-async def test_partial_read_still_sends_the_request(hass: HomeAssistant) -> None:
+@pytest.mark.parametrize(
+    ("read", "carried", "exchange", "asked"),
+    [
+        pytest.param(
+            bytes.fromhex("a206f5081846"),
+            {KEY_POWER: True, KEY_BRIGHTNESS: 70},
+            [("read", NOTIFY_UUID), ("write", NOTIFY_UUID)],
+            1,
+            id="a read covering part of the map",
+        ),
+        pytest.param(
+            cbor.encode(dict.fromkeys(STATE_KEYS, 0)),
+            dict.fromkeys(STATE_KEYS, 0),
+            [("read", NOTIFY_UUID)],
+            0,
+            id="a read covering every key",
+        ),
+        pytest.param(
+            None,
+            {},
+            [("read", NOTIFY_UUID), ("write", NOTIFY_UUID)],
+            1,
+            id="a read that fails",
+        ),
+    ],
+)
+async def test_a_lamp_read_first_is_asked_for_what_the_read_did_not_carry(
+    hass: HomeAssistant,
+    read: bytes | None,
+    carried: dict[int, Any],
+    exchange: list[tuple[str, str]],
+    asked: int,
+) -> None:
     """For a lamp that is read, a read covering part of the map is not the end.
 
     A lamp that has refused the request is read first from then on, as every
-    lamp was before. Measured on a real one: the read carries only the low
-    property block, so the indicator (0x17), lighting mode (0x2b), ramp (0x2f)
-    and DST (0x35) are absent from it and arrive solely through the request.
-    Treating the read as the whole story left those four entities `unknown`
-    for the entire session, so the request is repeated until it is silenced.
+    lamp was before - and read before it is asked again: it was reported of
+    a G8 that the refused request takes the link with it, and then there is
+    nothing left to read. Measured on a real one: the read carries only the
+    low property block, so the indicator (0x17), lighting mode (0x2b), ramp
+    (0x2f) and DST (0x35) are absent from it and arrive solely through the
+    request. Treating the read as the whole story left those four entities
+    `unknown` for the entire session, so the request is repeated until it is
+    silenced - judged on what each read carried, not on the mirror, which
+    accumulates. A read that already has everything is not followed by the
+    request, this time or the next; a read that fails still leaves it.
     """
     coordinator, lamp, link = await _holding_a_link(hass, "Glowrium-G8")
     coordinator._state_request_failures = 1  # refused once: read first
     _refusing(lamp)
-    lamp.readable(NOTIFY_UUID, bytes.fromhex("a206f5081846"))
+    lamp.readable(NOTIFY_UUID, read)
 
     await coordinator._request_state(turn_over(coordinator, link))
+    await coordinator._request_state(turn_over(coordinator, link))  # and next time
 
-    # Read before it is asked again: it was reported of a G8 that the refused
-    # request takes the link with it, and then there is nothing left to read.
-    assert lamp.exchanges == [("read", NOTIFY_UUID), ("write", NOTIFY_UUID)]
-    assert coordinator.state[KEY_POWER] is True  # what the read did carry
-    assert coordinator.state[KEY_BRIGHTNESS] == 70
-    assert lamp.asked == [bytes(STATE_KEYS)]  # and the rest is asked for
-
-
-async def test_read_covering_every_key_skips_the_request(hass: HomeAssistant) -> None:
-    """A lamp that is read is not asked when the read already has everything."""
-    coordinator, lamp, link = await _holding_a_link(hass, "Glowrium-G8")
-    coordinator._state_request_failures = 1  # refused once: read first
-    lamp.readable(NOTIFY_UUID, cbor.encode(dict.fromkeys(STATE_KEYS, 0)))
-
-    await coordinator._request_state(turn_over(coordinator, link))
-    await coordinator._request_state(turn_over(coordinator, link))  # nor next time
-
-    assert lamp.read == [NOTIFY_UUID, NOTIFY_UUID]
-    assert lamp.asked == []
-
-
-async def test_falls_back_to_request_when_read_fails(hass: HomeAssistant) -> None:
-    """For a lamp that is read first, a failed read still leaves the request."""
-    coordinator, lamp, link = await _holding_a_link(hass)
-    coordinator._state_request_failures = 1  # refused once: read first
-    lamp.fails_writes(BleakError("rejected"))  # and there is nothing to read
-
-    await coordinator._request_state(turn_over(coordinator, link))
-    assert lamp.asked == [bytes(STATE_KEYS)]
+    assert lamp.exchanges == exchange * 2
+    assert lamp.asked == [bytes(STATE_KEYS)] * (asked * 2)
+    assert coordinator.state == carried
 
 
 async def test_a_refused_request_falls_back_to_the_read(hass: HomeAssistant) -> None:
@@ -751,19 +786,30 @@ async def test_a_refused_request_falls_back_to_the_read(hass: HomeAssistant) -> 
     assert coordinator._state_request_failures == 1
 
 
+@pytest.mark.parametrize(
+    "before",
+    [None, cbor.encode(dict.fromkeys(STATE_KEYS, 0))],
+    ids=["nothing", "a complete report, a moment earlier"],
+)
 async def test_a_lamp_that_acknowledges_and_says_nothing_is_read(
-    hass: HomeAssistant, monkeypatch: pytest.MonkeyPatch
+    hass: HomeAssistant, monkeypatch: pytest.MonkeyPatch, before: bytes | None
 ) -> None:
     """The request can be accepted and still bring nothing. Then the read does.
 
     Not an error and not a refusal, so neither of those paths sees it: the
     write is acknowledged, and no report follows. The wait for one is
-    bounded, and a lamp that stays silent is not left with no state.
+    bounded, and a lamp that stays silent is not left with no state. Only
+    what the lamp says after being asked counts as its answer: the lamp
+    reports on its own whenever something changes, and a complete map that
+    happened to arrive a moment earlier says nothing about whether this
+    request was answered.
     """
     monkeypatch.setattr(coordinator_module, "_REPORT_TIMEOUT", 0.05)
     coordinator, lamp, link = await _holding_a_link(hass)
     # The request is accepted, and nothing comes of it; the read has the state.
     lamp.readable(NOTIFY_UUID, cbor.encode({KEY_POWER: True}))
+    if before is not None:
+        lamp.say(before)  # before the request went out
 
     async with asyncio.timeout(1):
         assert await coordinator._request_state(turn_over(coordinator, link)) is True
@@ -776,26 +822,6 @@ async def test_a_lamp_that_acknowledges_and_says_nothing_is_read(
     lamp.readable(NOTIFY_UUID, None)
     async with asyncio.timeout(1):
         assert await coordinator._request_state(turn_over(coordinator, link)) is True
-
-
-async def test_a_report_from_before_the_request_is_not_its_answer(
-    hass: HomeAssistant, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """Only what the lamp says after being asked counts as its answer.
-
-    The lamp reports on its own whenever something changes, and a complete
-    map that happened to arrive a moment earlier says nothing about whether
-    this request was answered.
-    """
-    monkeypatch.setattr(coordinator_module, "_REPORT_TIMEOUT", 0.05)
-    coordinator, lamp, link = await _holding_a_link(hass)
-    # The request is accepted, and nothing comes of it; the read has the state.
-    lamp.readable(NOTIFY_UUID, cbor.encode({KEY_POWER: True}))
-    lamp.say(cbor.encode(dict.fromkeys(STATE_KEYS, 0)))  # before the request went out
-
-    await coordinator._request_state(turn_over(coordinator, link))
-
-    assert lamp.read == [NOTIFY_UUID]
 
 
 async def test_an_answer_in_two_notifications_is_waited_for(
@@ -1415,48 +1441,68 @@ async def test_a_command_is_vouched_for_by_what_it_changed(
     assert coordinator.state[KEY_LIGHTING_MODE] == 5
 
 
-async def test_command_writes_before_reading_anything(hass: HomeAssistant) -> None:
-    """A command connects and writes; it does not pay for priming first.
+async def test_a_command_connect_reads_nothing(hass: HomeAssistant) -> None:
+    """A command's own connect asks for a bare link: it writes, and reads nothing.
 
-    Priming costs a device-info read, a state read, the batched request and up
-    to 3 s waiting for the activation flag - all before the write, and all
-    inside the command budget. On a lamp where the connect alone is marginal
-    that is what turned a working command into a reported failure.
+    Not even the model: it used to read the device-info string on its way to
+    the write when the model was not known yet - a read between a button and
+    its lamp, and on BlueZ a link with two seconds to live. Nor does it pay
+    for priming first: that costs a device-info read, a state read, the
+    batched request and up to 3 s waiting for the activation flag, all before
+    the write and all inside the command budget, and on a lamp where the
+    connect alone is marginal that is what turned a working command into a
+    reported failure. A link that was primed would have had the state
+    request written to it first.
     """
     coordinator, lamp = _at_a_lamp(hass)
 
     await coordinator.async_set_power(True)
-    # The point of the fix: a command asks for a bare link. A link that was
-    # primed would have had the state request written to it first.
+
     assert lamp.dials == 1
     assert lamp.exchanges == [("write", WRITE_UUID)]  # nothing read, nothing asked
+    assert lamp.read == []
+    assert len(lamp.written) == 1
 
 
-async def test_a_command_connect_is_primed_by_the_poll(hass: HomeAssistant) -> None:
-    """The properties a command's connect skipped are actually fetched later.
+@pytest.mark.parametrize("path", ["a background connect", "the poll"])
+async def test_the_first_exchange_primes_the_link_once_on_either_path(
+    hass: HomeAssistant, path: str
+) -> None:
+    """The first exchange asks, lands the answer, reads the model, and says so.
 
-    A command connects without priming to stay inside its budget, so something
-    has to go back for the rest. Asserting that the poll calls a method by name
-    would pass with that method emptied out; what matters is that the lamp is
-    asked and its answer lands.
+    On a link a background connect made (``Link.connect``: dial, subscribe,
+    then the greet) and on one a command took, which the poll comes to: a
+    command connects without priming to stay inside its budget, so something
+    has to go back for the rest. Asserting that the poll calls a method by
+    name would pass with that method emptied out; what matters is that the
+    lamp is asked and its answer lands - and that the device-info string is
+    read only then. The link is marked primed; without the mark the poll
+    would re-interrogate the lamp every 30 s forever.
     """
-    coordinator, lamp, _link = await _holding_a_link(hass)
+    if path == "the poll":
+        coordinator, lamp, _link = await _holding_a_link(hass)
+    else:
+        coordinator, lamp = _at_a_lamp(hass)
     lamp.answers({KEY_POWER: True, KEY_ACTIVATED: True})
-    lamp.readable(INFO_UUID, b"brand:x;;")
+    lamp.readable(INFO_UUID, b"brand:Glowrium;pkey:Glowrium-C051;version:4;;")
 
-    # A link exists that nothing has primed - exactly what a command leaves.
-    link_of(coordinator).tick()
-    await hass.async_block_till_done()
+    if path == "the poll":
+        link_of(coordinator).tick()  # a link exists that nothing has primed
+        await hass.async_block_till_done()
+    else:
+        await link_of(coordinator).connect()
 
-    assert lamp.asked[-1] == bytes(STATE_KEYS)
+    assert lamp.links[0].subscribed  # or no state ever arrives
+    assert lamp.asked == [bytes(STATE_KEYS)]
     assert coordinator.state[KEY_POWER] is True  # the properties actually landed
     assert lamp.read == [INFO_UUID]  # and the model
+    assert coordinator.model_id == "Glowrium-C051"
+    assert link_of(coordinator).diagnostics()["primed"] is True
 
     # And it is not asked again on every tick from then on.
-    count = len(lamp.asked)
     link_of(coordinator).tick()
     await hass.async_block_till_done()
-    assert len(lamp.asked) == count
+    assert lamp.asked == [bytes(STATE_KEYS)]
 
 
 @pytest.mark.parametrize("reached", ["by a background connect", "by the poll"])
@@ -1563,33 +1609,6 @@ async def test_an_activated_device_is_left_alone(hass: HomeAssistant) -> None:
     await coordinator._async_activate_if_needed(turn_over(coordinator, link))
 
     assert lamp.written == []
-
-
-async def test_muted_state_request_recovers_after_the_cooldown(
-    hass: HomeAssistant, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """Muting the request expires, so a weak link is not punished for a session.
-
-    On a real G7 three consecutive failures accumulated 70 s after start-up
-    purely from a bad link. Making that permanent cost the lamp four properties
-    until Home Assistant was restarted.
-    """
-    monkeypatch.setattr(coordinator_module, "_STATE_REQUEST_COOLDOWN", 0.05)
-    coordinator, lamp, link = await _holding_a_link(hass)
-    _refusing(lamp)
-
-    for _ in range(coordinator_module._STATE_REQUEST_ATTEMPTS):
-        await coordinator._request_state(turn_over(coordinator, link))
-    assert coordinator._state_request_muted is True
-
-    sent = len(lamp.asked)
-    await coordinator._request_state(turn_over(coordinator, link))
-    assert len(lamp.asked) == sent  # silent while muted
-
-    await asyncio.sleep(0.06)
-    assert coordinator._state_request_muted is False
-    await coordinator._request_state(turn_over(coordinator, link))
-    assert len(lamp.asked) == sent + 1  # and asks again
 
 
 async def test_unload_does_not_wait_out_a_connect(
@@ -1870,25 +1889,6 @@ async def test_a_write_with_nothing_reportable_is_never_confirmed(
     assert {uuid for uuid, _frame in lamp.written} == {WRITE_UUID}
 
 
-async def test_a_background_connect_primes_once(hass: HomeAssistant) -> None:
-    """A connect that primes says so, so the poll does not do it again.
-
-    This drives the real _connect_locked: subscribe, ask for the state, mark
-    the link primed, and only then read the device-info string. Without the
-    mark the poll re-interrogates the lamp every 30 s forever.
-    """
-    coordinator, lamp = _at_a_lamp(hass)
-    lamp.answers({KEY_POWER: True, KEY_ACTIVATED: True})
-    lamp.readable(INFO_UUID, b"brand:Glowrium;pkey:Glowrium-C051;version:4;;")
-
-    await link_of(coordinator).connect()
-
-    assert lamp.links[0].subscribed  # or no state ever arrives
-    assert coordinator.model_id == "Glowrium-C051"
-    assert coordinator.state[KEY_POWER] is True
-    assert link_of(coordinator).diagnostics()["primed"] is True
-
-
 async def test_the_device_info_is_the_last_thing_read_and_read_once(
     hass: HomeAssistant,
 ) -> None:
@@ -1920,21 +1920,6 @@ async def test_the_device_info_is_the_last_thing_read_and_read_once(
     assert ("read", INFO_UUID) not in lamp.exchanges
     assert ("read", NOTIFY_UUID) not in lamp.exchanges
     assert lamp.read == [INFO_UUID]  # once, in the whole session
-
-
-async def test_a_command_connect_reads_nothing(hass: HomeAssistant) -> None:
-    """A command's own connect makes no read at all, not even of the model.
-
-    It used to read the device-info string on its way to the write when the
-    model was not known yet. That is a read between a button and its lamp,
-    and on BlueZ a link with two seconds to live.
-    """
-    coordinator, lamp = _at_a_lamp(hass)
-
-    await coordinator.async_set_power(True)
-
-    assert lamp.read == []
-    assert len(lamp.written) == 1
 
 
 async def test_the_wait_for_the_activation_flag_ends_with_the_link(
@@ -2893,50 +2878,131 @@ async def test_a_connect_that_cannot_be_read_is_dropped_at_once(
     assert link_of(coordinator).diagnostics()["connected"] is False
 
 
-async def test_a_dead_link_never_counts_as_a_refusal(hass: HomeAssistant) -> None:
-    """Only a device that answered can be said to have refused.
+def _a_protocol_error(
+    code: BleakGATTProtocolErrorCode, wording: str
+) -> BleakGATTProtocolError:
+    """Return bleak's protocol error for ``code``, worded some other way."""
+    error = BleakGATTProtocolError(code)
+    error.args = (int(code), wording)  # the code as a number, the words reworded
+    return error
 
-    A weak link fails the read and the request alike, and counting that muted
-    the request on a perfectly good lamp that merely sat far from the adapter -
-    seen on a real G7 forty seconds after start-up. A refusal is an error that
-    says so; a link that is gone says "not connected" to everything.
+
+_REWORDED = "GATT Protocol Error: put some other way"
+
+
+@pytest.mark.parametrize(
+    ("error", "readable", "is_a_refusal"),
+    [
+        pytest.param(
+            BleakError("Insufficient authorization (8)"),
+            True,
+            True,
+            id="authorization refused, by its words",
+        ),
+        pytest.param(
+            BleakError("[org.bluez.Error.Failed] Not connected"),
+            True,
+            False,
+            id="a link that died after the read",
+        ),
+        pytest.param(
+            BleakError("Not connected"),
+            False,
+            False,
+            id="a link that is dead to the read as well",
+        ),
+        pytest.param(
+            BleakError("GATT Protocol Error: Unlikely Error"),
+            True,
+            False,
+            id="an unlikely error, by its words",
+        ),
+        pytest.param(
+            BleakError("something nobody has seen before"),
+            True,
+            False,
+            id="something nobody has seen before",
+        ),
+        pytest.param(
+            _a_protocol_error(
+                BleakGATTProtocolErrorCode.INSUFFICIENT_AUTHORIZATION, _REWORDED
+            ),
+            True,
+            True,
+            id="authorization refused, by its code",
+        ),
+        pytest.param(
+            _a_protocol_error(
+                BleakGATTProtocolErrorCode.INSUFFICIENT_AUTHENTICATION, _REWORDED
+            ),
+            True,
+            True,
+            id="authentication refused, by its code",
+        ),
+        pytest.param(
+            _a_protocol_error(
+                BleakGATTProtocolErrorCode.WRITE_NOT_PERMITTED, _REWORDED
+            ),
+            True,
+            True,
+            id="write not permitted, by its code",
+        ),
+        pytest.param(
+            _a_protocol_error(BleakGATTProtocolErrorCode.READ_NOT_PERMITTED, _REWORDED),
+            True,
+            True,
+            id="read not permitted, by its code",
+        ),
+        pytest.param(
+            _a_protocol_error(
+                BleakGATTProtocolErrorCode.UNLIKELY_ERROR,
+                "GATT Protocol Error: nothing to do with authorization",
+            ),
+            True,
+            False,
+            id="an unlikely error, by its code",
+        ),
+    ],
+)
+async def test_only_an_application_level_refusal_silences_the_request(
+    hass: HomeAssistant, error: BleakError, readable: bool, is_a_refusal: bool
+) -> None:
+    """Silence the request on a refusal, never on anything merely unrecognised.
+
+    Two attempts to tell the cases apart failed on real hardware. A
+    successful read does not prove the device is there: seen on a real G7 in
+    0.2.0, the read answered - the low property block arrived and six
+    entities came alive - and the request then failed with "Not connected"
+    three times running, because the link dropped in between (because of
+    the read, as it turned out: see _request_state). Nor does
+    ``is_connected``: measured on a G7, it still reported True at the moment
+    the write failed with "not connected", and the disconnect callback
+    arrived two seconds later. A weak link fails the read and the request
+    alike, and counting that muted the request on a perfectly good lamp that
+    merely sat far from the adapter - seen forty seconds after start-up.
+
+    So the test is inverted. Only an error that positively looks like the
+    device answering "no" - an authorization or ATT protocol error - counts,
+    and which ATT error it was is in the code bleak gives, not in the words
+    that render it: told by the text, a refusal lasts as long as the wording
+    does, and an error that only mentions authorization in passing is taken
+    for one. The text is still what there is to go by where the error is
+    not bleak's own - a Bluetooth proxy's, say. Everything else is treated
+    as the link, and is not even counted, however often it happens: muting a
+    working lamp costs it four properties silently, while asking an exotic
+    device once too often costs a reconnect.
     """
     coordinator, lamp, link = await _holding_a_link(hass)
-    lamp.fails_writes(BleakError("Not connected"))  # and there is nothing to read
+    if readable:
+        lamp.readable(NOTIFY_UUID, cbor.encode({KEY_POWER: True}))
+    lamp.fails_writes(error)
 
     for _ in range(coordinator_module._STATE_REQUEST_ATTEMPTS * 3):
         await coordinator._request_state(turn_over(coordinator, link))
 
-    assert coordinator._state_request_muted is False
-    assert coordinator._state_request_failures == 0
-
-
-async def test_a_model_that_keeps_refusing_is_left_alone_for_the_session(
-    hass: HomeAssistant, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """A second run of refusals after the cooldown ends the asking for good.
-
-    The cooldown exists to give a first run the benefit of the doubt. A model
-    that refuses again once it expires is refusing, not unlucky, and asking it
-    again gets nothing.
-    """
-    monkeypatch.setattr(coordinator_module, "_STATE_REQUEST_COOLDOWN", 0.05)
-    coordinator, lamp, link = await _holding_a_link(hass, "Glowrium-G8")
-    _refusing(lamp)
-
-    for _ in range(coordinator_module._STATE_REQUEST_ATTEMPTS):
-        await coordinator._request_state(turn_over(coordinator, link))
-    assert coordinator._state_request_muted is True
-
-    await asyncio.sleep(0.06)  # the cooldown expires
-    assert coordinator._state_request_muted is False
-    for _ in range(coordinator_module._STATE_REQUEST_ATTEMPTS):
-        await coordinator._request_state(turn_over(coordinator, link))
-
-    sent = len(lamp.asked)
-    await asyncio.sleep(0.06)
-    await coordinator._request_state(turn_over(coordinator, link))
-    assert len(lamp.asked) == sent  # never again this session
+    assert coordinator._state_request_muted is is_a_refusal
+    if not is_a_refusal:
+        assert coordinator._state_request_failures == 0
 
 
 async def _the_three_warnings(
@@ -3021,121 +3087,6 @@ async def test_a_remembered_model_id_is_held_to_its_shape_in_the_log_too(
     for said in await _the_three_warnings(coordinator, caplog):
         assert "CST-0001" not in said
         assert "(model not as expected, firmware unknown)" in said
-
-
-async def test_a_link_that_dies_after_the_read_is_not_a_refusal(
-    hass: HomeAssistant,
-) -> None:
-    """A read can succeed and the link still die before the request goes out.
-
-    Seen on a real G7 in 0.2.0: the read answered - the low property block
-    arrived and six entities came alive - and the request then failed with
-    "Not connected" three times running, because the link dropped in between.
-    (It dropped because of the read, as it turned out: see _request_state.)
-    Treating a successful read as proof the device is present muted the request
-    on a perfectly good lamp, so the indicator, lighting mode, ramp and DST
-    never arrived while commands kept working. Whether the device refused is
-    told by the link being alive *after* the failure, not before it.
-    """
-    coordinator, lamp, link = await _holding_a_link(hass)
-    lamp.readable(NOTIFY_UUID, cbor.encode({KEY_POWER: True}))
-    # The drop is why the write failed, and what it fails with says so.
-    lamp.fails_writes(BleakError("[org.bluez.Error.Failed] Not connected"))
-
-    for _ in range(coordinator_module._STATE_REQUEST_ATTEMPTS * 2):
-        await coordinator._request_state(turn_over(coordinator, link))
-
-    assert coordinator._state_request_muted is False
-    assert coordinator._state_request_failures == 0
-
-
-async def test_only_an_application_level_refusal_silences_the_request(
-    hass: HomeAssistant,
-) -> None:
-    """Silence the request on a refusal, never on anything merely unrecognised.
-
-    Two attempts to tell the cases apart failed on real hardware. A successful
-    read does not prove the device is there - the link drops between the read
-    and the write. Nor does `is_connected`: measured on a G7, it still reported
-    True at the moment the write failed with "not connected", and the
-    disconnect callback arrived two seconds later.
-
-    So the test is inverted. Only an error that positively looks like the
-    device answering "no" - an authorization or ATT protocol error - counts.
-    Everything else is treated as the link, because muting a working lamp costs
-    it four properties silently, while asking an exotic device once too often
-    costs a reconnect.
-    """
-    cases = [
-        ("Insufficient authorization (8)", True),
-        ("[org.bluez.Error.Failed] Not connected", False),
-        ("GATT Protocol Error: Unlikely Error", False),
-        ("something nobody has seen before", False),
-    ]
-    for message, should_mute in cases:
-        coordinator, lamp, link = await _holding_a_link(hass)
-        lamp.readable(NOTIFY_UUID, cbor.encode({KEY_POWER: True}))
-        lamp.fails_writes(BleakError(message))
-
-        for _ in range(coordinator_module._STATE_REQUEST_ATTEMPTS):
-            await coordinator._request_state(turn_over(coordinator, link))
-
-        assert coordinator._state_request_muted is should_mute, message
-
-
-@pytest.mark.parametrize(
-    ("code", "wording", "is_a_refusal"),
-    [
-        (
-            BleakGATTProtocolErrorCode.INSUFFICIENT_AUTHORIZATION,
-            "GATT Protocol Error: put some other way",
-            True,
-        ),
-        (
-            BleakGATTProtocolErrorCode.INSUFFICIENT_AUTHENTICATION,
-            "GATT Protocol Error: put some other way",
-            True,
-        ),
-        (
-            BleakGATTProtocolErrorCode.WRITE_NOT_PERMITTED,
-            "GATT Protocol Error: put some other way",
-            True,
-        ),
-        (
-            BleakGATTProtocolErrorCode.READ_NOT_PERMITTED,
-            "GATT Protocol Error: put some other way",
-            True,
-        ),
-        (
-            BleakGATTProtocolErrorCode.UNLIKELY_ERROR,
-            "GATT Protocol Error: nothing to do with authorization",
-            False,
-        ),
-    ],
-)
-async def test_a_protocol_error_is_judged_by_its_code_and_not_by_its_wording(
-    hass: HomeAssistant,
-    code: BleakGATTProtocolErrorCode,
-    wording: str,
-    is_a_refusal: bool,
-) -> None:
-    """Which ATT error it was is in the code bleak gives; the words render it.
-
-    Told by the text, a refusal lasts as long as the wording does, and an
-    error that only mentions authorization in passing is taken for one. The
-    text is still what there is to go by where the error is not bleak's own -
-    a Bluetooth proxy's, say.
-    """
-    coordinator, lamp, link = await _holding_a_link(hass)
-    lamp.readable(NOTIFY_UUID, cbor.encode({KEY_POWER: True}))
-    error = BleakGATTProtocolError(code)
-    error.args = (int(code), wording)  # the code as a number, the words reworded
-    lamp.fails_writes(error)
-
-    for _ in range(coordinator_module._STATE_REQUEST_ATTEMPTS):
-        await coordinator._request_state(turn_over(coordinator, link))
-
-    assert coordinator._state_request_muted is is_a_refusal
 
 
 async def test_the_request_is_repeated_on_every_connect(hass: HomeAssistant) -> None:
