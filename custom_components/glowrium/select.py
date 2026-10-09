@@ -65,6 +65,16 @@ class GlowriumOperatingModeSelect(GlowriumSettingEntity, SelectEntity):
 # What the lighting modes were called while the option was the preset's
 # English name, before 0.3.0 made it a key. Only for reading back a value
 # remembered from then; nothing is offered or accepted under these.
+#
+# Goes in 0.5.0, with the conversion in async_added_to_hass below and the
+# test that holds it,
+# test_a_preset_remembered_by_its_old_name_is_still_recognised in test_init.
+# What is remembered is the state the select last showed, and from the
+# first start on 0.3.0 or later that is a key: a name read back is converted
+# before the select shows anything, and what the lamp reports is a key in
+# any case (CHANGELOG 0.3.0; ADR 0011). From then on a name remembered from
+# 0.2.1 or earlier is no option of the model's, and such a select reads
+# unknown until the lamp reports its mode, as one does on a first start.
 _NAMES_BEFORE_KEYS: Final = {
     "Sun SYNC": "sun_sync",
     "Before Sunrise": "before_sunrise",
