@@ -57,8 +57,8 @@ A command vouched for is delivered, and the mirror is not echoed for it.
 - ARCHITECTURE.md, "Reconnect": "A failed write is checked against what the
   device reports"; CHANGELOG 0.2.0, 0.3.0 and the unreleased entry for #21.
 - `tests/test_coordinator.py::test_lost_acknowledgement_is_not_reported_as_failure`,
-  `::test_a_stale_mirror_does_not_vouch_for_a_failed_write`,
-  `::test_a_report_from_before_the_command_does_not_vouch_for_it`,
+  `::test_a_stale_mirror_does_not_vouch_for_a_failed_write` (a report from
+  before the command is its case "by a report, some time ago"),
   `::test_a_report_vouches_only_for_what_it_carries`,
   `::test_what_else_was_written_meanwhile_vouches_for_no_command`,
   `::test_a_command_that_never_reached_the_wire_fails_at_once`.
