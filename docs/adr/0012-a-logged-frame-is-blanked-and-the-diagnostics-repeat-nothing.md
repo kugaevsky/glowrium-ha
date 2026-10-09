@@ -91,7 +91,11 @@ each ends. A deny-list over the mirror would be a list of what one lamp sent.
   paragraphs) and "Diagnostics".
 - `tests/test_coordinator.py::test_no_line_in_the_log_carries_the_coordinates`;
   `tests/test_mirror.py::test_no_bytes_of_a_frame_are_logged_above_debug`,
-  `::test_a_frame_goes_into_the_log_without_what_says_where_the_lamp_is`,
+  `::test_no_line_of_the_mirror_carries_the_coordinates`,
+  `::test_a_frame_there_was_no_room_for_is_printed_without_the_place`,
+  `::test_a_frame_is_rendered_only_for_a_line_that_is_written`,
+  `::test_a_frame_goes_into_the_log_without_what_says_where_the_lamp_is`
+  (the limit on the search is in its cases),
   `::test_wherever_it_stands_in_whatever_noise_a_coordinate_is_blanked`;
   `tests/test_diagnostics.py::test_the_download_does_not_say_where_the_lamp_is_or_which_one_it_is`,
   `::test_what_the_integration_cannot_name_is_only_counted`,

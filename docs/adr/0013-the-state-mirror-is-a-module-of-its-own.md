@@ -89,7 +89,8 @@ the keys.
   `::test_no_line_in_the_log_carries_the_coordinates`,
   `::test_a_report_read_only_in_part_is_still_the_answer_to_the_request`;
   `tests/test_mirror.py::test_no_more_than_the_limit_of_ids_nobody_named_is_kept`,
-  `::test_what_was_not_kept_was_not_reported`;
+  `::test_what_was_not_kept_was_not_reported`,
+  `::test_a_line_that_says_how_much_was_kept_counts_what_was_kept`;
   `tests/test_coordinator.py::test_what_the_lamp_is_asked_for_is_kept_whatever_else_it_sent`;
   the mirror's own mutation gate.
 
