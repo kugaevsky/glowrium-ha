@@ -608,6 +608,26 @@ class Link:
         """
         return self.connected or self.present
 
+    def diagnostics(self) -> dict[str, Any]:
+        """Describe where the link stands, for a diagnostics download.
+
+        The link's part of the block the coordinator hands on (its
+        ``diagnostics``): nothing here is the lamp's own word, and of the
+        client only what kind it is.
+        """
+        client = self.client
+        backend = self.backends.get(client) if client is not None else None
+        return {
+            "advertising": self.present,
+            "connected": self.connected,
+            "primed": client is not None and client is self.primed,
+            "client": type(backend).__name__ if backend is not None else None,
+            "seconds_since_last_answer": round(monotonic() - self.last_answer),
+            "unanswered_hang_ups": self.stuck_hang_ups,
+            "dials_held_back": monotonic() < self.dial_not_before,
+            "clients_that_would_not_close": len(self.unclosed),
+        }
+
     def log_reach(self, name: str) -> None:
         """Say once when the lamp goes out of reach, and once when it is back.
 
@@ -786,10 +806,10 @@ class Link:
                     _LOGGER.debug(
                         "Command to %s failed: %s", self.address, _reason(err)
                     )
-                    if isinstance(err, (NoNewLinkError, LinkLostError)):
-                        # Already what this ends as: the link's own "no",
-                        # which says which of its reasons it was - the caller
-                        # has words for each - or a turn that lost its link.
+                    if isinstance(err, LinkLostError):
+                        # Already what this ends as: a turn that lost its
+                        # link, or the link's own "no", which says which of
+                        # its reasons it was - the caller has words for each.
                         raise
                     raise LinkLostError(_reason(err)) from err
             finally:

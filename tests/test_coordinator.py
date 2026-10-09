@@ -1509,6 +1509,38 @@ async def test_a_first_exchange_on_a_held_link_does_not_wait_for_ever(
     assert coordinator._primed_client is not client
 
 
+async def test_two_ticks_do_not_make_the_first_exchange_twice(
+    hass: HomeAssistant,
+) -> None:
+    """An exchange still waiting for the lock when the first is over is dropped.
+
+    The tick does not know that the exchange the last tick began is still
+    under way, and begins another. Once it has the lock, the second looks at
+    whether the link has had its exchange meanwhile.
+    """
+    coordinator, client = _connected_coordinator(hass)
+    answer = _answers(coordinator, client, {KEY_ACTIVATED: True}).side_effect
+    client.read_gatt_char = AsyncMock(return_value=bytearray(b"brand:x;;"))
+
+    async def _in_a_moment(*args: object, **kwargs: object) -> None:
+        # Long enough for the next tick to queue up behind this one.
+        await asyncio.sleep(0.01)
+        await answer(*args, **kwargs)
+
+    client.write_gatt_char = AsyncMock(side_effect=_in_a_moment)
+
+    coordinator._async_poll_reconnect(None)
+    coordinator._async_poll_reconnect(None)
+    await hass.async_block_till_done()
+
+    asked = [
+        call
+        for call in client.write_gatt_char.await_args_list
+        if call.args[0] == NOTIFY_UUID
+    ]
+    assert len(asked) == 1
+
+
 async def test_a_device_reporting_unactivated_is_brought_up(
     hass: HomeAssistant,
 ) -> None:

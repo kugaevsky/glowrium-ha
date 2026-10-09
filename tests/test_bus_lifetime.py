@@ -1185,6 +1185,151 @@ def test_every_gatt_call_is_made_where_a_closed_bus_is_a_lost_link() -> None:
     assert made_in == ["link.py"] * 3
 
 
+def test_only_the_link_connects_hangs_up_or_knows_what_the_library_raises() -> None:
+    """No client leaves the link's module, and no error of the library does.
+
+    Outside it nothing connects a client, nothing disconnects one, and
+    nothing names what the Bluetooth library raises: a lost link is the
+    link's own error by the time anything else hears of it (#21). Two of the
+    library's types are still named outside: the device Home Assistant's
+    scanners find, which the dial is handed a lookup for, and the client, in
+    the names the coordinator keeps for tests that have not moved.
+    """
+    package = Path(coordinator_module.__file__).parent
+    found: list[str] = []
+    for source in sorted(package.rglob("*.py")):
+        if source.name == "link.py":
+            continue
+        tree = ast.parse(source.read_text(encoding="utf-8"))
+        for node in ast.walk(tree):
+            said = None
+            if isinstance(node, ast.Import):
+                said = [one.name for one in node.names if one.name.startswith("bleak")]
+            elif isinstance(node, ast.ImportFrom) and (node.module or "").startswith(
+                "bleak"
+            ):
+                said = [
+                    one.name
+                    for one in node.names
+                    if one.name not in ("BLEDevice", "BleakClientWithServiceCache")
+                ]
+            elif isinstance(node, ast.Name) and node.id in (
+                "BleakError",
+                "establish_connection",
+                "_LINK_ERRORS",
+            ):
+                said = [node.id]
+            elif (
+                isinstance(node, ast.Call)
+                and isinstance(node.func, ast.Attribute)
+                and node.func.attr == "disconnect"
+            ):
+                said = ["disconnect()"]
+            if said:
+                found.append(f"{source.name}:{node.lineno} {', '.join(said)}")
+
+    assert found == []
+
+
+def test_the_coordinator_goes_by_none_of_the_names_it_keeps_for_the_tests() -> None:
+    """What the coordinator kept of the link's is kept for the tests and the bench.
+
+    The names it had for the client, the lock and the rest stand between two
+    marks in its source, each a way through to the link. Nothing of its own
+    goes by them, names a client or reaches for the link's: the device half
+    is handed a turn, so no client is held in it - and what stands between
+    the marks can go as the tests and the bench cross over (#21, stage 3).
+    """
+    lines = Path(coordinator_module.__file__).read_text(encoding="utf-8").splitlines()
+
+    def _line_of(mark: str) -> int:
+        return next(number for number, line in enumerate(lines, 1) if mark in line)
+
+    first = _line_of("# --- The link's own, under the names they had here")
+    last = _line_of("# --- What the link is handed")
+    tree = ast.parse("\n".join(lines))
+    kept = {
+        node.name
+        for node in ast.walk(tree)
+        if isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef)
+        and first < node.lineno < last
+    }
+    outside = [
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Attribute | ast.Name) and not first < node.lineno < last
+    ]
+
+    goes_by = sorted(
+        f"{node.lineno} self.{node.attr}"
+        for node in outside
+        if isinstance(node, ast.Attribute)
+        and node.attr in kept
+        and isinstance(node.value, ast.Name)
+        and node.value.id == "self"
+    )
+    names_a_client = sorted(
+        node.lineno
+        for node in outside
+        if isinstance(node, ast.Name) and node.id == "BleakClientWithServiceCache"
+    )
+    reaches_for = sorted(
+        f"{node.lineno} _link.{node.attr}"
+        for node in outside
+        if isinstance(node, ast.Attribute)
+        and node.attr in ("client", "lock", "backends", "unclosed")
+        and isinstance(node.value, ast.Attribute)
+        and node.value.attr == "_link"
+    )
+    assert "_client" in kept  # the marks are where they were
+    assert "_lock" in kept
+    assert goes_by == []
+    assert names_a_client == []
+    assert reaches_for == []
+
+
+def test_a_link_is_hung_up_and_the_entities_told_in_one_place() -> None:
+    """Hanging a link up and telling the entities is one method of the link.
+
+    Five paths used to do the two by hand, one after the other, and the rule
+    "who lets go of the link tells the listeners" held for as long as nobody
+    wrote a sixth and forgot the second line. A stop tells nobody, and a
+    command tells them itself when it knows how it ended; neither hangs up
+    and tells in two lines of its own.
+    """
+    by_hand: list[str] = []
+    for module in (link_module, coordinator_module):
+        tree = ast.parse(Path(module.__file__).read_text(encoding="utf-8"))
+        for function in ast.walk(tree):
+            if not isinstance(function, ast.FunctionDef | ast.AsyncFunctionDef):
+                continue
+            for block in ast.walk(function):
+                for name in ("body", "orelse", "finalbody"):
+                    steps = getattr(block, name, None)
+                    if not isinstance(steps, list):
+                        continue
+                    by_hand.extend(
+                        function.name
+                        for one, next_one in pairwise(steps)
+                        if _calls(one, "hang_up", "_hang_up")
+                        and _calls(
+                            next_one, "_reach_changed", "_async_notify_listeners"
+                        )
+                    )
+
+    assert by_hand == ["_drop"]
+
+
+def _calls(step: ast.AST, *names: str) -> bool:
+    """Return whether ``step`` is a bare call of a method by one of ``names``."""
+    return (
+        isinstance(step, ast.Expr)
+        and isinstance(step.value, ast.Call)
+        and isinstance(step.value.func, ast.Attribute)
+        and step.value.func.attr in names
+    )
+
+
 async def test_a_hang_up_cancelled_half_way_still_closes_the_bus(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

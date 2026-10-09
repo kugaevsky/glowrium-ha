@@ -456,10 +456,6 @@ class GlowriumCoordinator:
     def _async_on_disconnect(self, client: BleakClientWithServiceCache) -> None:
         self._link.on_lost(client)
 
-    @callback
-    def _async_log_reach(self) -> None:
-        self._link.log_reach(self._plain_name)
-
     async def _async_initial_connect(self) -> None:
         await self._link.initial_connect()
 
@@ -625,8 +621,7 @@ class GlowriumCoordinator:
         leave the host is for the caller to choose, which is the one that
         knows it is writing a file to be shared (see diagnostics.py).
         """
-        client = self._client
-        backend = self._backends.get(client) if client is not None else None
+        link = self._link.diagnostics()
         return {
             "device": {
                 "model": self.model.name,
@@ -634,20 +629,22 @@ class GlowriumCoordinator:
                 "firmware": self.sw_version,
                 "info": dict(self.device_info),
             },
+            # The link's part and the device half's, in the order the block
+            # has always been written in: the file is read by people.
             "link": {
                 "available": self.available,
-                "advertising": self._present,
-                "connected": self._is_connected,
-                "primed": client is not None and client is self._primed_client,
-                "client": type(backend).__name__ if backend is not None else None,
+                "advertising": link["advertising"],
+                "connected": link["connected"],
+                "primed": link["primed"],
+                "client": link["client"],
                 "reports": self._reports,
                 "writes_sent": self._writes_sent,
-                "seconds_since_last_answer": round(monotonic() - self._last_answer),
+                "seconds_since_last_answer": link["seconds_since_last_answer"],
                 "state_request_refusals": self._state_request_failures,
                 "state_request_paused": self._state_request_muted,
-                "unanswered_hang_ups": self._stuck_hang_ups,
-                "dials_held_back": monotonic() < self._dial_not_before,
-                "clients_that_would_not_close": len(self._unreleased),
+                "unanswered_hang_ups": link["unanswered_hang_ups"],
+                "dials_held_back": link["dials_held_back"],
+                "clients_that_would_not_close": link["clients_that_would_not_close"],
             },
             "state": dict(self.state),
             "clock_heard_at": self._clock_heard_at,
@@ -678,7 +675,7 @@ class GlowriumCoordinator:
         day, and what failed an entity once fails it on every report, until
         the value changes. Having managed a round, it is news again.
         """
-        self._async_log_reach()
+        self._link.log_reach(self._plain_name)
         for update_callback in list(self._listeners):
             try:
                 update_callback()
@@ -745,10 +742,11 @@ class GlowriumCoordinator:
         self._cancel_unavailable = bluetooth.async_track_unavailable(
             hass, self._async_on_unavailable, self.address, connectable=True
         )
-        self._present = bluetooth.async_address_present(
+        self._link.present = bluetooth.async_address_present(
             hass, self.address, connectable=True
         )
-        self._async_log_reach()  # absent from the start is worth saying too
+        # Absent from the start is worth saying too.
+        self._link.log_reach(self._plain_name)
         self._spawn(self._link.initial_connect(), "initial connect")
         # Advertisement callbacks are throttled, so also poll: reconnect within
         # _RECONNECT_INTERVAL after any drop, regardless of advertisement timing.
@@ -1159,7 +1157,7 @@ class GlowriumCoordinator:
         Shared by the notify callback and the read of the state, so that both
         handle a split map, the remembered ramp and the listeners identically.
         """
-        self._note_answer()  # whatever it says, the lamp said it
+        self._link.note_answer()  # whatever it says, the lamp said it
         short = said = False
         try:
             decoded, short = cbor.decode_frame(data)
@@ -1366,7 +1364,7 @@ class GlowriumCoordinator:
             return
         # Wait (briefly) for the initial state - including 0x14 - to arrive.
         for _ in range(12):
-            if KEY_ACTIVATED in self.state or not self._is_connected:
+            if KEY_ACTIVATED in self.state or not self._link.connected:
                 break
             await asyncio.sleep(0.25)
         if self.state.get(KEY_ACTIVATED) is False:
