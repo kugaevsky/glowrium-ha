@@ -302,6 +302,10 @@ async def test_a_lamp_is_read_what_it_was_given_to_read_in_the_order_asked() -> 
         ("read", NOTIFY_UUID),
     ]
 
+    lamp.readable(INFO_UUID, None)  # and nothing to read there any more
+    with pytest.raises(BleakError, match="Not connected"):
+        await link.read_gatt_char(INFO_UUID)
+
 
 async def test_a_lamp_that_never_acknowledges_keeps_a_write_waiting() -> None:
     """The write neither returns nor fails: what a deadline is for."""

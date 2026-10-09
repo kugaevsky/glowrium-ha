@@ -77,7 +77,9 @@ def _connected_coordinator(
     return coordinator, client
 
 
-def _at_a_lamp(hass: HomeAssistant) -> tuple[GlowriumCoordinator, ScriptedLamp]:
+def _at_a_lamp(
+    hass: HomeAssistant, name: str = "Glowrium-G7"
+) -> tuple[GlowriumCoordinator, ScriptedLamp]:
     """Return a coordinator at a scripted lamp in range, with no link yet.
 
     A command dials the lamp bare - the link and the command's own write,
@@ -86,11 +88,11 @@ def _at_a_lamp(hass: HomeAssistant) -> tuple[GlowriumCoordinator, ScriptedLamp]:
     entities are told of it then.
     """
     lamp = ScriptedLamp()
-    return lamp.coordinator(hass), lamp
+    return lamp.coordinator(hass, name), lamp
 
 
 async def _holding_a_link(
-    hass: HomeAssistant,
+    hass: HomeAssistant, name: str = "Glowrium-G7"
 ) -> tuple[GlowriumCoordinator, ScriptedLamp, LampLink]:
     """Return a coordinator holding a bare link to a scripted lamp, and that link.
 
@@ -99,11 +101,23 @@ async def _holding_a_link(
     write and its echo are cleared away, so the mirror reads as unread and
     ``lamp.written`` starts empty - what is written next is the test's.
     """
-    coordinator, lamp = _at_a_lamp(hass)
+    coordinator, lamp = _at_a_lamp(hass, name)
     await coordinator.async_set_indicator(True)
     lamp.written.clear()
+    lamp.exchanges.clear()
     del coordinator.state[KEY_INDICATOR]
     return coordinator, lamp, lamp.links[-1]
+
+
+def _refusing(lamp: ScriptedLamp) -> None:
+    """Make ``lamp`` one that refuses the state request and can be read instead.
+
+    That is the shape of a model that refuses: issue #3 shows a G8 serving a
+    twenty-key read while answering the request with an ATT error and dropping
+    the link.
+    """
+    lamp.fails_writes(BleakError("Insufficient authorization (8)"))
+    lamp.readable(NOTIFY_UUID, cbor.encode({KEY_POWER: True}))
 
 
 def _answers(
@@ -499,24 +513,20 @@ async def test_state_request_abandoned_only_after_repeated_refusal(
     and asking on every connect gets nothing from it - but it takes a run of
     refusals, not one: see the transient-failure test below.
     """
-    coordinator = GlowriumCoordinator(hass, "AA:BB:CC:DD:EE:FF", "Glowrium-G8")
+    coordinator, lamp, link = await _holding_a_link(hass, "Glowrium-G8")
     # A refusal is told by what the error says. The read is what such a lamp
     # is primed by instead.
-    client = _refusing_client()
+    _refusing(lamp)
 
     for _ in range(coordinator_module._STATE_REQUEST_ATTEMPTS):
-        await coordinator._request_state(turn_over(coordinator, client))
-    assert (
-        client.write_gatt_char.await_count == coordinator_module._STATE_REQUEST_ATTEMPTS
-    )
+        await coordinator._request_state(turn_over(coordinator, link))
+    assert len(lamp.asked) == coordinator_module._STATE_REQUEST_ATTEMPTS
     assert coordinator._state_request_muted is True
 
     # Later connects must not re-send it.
-    await coordinator._request_state(turn_over(coordinator, client))
-    await coordinator._request_state(turn_over(coordinator, client))
-    assert (
-        client.write_gatt_char.await_count == coordinator_module._STATE_REQUEST_ATTEMPTS
-    )
+    await coordinator._request_state(turn_over(coordinator, link))
+    await coordinator._request_state(turn_over(coordinator, link))
+    assert len(lamp.asked) == coordinator_module._STATE_REQUEST_ATTEMPTS
 
 
 async def test_one_dropped_link_does_not_abandon_the_state_request(
@@ -529,25 +539,20 @@ async def test_one_dropped_link_does_not_abandon_the_state_request(
     Abandoning the request there left the indicator, lighting mode, ramp and DST
     unread until Home Assistant was restarted.
     """
-    coordinator = GlowriumCoordinator(hass, "AA:BB:CC:DD:EE:FF", "Glowrium-G7")
-    client = MagicMock()
-    client.is_connected = True
-    client.read_gatt_char = AsyncMock(side_effect=BleakError("unreadable"))
-    client.write_gatt_char = AsyncMock(
-        side_effect=BleakError("[org.bluez.Error.Failed] Not connected")
-    )
+    coordinator, lamp, link = await _holding_a_link(hass)
+    lamp.fails_writes(BleakError("[org.bluez.Error.Failed] Not connected"), times=1)
 
     assert (
-        await coordinator._request_state(turn_over(coordinator, client)) is False
-    )  # nothing answered
+        await coordinator._request_state(turn_over(coordinator, link)) is False
+    )  # nothing answered, and nothing to read
     assert coordinator._state_request_muted is False  # and one failure means nothing
     assert coordinator._state_request_failures == 0  # it is not even counted
 
     # And an answer clears the count, so that the odd refusal on a bad link
     # never adds up to a silenced request.
     coordinator._state_request_failures = coordinator_module._STATE_REQUEST_ATTEMPTS - 1
-    _answers(coordinator, client)
-    await coordinator._request_state(turn_over(coordinator, client))
+    lamp.answers()
+    await coordinator._request_state(turn_over(coordinator, link))
     assert coordinator._state_request_failures == 0
 
 
@@ -558,19 +563,15 @@ async def test_a_lamp_that_reports_is_asked_and_never_read(hass: HomeAssistant) 
     of this lamp ends the link: a hundred links an hour were lost that way and
     put down to range (ARCHITECTURE.md, "Priming state on connect").
     """
-    coordinator = GlowriumCoordinator(hass, "AA:BB:CC:DD:EE:FF", "Glowrium-G7")
-    client = MagicMock()
-    client.is_connected = True
-    client.read_gatt_char = AsyncMock(
-        return_value=bytearray(cbor.encode({KEY_POWER: False}))
-    )
-    asked = _answers(coordinator, client, {KEY_POWER: True, KEY_BRIGHTNESS: 70})
+    coordinator, lamp, link = await _holding_a_link(hass)
+    lamp.readable(NOTIFY_UUID, cbor.encode({KEY_POWER: False}))
+    lamp.answers({KEY_POWER: True, KEY_BRIGHTNESS: 70})
 
     async with asyncio.timeout(1):  # the answer is there when the write returns
-        assert await coordinator._request_state(turn_over(coordinator, client)) is True
+        assert await coordinator._request_state(turn_over(coordinator, link)) is True
 
-    asked.assert_awaited_once_with(NOTIFY_UUID, bytes(STATE_KEYS), response=True)
-    client.read_gatt_char.assert_not_awaited()
+    assert lamp.asked == [bytes(STATE_KEYS)]
+    assert lamp.read == []
     assert coordinator.state[KEY_POWER] is True  # what the lamp reported
     assert coordinator.state[KEY_BRIGHTNESS] == 70
     assert coordinator._state_request_muted is False
@@ -582,19 +583,14 @@ async def test_activation_skipped_when_state_unreadable(hass: HomeAssistant) -> 
     0x14 can never arrive on such a device, so the 3 s wait would run on every
     connect - including the connect the command path performs.
     """
-    coordinator = GlowriumCoordinator(hass, "AA:BB:CC:DD:EE:FF", "Glowrium-G8")
-    client = MagicMock()
-    client.is_connected = True
-    coordinator._client = client
+    coordinator, _lamp, link = await _holding_a_link(hass, "Glowrium-G8")
     coordinator._state_request_muted_until = monotonic() + 60
     activated = []
     coordinator._async_activate = AsyncMock(
         side_effect=lambda _turn: activated.append(1)
     )
 
-    await coordinator._async_activate_if_needed(
-        turn_over(coordinator, coordinator._client)
-    )
+    await coordinator._async_activate_if_needed(turn_over(coordinator, link))
 
     assert not activated  # must not replay the vendor bring-up blind
     assert coordinator._activation_checked is True  # and must not re-wait
@@ -610,69 +606,42 @@ async def test_partial_read_still_sends_the_request(hass: HomeAssistant) -> None
     Treating the read as the whole story left those four entities `unknown`
     for the entire session, so the request is repeated until it is silenced.
     """
-    coordinator = GlowriumCoordinator(hass, "AA:BB:CC:DD:EE:FF", "Glowrium-G8")
+    coordinator, lamp, link = await _holding_a_link(hass, "Glowrium-G8")
     coordinator._state_request_failures = 1  # refused once: read first
-    client = _refusing_client()
-    order: list[str] = []
+    _refusing(lamp)
+    lamp.readable(NOTIFY_UUID, bytes.fromhex("a206f5081846"))
 
-    async def _read(_uuid: str) -> bytearray:
-        order.append("read")
-        return bytearray.fromhex("a206f5081846")
-
-    async def _refuse(*_args: object, **_kwargs: object) -> None:
-        order.append("asked")
-        raise BleakError("Insufficient authorization (8)")
-
-    client.read_gatt_char = AsyncMock(side_effect=_read)
-    client.write_gatt_char = AsyncMock(side_effect=_refuse)
-
-    await coordinator._request_state(turn_over(coordinator, client))
+    await coordinator._request_state(turn_over(coordinator, link))
 
     # Read before it is asked again: it was reported of a G8 that the refused
     # request takes the link with it, and then there is nothing left to read.
-    assert order == ["read", "asked"]
-    client.read_gatt_char.assert_awaited_once_with(NOTIFY_UUID)
+    assert lamp.exchanges == [("read", NOTIFY_UUID), ("write", NOTIFY_UUID)]
     assert coordinator.state[KEY_POWER] is True  # what the read did carry
     assert coordinator.state[KEY_BRIGHTNESS] == 70
-    client.write_gatt_char.assert_awaited_once_with(  # and the rest is asked for
-        NOTIFY_UUID, bytes(STATE_KEYS), response=True
-    )
+    assert lamp.asked == [bytes(STATE_KEYS)]  # and the rest is asked for
 
 
 async def test_read_covering_every_key_skips_the_request(hass: HomeAssistant) -> None:
     """A lamp that is read is not asked when the read already has everything."""
-    coordinator = GlowriumCoordinator(hass, "AA:BB:CC:DD:EE:FF", "Glowrium-G8")
+    coordinator, lamp, link = await _holding_a_link(hass, "Glowrium-G8")
     coordinator._state_request_failures = 1  # refused once: read first
-    client = MagicMock()
-    client.is_connected = True
-    client.write_gatt_char = AsyncMock()
-    client.read_gatt_char = AsyncMock(
-        return_value=bytearray(cbor.encode(dict.fromkeys(STATE_KEYS, 0)))
-    )
+    lamp.readable(NOTIFY_UUID, cbor.encode(dict.fromkeys(STATE_KEYS, 0)))
 
-    await coordinator._request_state(turn_over(coordinator, client))
-    await coordinator._request_state(
-        turn_over(coordinator, client)
-    )  # nor on the next connect
+    await coordinator._request_state(turn_over(coordinator, link))
+    await coordinator._request_state(turn_over(coordinator, link))  # nor next time
 
-    assert client.read_gatt_char.await_count == 2
-    client.write_gatt_char.assert_not_awaited()
+    assert lamp.read == [NOTIFY_UUID, NOTIFY_UUID]
+    assert lamp.asked == []
 
 
 async def test_falls_back_to_request_when_read_fails(hass: HomeAssistant) -> None:
     """For a lamp that is read first, a failed read still leaves the request."""
-    coordinator = GlowriumCoordinator(hass, "AA:BB:CC:DD:EE:FF", "Glowrium-G7")
+    coordinator, lamp, link = await _holding_a_link(hass)
     coordinator._state_request_failures = 1  # refused once: read first
-    client = MagicMock()
-    client.is_connected = True
-    client.read_gatt_char = AsyncMock(side_effect=BleakError("not readable"))
-    client.write_gatt_char = AsyncMock(side_effect=BleakError("rejected"))
+    lamp.fails_writes(BleakError("rejected"))  # and there is nothing to read
 
-    await coordinator._request_state(turn_over(coordinator, client))
-    assert client.write_gatt_char.await_count == 1
-    client.write_gatt_char.assert_awaited_with(
-        NOTIFY_UUID, bytes(STATE_KEYS), response=True
-    )
+    await coordinator._request_state(turn_over(coordinator, link))
+    assert lamp.asked == [bytes(STATE_KEYS)]
 
 
 async def test_a_refused_request_falls_back_to_the_read(hass: HomeAssistant) -> None:
@@ -682,13 +651,13 @@ async def test_a_refused_request_falls_back_to_the_read(hass: HomeAssistant) -> 
     costs the link on BlueZ, and for such a lamp that is the price of having
     a state at all.
     """
-    coordinator = GlowriumCoordinator(hass, "AA:BB:CC:DD:EE:FF", "Glowrium-G8")
-    client = _refusing_client()
+    coordinator, lamp, link = await _holding_a_link(hass, "Glowrium-G8")
+    _refusing(lamp)
 
-    assert await coordinator._request_state(turn_over(coordinator, client)) is True
+    assert await coordinator._request_state(turn_over(coordinator, link)) is True
 
-    client.write_gatt_char.assert_awaited_once()  # asked first
-    client.read_gatt_char.assert_awaited_once_with(NOTIFY_UUID)  # then read
+    # Asked first, then read.
+    assert lamp.exchanges == [("write", NOTIFY_UUID), ("read", NOTIFY_UUID)]
     assert coordinator.state[KEY_POWER] is True
     assert coordinator._state_request_failures == 1
 
@@ -703,25 +672,21 @@ async def test_a_lamp_that_acknowledges_and_says_nothing_is_read(
     bounded, and a lamp that stays silent is not left with no state.
     """
     monkeypatch.setattr(coordinator_module, "_REPORT_TIMEOUT", 0.05)
-    coordinator = GlowriumCoordinator(hass, "AA:BB:CC:DD:EE:FF", "Glowrium-G7")
-    client = MagicMock()
-    client.is_connected = True
-    client.write_gatt_char = AsyncMock()  # accepted; nothing comes of it
-    client.read_gatt_char = AsyncMock(
-        return_value=bytearray(cbor.encode({KEY_POWER: True}))
-    )
+    coordinator, lamp, link = await _holding_a_link(hass)
+    # The request is accepted, and nothing comes of it; the read has the state.
+    lamp.readable(NOTIFY_UUID, cbor.encode({KEY_POWER: True}))
 
     async with asyncio.timeout(1):
-        assert await coordinator._request_state(turn_over(coordinator, client)) is True
+        assert await coordinator._request_state(turn_over(coordinator, link)) is True
 
-    client.read_gatt_char.assert_awaited_once_with(NOTIFY_UUID)
+    assert lamp.read == [NOTIFY_UUID]
     assert coordinator.state[KEY_POWER] is True
 
     # And if the read fails as well, the acknowledgement still stands: the
     # link answered, so it is not dropped as one that answers nothing.
-    client.read_gatt_char = AsyncMock(side_effect=BleakError("unreadable"))
+    lamp.readable(NOTIFY_UUID, None)
     async with asyncio.timeout(1):
-        assert await coordinator._request_state(turn_over(coordinator, client)) is True
+        assert await coordinator._request_state(turn_over(coordinator, link)) is True
 
 
 async def test_a_report_from_before_the_request_is_not_its_answer(
@@ -734,19 +699,14 @@ async def test_a_report_from_before_the_request_is_not_its_answer(
     this request was answered.
     """
     monkeypatch.setattr(coordinator_module, "_REPORT_TIMEOUT", 0.05)
-    coordinator = GlowriumCoordinator(hass, "AA:BB:CC:DD:EE:FF", "Glowrium-G7")
-    client = MagicMock()
-    client.is_connected = True
-    client.write_gatt_char = AsyncMock()  # accepted; nothing comes of it
-    client.read_gatt_char = AsyncMock(
-        return_value=bytearray(cbor.encode({KEY_POWER: True}))
-    )
-    everything = bytearray(cbor.encode(dict.fromkeys(STATE_KEYS, 0)))
-    coordinator._on_notify(None, everything)  # before the request went out
+    coordinator, lamp, link = await _holding_a_link(hass)
+    # The request is accepted, and nothing comes of it; the read has the state.
+    lamp.readable(NOTIFY_UUID, cbor.encode({KEY_POWER: True}))
+    lamp.say(cbor.encode(dict.fromkeys(STATE_KEYS, 0)))  # before the request went out
 
-    await coordinator._request_state(turn_over(coordinator, client))
+    await coordinator._request_state(turn_over(coordinator, link))
 
-    client.read_gatt_char.assert_awaited_once_with(NOTIFY_UUID)
+    assert lamp.read == [NOTIFY_UUID]
 
 
 async def test_an_answer_in_two_notifications_is_waited_for(
@@ -758,29 +718,16 @@ async def test_an_answer_in_two_notifications_is_waited_for(
     for the whole answer would leave the caller - the activation check, the
     clock - looking at half a state.
     """
-    coordinator = GlowriumCoordinator(hass, "AA:BB:CC:DD:EE:FF", "Glowrium-G7")
-    client = MagicMock()
-    client.is_connected = True
-    client.read_gatt_char = AsyncMock()
+    coordinator, lamp, link = await _holding_a_link(hass)
     first, second = STATE_KEYS[:5], STATE_KEYS[5:]
-    earlier = bytearray(cbor.encode(dict.fromkeys(STATE_KEYS, 9)))
-    coordinator._on_notify(None, earlier)  # a complete report, from before
+    lamp.say(cbor.encode(dict.fromkeys(STATE_KEYS, 9)))  # a complete report, before
+    lamp.answers(frame=cbor.encode(dict.fromkeys(first, 1)))
+    hass.loop.call_later(0.05, lamp.say, cbor.encode(dict.fromkeys(second, 2)))
 
-    async def _write(_uuid: str, _payload: bytes, **_kwargs: object) -> None:
-        coordinator._on_notify(None, bytearray(cbor.encode(dict.fromkeys(first, 1))))
-        hass.loop.call_later(
-            0.05,
-            coordinator._on_notify,
-            None,
-            bytearray(cbor.encode(dict.fromkeys(second, 2))),
-        )
-
-    client.write_gatt_char = AsyncMock(side_effect=_write)
-
-    assert await coordinator._request_state(turn_over(coordinator, client)) is True
+    assert await coordinator._request_state(turn_over(coordinator, link)) is True
 
     assert coordinator.state[second[-1]] == 2  # it waited for the second one
-    client.read_gatt_char.assert_not_awaited()
+    assert lamp.read == []
 
 
 async def test_a_partial_answer_is_not_topped_up_by_a_read(
@@ -792,17 +739,14 @@ async def test_a_partial_answer_is_not_topped_up_by_a_read(
     everything a lamp is likely not to know - and it would cost the link.
     """
     monkeypatch.setattr(coordinator_module, "_REPORT_TIMEOUT", 0.05)
-    coordinator = GlowriumCoordinator(hass, "AA:BB:CC:DD:EE:FF", "Glowrium-G7")
-    client = MagicMock()
-    client.is_connected = True
-    client.read_gatt_char = AsyncMock()
-    _answers(coordinator, client, {KEY_POWER: True}, only=(KEY_POWER, KEY_BRIGHTNESS))
+    coordinator, lamp, link = await _holding_a_link(hass)
+    lamp.answers({KEY_POWER: True}, only=(KEY_POWER, KEY_BRIGHTNESS))
 
     async with asyncio.timeout(1):
-        assert await coordinator._request_state(turn_over(coordinator, client)) is True
+        assert await coordinator._request_state(turn_over(coordinator, link)) is True
 
     assert coordinator.state[KEY_POWER] is True
-    client.read_gatt_char.assert_not_awaited()
+    assert lamp.read == []
 
 
 async def test_split_notification_updates_state(hass: HomeAssistant) -> None:
@@ -1539,21 +1483,21 @@ async def test_muted_state_request_recovers_after_the_cooldown(
     until Home Assistant was restarted.
     """
     monkeypatch.setattr(coordinator_module, "_STATE_REQUEST_COOLDOWN", 0.05)
-    coordinator = GlowriumCoordinator(hass, "AA:BB:CC:DD:EE:FF", "Glowrium-G7")
-    client = _refusing_client()
+    coordinator, lamp, link = await _holding_a_link(hass)
+    _refusing(lamp)
 
     for _ in range(coordinator_module._STATE_REQUEST_ATTEMPTS):
-        await coordinator._request_state(turn_over(coordinator, client))
+        await coordinator._request_state(turn_over(coordinator, link))
     assert coordinator._state_request_muted is True
 
-    sent = client.write_gatt_char.await_count
-    await coordinator._request_state(turn_over(coordinator, client))
-    assert client.write_gatt_char.await_count == sent  # silent while muted
+    sent = len(lamp.asked)
+    await coordinator._request_state(turn_over(coordinator, link))
+    assert len(lamp.asked) == sent  # silent while muted
 
     await asyncio.sleep(0.06)
     assert coordinator._state_request_muted is False
-    await coordinator._request_state(turn_over(coordinator, client))
-    assert client.write_gatt_char.await_count == sent + 1  # and asks again
+    await coordinator._request_state(turn_over(coordinator, link))
+    assert len(lamp.asked) == sent + 1  # and asks again
 
 
 async def test_unload_does_not_wait_out_a_connect(
@@ -2959,24 +2903,6 @@ async def test_a_connect_that_cannot_be_read_is_dropped_at_once(
     assert link_of(coordinator).diagnostics()["connected"] is False
 
 
-def _refusing_client() -> MagicMock:
-    """Return a client whose read works but which rejects the request.
-
-    That is the shape of a model that refuses: issue #3 shows a G8 serving a
-    twenty-key read while answering the request with an ATT error and dropping
-    the link.
-    """
-    client = MagicMock()
-    client.is_connected = True
-    client.read_gatt_char = AsyncMock(
-        return_value=bytearray(cbor.encode({KEY_POWER: True}))
-    )
-    client.write_gatt_char = AsyncMock(
-        side_effect=BleakError("Insufficient authorization (8)")
-    )
-    return client
-
-
 async def test_a_dead_link_never_counts_as_a_refusal(hass: HomeAssistant) -> None:
     """Only a device that answered can be said to have refused.
 
@@ -2985,14 +2911,11 @@ async def test_a_dead_link_never_counts_as_a_refusal(hass: HomeAssistant) -> Non
     seen on a real G7 forty seconds after start-up. A refusal is an error that
     says so; a link that is gone says "not connected" to everything.
     """
-    coordinator = GlowriumCoordinator(hass, "AA:BB:CC:DD:EE:FF", "Glowrium-G7")
-    client = MagicMock()
-    client.is_connected = True
-    client.read_gatt_char = AsyncMock(side_effect=BleakError("Not connected"))
-    client.write_gatt_char = AsyncMock(side_effect=BleakError("Not connected"))
+    coordinator, lamp, link = await _holding_a_link(hass)
+    lamp.fails_writes(BleakError("Not connected"))  # and there is nothing to read
 
     for _ in range(coordinator_module._STATE_REQUEST_ATTEMPTS * 3):
-        await coordinator._request_state(turn_over(coordinator, client))
+        await coordinator._request_state(turn_over(coordinator, link))
 
     assert coordinator._state_request_muted is False
     assert coordinator._state_request_failures == 0
@@ -3008,34 +2931,37 @@ async def test_a_model_that_keeps_refusing_is_left_alone_for_the_session(
     again gets nothing.
     """
     monkeypatch.setattr(coordinator_module, "_STATE_REQUEST_COOLDOWN", 0.05)
-    coordinator = GlowriumCoordinator(hass, "AA:BB:CC:DD:EE:FF", "Glowrium-G8")
-    client = _refusing_client()
+    coordinator, lamp, link = await _holding_a_link(hass, "Glowrium-G8")
+    _refusing(lamp)
 
     for _ in range(coordinator_module._STATE_REQUEST_ATTEMPTS):
-        await coordinator._request_state(turn_over(coordinator, client))
+        await coordinator._request_state(turn_over(coordinator, link))
     assert coordinator._state_request_muted is True
 
     await asyncio.sleep(0.06)  # the cooldown expires
     assert coordinator._state_request_muted is False
     for _ in range(coordinator_module._STATE_REQUEST_ATTEMPTS):
-        await coordinator._request_state(turn_over(coordinator, client))
+        await coordinator._request_state(turn_over(coordinator, link))
 
-    sent = client.write_gatt_char.await_count
+    sent = len(lamp.asked)
     await asyncio.sleep(0.06)
-    await coordinator._request_state(turn_over(coordinator, client))
-    assert client.write_gatt_char.await_count == sent  # never again this session
+    await coordinator._request_state(turn_over(coordinator, link))
+    assert len(lamp.asked) == sent  # never again this session
 
 
 async def _the_three_warnings(
     coordinator: GlowriumCoordinator, caplog: pytest.LogCaptureFixture
 ) -> list[str]:
     """Draw each warning that names the lamp's model, and return what was said."""
+    lamp = lamp_of(coordinator)
+    await coordinator.async_set_indicator(True)  # a link to be asked on
+    link = lamp.links[-1]
+    _refusing(lamp)
     with caplog.at_level(logging.WARNING, logger=coordinator_module.__name__):
-        coordinator._ingest(bytes.fromhex("a106f5deadbeef"))  # trailing bytes
-        coordinator._ingest(_PARTLY_READABLE)
-        client = _refusing_client()
+        lamp.say(bytes.fromhex("a106f5deadbeef"))  # trailing bytes
+        lamp.say(_PARTLY_READABLE)
         for _ in range(coordinator_module._STATE_REQUEST_ATTEMPTS):
-            await coordinator._request_state(turn_over(coordinator, client))
+            await coordinator._request_state(turn_over(coordinator, link))
     said = [r.getMessage() for r in caplog.records if r.levelno == logging.WARNING]
     assert len(said) == 3
     assert "trailing bytes" in said[0]
@@ -3056,7 +2982,7 @@ async def test_no_warning_carries_what_a_lamp_glued_to_its_model_or_firmware(
     model and the firmware, and each of them asks to be reported: the log is
     held to the shapes the diagnostics file is held to.
     """
-    coordinator = GlowriumCoordinator(hass, "AA:BB:CC:DD:EE:FF", "Glowrium-G8")
+    coordinator = ScriptedLamp().coordinator(hass, "Glowrium-G8")
     coordinator.device_info = _parse_device_info(
         b"brand:INLEDCO;pkey:Glowrium-C051,devid:CST-0001;version:4,mac:A1B2C3;;"
     )
@@ -3087,7 +3013,7 @@ async def test_a_warning_names_a_model_and_a_firmware_that_are_what_they_claim(
     hass: HomeAssistant, caplog: pytest.LogCaptureFixture, info: bytes, named: str
 ) -> None:
     """Whoever reads the report needs to know which lamp it came from."""
-    coordinator = GlowriumCoordinator(hass, "AA:BB:CC:DD:EE:FF", "Glowrium-G7")
+    coordinator = ScriptedLamp().coordinator(hass)
     coordinator.device_info = _parse_device_info(info)
 
     for said in await _the_three_warnings(coordinator, caplog):
@@ -3098,11 +3024,8 @@ async def test_a_remembered_model_id_is_held_to_its_shape_in_the_log_too(
     hass: HomeAssistant, caplog: pytest.LogCaptureFixture
 ) -> None:
     """Until the lamp is read, its model is what an earlier session stored."""
-    coordinator = GlowriumCoordinator(
-        hass,
-        "AA:BB:CC:DD:EE:FF",
-        "Glowrium-G7",
-        model_id="Glowrium-C051;devid:CST-0001",
+    coordinator = ScriptedLamp().coordinator(
+        hass, model_id="Glowrium-C051;devid:CST-0001"
     )
 
     for said in await _the_three_warnings(coordinator, caplog):
@@ -3124,22 +3047,13 @@ async def test_a_link_that_dies_after_the_read_is_not_a_refusal(
     never arrived while commands kept working. Whether the device refused is
     told by the link being alive *after* the failure, not before it.
     """
-    coordinator = GlowriumCoordinator(hass, "AA:BB:CC:DD:EE:FF", "Glowrium-G7")
-    client = MagicMock()
-    client.is_connected = True
-    client.read_gatt_char = AsyncMock(
-        return_value=bytearray(cbor.encode({KEY_POWER: True}))
-    )
-
-    async def _write_then_the_link_dies(*_a: object, **_kw: object) -> None:
-        client.is_connected = False  # the drop is why the write failed
-        raise BleakError("[org.bluez.Error.Failed] Not connected")
-
-    client.write_gatt_char = AsyncMock(side_effect=_write_then_the_link_dies)
+    coordinator, lamp, link = await _holding_a_link(hass)
+    lamp.readable(NOTIFY_UUID, cbor.encode({KEY_POWER: True}))
+    # The drop is why the write failed, and what it fails with says so.
+    lamp.fails_writes(BleakError("[org.bluez.Error.Failed] Not connected"))
 
     for _ in range(coordinator_module._STATE_REQUEST_ATTEMPTS * 2):
-        client.is_connected = True
-        await coordinator._request_state(turn_over(coordinator, client))
+        await coordinator._request_state(turn_over(coordinator, link))
 
     assert coordinator._state_request_muted is False
     assert coordinator._state_request_failures == 0
@@ -3169,16 +3083,12 @@ async def test_only_an_application_level_refusal_silences_the_request(
         ("something nobody has seen before", False),
     ]
     for message, should_mute in cases:
-        coordinator = GlowriumCoordinator(hass, "AA:BB:CC:DD:EE:FF", "Glowrium-G7")
-        client = MagicMock()
-        client.is_connected = True
-        client.read_gatt_char = AsyncMock(
-            return_value=bytearray(cbor.encode({KEY_POWER: True}))
-        )
-        client.write_gatt_char = AsyncMock(side_effect=BleakError(message))
+        coordinator, lamp, link = await _holding_a_link(hass)
+        lamp.readable(NOTIFY_UUID, cbor.encode({KEY_POWER: True}))
+        lamp.fails_writes(BleakError(message))
 
         for _ in range(coordinator_module._STATE_REQUEST_ATTEMPTS):
-            await coordinator._request_state(turn_over(coordinator, client))
+            await coordinator._request_state(turn_over(coordinator, link))
 
         assert coordinator._state_request_muted is should_mute, message
 
@@ -3226,18 +3136,14 @@ async def test_a_protocol_error_is_judged_by_its_code_and_not_by_its_wording(
     text is still what there is to go by where the error is not bleak's own -
     a Bluetooth proxy's, say.
     """
-    coordinator = GlowriumCoordinator(hass, "AA:BB:CC:DD:EE:FF", "Glowrium-G7")
-    client = MagicMock()
-    client.is_connected = True
-    client.read_gatt_char = AsyncMock(
-        return_value=bytearray(cbor.encode({KEY_POWER: True}))
-    )
+    coordinator, lamp, link = await _holding_a_link(hass)
+    lamp.readable(NOTIFY_UUID, cbor.encode({KEY_POWER: True}))
     error = BleakGATTProtocolError(code)
     error.args = (int(code), wording)  # the code as a number, the words reworded
-    client.write_gatt_char = AsyncMock(side_effect=error)
+    lamp.fails_writes(error)
 
     for _ in range(coordinator_module._STATE_REQUEST_ATTEMPTS):
-        await coordinator._request_state(turn_over(coordinator, client))
+        await coordinator._request_state(turn_over(coordinator, link))
 
     assert coordinator._state_request_muted is is_a_refusal
 

@@ -144,9 +144,15 @@ class ScriptedLamp:
         """
         self._answer = (values, only, after, frame)
 
-    def readable(self, uuid: str, data: bytes) -> None:
-        """Give a characteristic a value to be read; the rest fail as before."""
-        self._readable[uuid] = data
+    def readable(self, uuid: str, data: bytes | None) -> None:
+        """Give a characteristic a value to be read, or take it away (``None``).
+
+        The rest fail as before.
+        """
+        if data is None:
+            self._readable.pop(uuid, None)
+        else:
+            self._readable[uuid] = data
 
     def never_acknowledges_a_write(self) -> None:
         """Keep every write waiting: it neither returns nor fails."""
