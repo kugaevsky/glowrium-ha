@@ -39,11 +39,15 @@ _LOGGER = logging.getLogger(f"{__package__}.coordinator")
 # up to 32 KiB a frame, measured (2026-10-09). A G7 reports no such id and a
 # read of a G8 brings thirteen.
 _OTHERS_KEPT: Final = 64
-# Said wherever the log asks for a frame to be posted (see _for_the_log).
-_BLANKED = (
-    "What reads as the coordinates stored in the lamp, or as the sunrise and "
-    "sunset times it works out from them, is shown as xx; look the frame over "
-    "all the same before posting it"
+# Said where the log tells of a frame it could not use in full: where the
+# frame is, and what was done to it there (see _for_the_log). No line above
+# debug prints a frame: its bytes are the lamp's to choose, and the default
+# log is posted for reasons that have nothing to do with this integration.
+_IN_THE_DEBUG_LOG = (
+    "With debug logging enabled for this integration the frame is in the log, "
+    "where what reads as the coordinates stored in the lamp, or as the sunrise "
+    "and sunset times it works out from them, is shown as xx; look the frame "
+    "over all the same before posting it"
 )
 # How many bytes follow the head of a CBOR float: double, single, half.
 _FLOAT_BYTES = {b"\xfb": 8, b"\xfa": 4, b"\xf9": 2}
@@ -204,9 +208,9 @@ class Mirror(Mapping[int, Any]):
         of the protocol.
 
         ``described`` says what the lamp is - its model and firmware - for the
-        two warnings that ask for a frame to be posted; it is asked when the
-        warning is written, since the lamp describes itself only after its
-        first frames. ``now`` is the host's clock, for dating the lamp's.
+        warnings that ask for a report; it is asked when a warning is
+        written, since the lamp describes itself only after its first
+        frames. ``now`` is the host's clock, for dating the lamp's.
         """
         self._address = address
         self._known = frozenset(known)
@@ -398,64 +402,61 @@ class Mirror(Mapping[int, Any]):
         if KEY_TIME in values:
             self.clock_heard_at = self._now()
 
-    # --- the two warnings that ask for a frame --------------------------------
+    # --- the two warnings a frame can cause, and the frame at debug ------------
 
     def _log_trailing_bytes(self, data: bytes, count: int) -> None:
-        """Report a frame rejected for trailing bytes: once loudly, then quietly.
+        """Report a frame rejected for trailing bytes: once loudly, each time at debug.
 
         Notifications arrive continuously, so an unconditional warning would
-        flood the log; one per session is enough to surface the problem while
-        the hex dump below gives whoever reports it everything needed to decode
-        the frame by hand.
+        flood the log; one per session is enough to surface the problem. The
+        frame itself goes into the debug log, the first one too, and into no
+        line above it (see ``_IN_THE_DEBUG_LOG``).
         """
+        _LOGGER.debug(
+            "%s: frame %s carries %d trailing bytes and was dropped",
+            self._address,
+            _for_the_log(data),
+            count,
+        )
         if self._trailing_warned:
-            _LOGGER.debug(
-                "%s: frame %s again carries %d trailing bytes",
-                self._address,
-                _for_the_log(data),
-                count,
-            )
             return
         self._trailing_warned = True
         _LOGGER.warning(
-            "%s (%s) sent a frame with %d trailing bytes "
-            "and it was dropped: %s. The frame declared less than it carried, "
-            "so accepting the remainder could mean acting on a corrupt state. "
-            "Please report this frame - it is exactly the hex dump needed. %s",
+            "%s (%s) sent a frame with %d trailing bytes and it was dropped. The "
+            "frame declared less than it carried, so accepting the remainder "
+            "could mean acting on a corrupt state. Please report this, with the "
+            "frame. %s",
             self._address,
             self._described(),
             count,
-            _for_the_log(data),
-            _BLANKED,
+            _IN_THE_DEBUG_LOG,
         )
 
     def _log_unreadable_item(self, data: bytes, err: cbor.UnreadableItemError) -> None:
-        """Report a frame that was read only in part: once loudly, then quietly.
+        """Report a frame that was read only in part: once loudly, each time at debug.
 
         As with trailing bytes: a lamp that sends one such frame sends them
-        all day, and the first is the one that has to be seen - with the bytes
-        it takes to give the item a reading.
+        all day, and the first is the one that has to be seen. The frame, with
+        the bytes it takes to give the item a reading, is in the debug log.
         """
+        _LOGGER.debug(
+            "%s: frame %s carries an item that cannot be read (%s); kept the %d "
+            "properties ahead of it",
+            self._address,
+            _for_the_log(data),
+            err,
+            len(err.ahead),
+        )
         if self._unreadable_warned:
-            _LOGGER.debug(
-                "%s: frame %s again carries an item that cannot be read (%s); "
-                "kept the %d properties ahead of it",
-                self._address,
-                _for_the_log(data),
-                err,
-                len(err.ahead),
-            )
             return
         self._unreadable_warned = True
         _LOGGER.warning(
-            "%s (%s) sent a frame with an item this "
-            "integration cannot read (%s): %s. The %d properties ahead of it "
-            "were kept; whatever follows it could not be found. Please report "
-            "this frame - it is exactly the hex dump needed. %s",
+            "%s (%s) sent a frame with an item this integration cannot read (%s). "
+            "The %d properties ahead of it were kept; whatever follows it could "
+            "not be found. Please report this, with the frame. %s",
             self._address,
             self._described(),
             err,
-            _for_the_log(data),
             len(err.ahead),
-            _BLANKED,
+            _IN_THE_DEBUG_LOG,
         )

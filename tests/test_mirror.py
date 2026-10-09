@@ -224,7 +224,11 @@ def test_trailing_bytes_are_reported_as_themselves(
         warnings = _warnings(caplog)
         assert len(warnings) == 1
         assert "4 trailing bytes" in warnings[0]
-        assert frame.hex() in warnings[0]
+        # Not the frame: its bytes are the lamp's to choose, and this line is
+        # in a log that is posted for other reasons. It says where the frame is.
+        assert frame.hex() not in warnings[0]
+        assert "debug logging" in warnings[0]
+        assert frame.hex() in caplog.text  # the first frame is there as well
         # It asks for the frame to be posted, and a frame can hold the home's
         # coordinates: the request has to say so where it is made.
         assert "coordinates" in warnings[0]
@@ -593,7 +597,9 @@ def test_what_was_read_ahead_of_an_unreadable_item_is_kept_and_said_loudly(
         assert "cannot read" in said
         assert "unsupported CBOR major type 6" in said
         assert "2 properties ahead of it were kept" in said
-        assert _PARTLY_READABLE.hex() in said
+        assert _PARTLY_READABLE.hex() not in said  # where it is, not the frame
+        assert "debug logging" in said
+        assert _PARTLY_READABLE.hex() in caplog.text  # the first one too
         assert "coordinates" in said
         assert "Undecodable frame" not in caplog.text
         assert "split across frames" not in caplog.text  # it was not: it is whole
@@ -751,3 +757,50 @@ def test_the_first_property_not_kept_is_said_once_and_without_the_frame(
         mirror.take(_ids_never_sent(3000, 2))
         assert not _warnings(caplog)
     assert mirror.not_kept == 4
+
+
+# --- where a frame's bytes may be printed ---------------------------------------
+
+
+def _bytes_of(frame: bytes, text: str) -> bool:
+    """Tell whether ``text`` holds any four bytes of ``frame`` in a row, as hex."""
+    printed = frame.hex()
+    return any(printed[at : at + 8] in text for at in range(0, len(printed) - 7, 2))
+
+
+@pytest.mark.parametrize(
+    ("frame", "said"),
+    [
+        pytest.param("a106f50818466162636465", "trailing bytes", id="trailing bytes"),
+        pytest.param(
+            "a406f508184609c0000d00", "cannot", id="an item that cannot be read"
+        ),
+        pytest.param("c006f50818461122", "Undecodable frame", id="undecodable"),
+        pytest.param(
+            "8406f5081846", "nothing that can be used", id="not a map of properties"
+        ),
+    ],
+)
+def test_no_bytes_of_a_frame_are_logged_above_debug(
+    caplog: pytest.LogCaptureFixture, frame: str, said: str
+) -> None:
+    """A frame's bytes are in the debug log, and nowhere else.
+
+    The default log is posted for reasons that have nothing to do with this
+    integration, by people who are not thinking of it, and the bytes of a
+    frame are the lamp's to choose. What is searched for in a printed frame
+    is the lamp's place in the shapes seen so far - and a frame that is
+    printed is one that could not be read, as likely as any to hold a shape
+    nobody has seen. So above debug the log says what was wrong and where the
+    frame is, and prints none of it.
+    """
+    mirror = _a_mirror()
+    raw = bytes.fromhex(frame)
+    with caplog.at_level(logging.DEBUG, logger=_LOG):
+        mirror.take(raw)
+        mirror.take(raw)
+
+    assert said in caplog.text
+    assert raw.hex() in caplog.text  # with debug logging on, the frame is there
+    louder = [r.getMessage() for r in caplog.records if r.levelno >= logging.INFO]
+    assert not [line for line in louder if _bytes_of(raw, line)]

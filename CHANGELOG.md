@@ -42,6 +42,17 @@ All notable changes to this project are documented here. The format is based on
   before; of the others, the first sixty-four. The rest is counted: the log
   says so once, and the diagnostics give the number
   ([#23](https://github.com/kugaevsky/glowrium-ha/issues/23)).
+- **A frame the integration could not read in full is in the debug log, and
+  no longer in the warning.** Two warnings - for a frame with trailing bytes
+  and for one with an item no reading has been written for - carried the
+  frame as hex, with what places the lamp shown as `xx`. A frame's bytes are
+  the lamp's to choose, the search for the place knows the shapes seen so
+  far, and the log these warnings stand in is posted for reasons that have
+  nothing to do with this integration. Each warning now says what was wrong
+  and that the frame is in the debug log; with debug logging enabled the
+  frame is printed there, blanked as before, from the first one on. To send
+  a frame, enable debug logging first
+  ([#23](https://github.com/kugaevsky/glowrium-ha/issues/23)).
 - **What places the lamp is blanked in a printed frame under more of the
   ways it can be written.** A frame the integration prints in its log has
   the coordinates the lamp stores, and the sunrise and sunset times it works
