@@ -790,12 +790,12 @@ class Link:
                             _reason(err),
                         )
                         if client is not None:
-                            # Finished before the retry dials: the hang-up
-                            # closes the link in BlueZ, and a connect made
-                            # ahead of that either fails or is handed the very
-                            # link being closed. Shielded, so the command's
-                            # deadline ends the wait and not the hang-up.
-                            await asyncio.shield(self.hang_up(client))
+                            # Started before the retry dials, and waited for
+                            # by the dial (open), as every hang-up still under
+                            # way is: it closes the link in BlueZ, and a
+                            # connect made ahead of that either fails or is
+                            # handed the very link being closed.
+                            self.hang_up(client)
         except _LOST as err:
             if writing_to is not None and writing_to is self.client:
                 # The deadline ran out inside the write. The handler above
