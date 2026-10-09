@@ -55,7 +55,7 @@ from custom_components.glowrium.coordinator import (
     _parse_device_info,
 )
 
-from .lamp import ScriptedLamp, lamp_of, turn_over
+from .lamp import LampLink, ScriptedLamp, lamp_of, turn_over
 
 
 def _connected_coordinator(
@@ -87,6 +87,23 @@ def _at_a_lamp(hass: HomeAssistant) -> tuple[GlowriumCoordinator, ScriptedLamp]:
     """
     lamp = ScriptedLamp()
     return lamp.coordinator(hass), lamp
+
+
+async def _holding_a_link(
+    hass: HomeAssistant,
+) -> tuple[GlowriumCoordinator, ScriptedLamp, LampLink]:
+    """Return a coordinator holding a bare link to a scripted lamp, and that link.
+
+    Taken the way a command takes one: nothing asked of the lamp and nothing
+    read, as on a link no background connect has run on. The command's own
+    write and its echo are cleared away, so the mirror reads as unread and
+    ``lamp.written`` starts empty - what is written next is the test's.
+    """
+    coordinator, lamp = _at_a_lamp(hass)
+    await coordinator.async_set_indicator(True)
+    lamp.written.clear()
+    del coordinator.state[KEY_INDICATOR]
+    return coordinator, lamp, lamp.links[-1]
 
 
 def _answers(
@@ -363,10 +380,10 @@ async def test_presence_callbacks_notify(hass: HomeAssistant) -> None:
 
 async def test_async_activate_sequence(hass: HomeAssistant) -> None:
     """Bring-up replays the app's sequence: {0x53}, {time, 0x31}, then {0x14}."""
-    coordinator, client = _connected_coordinator(hass)
-    await coordinator._async_activate(turn_over(coordinator, coordinator._client))
-    assert client.write_gatt_char.await_count == 3
-    payloads = [cbor.decode(c.args[1]) for c in client.write_gatt_char.await_args_list]
+    coordinator, lamp, link = await _holding_a_link(hass)
+    await coordinator._async_activate(turn_over(coordinator, link))
+    assert len(lamp.written) == 3
+    payloads = [cbor.decode(frame) for _uuid, frame in lamp.written]
     assert payloads[0] == {0x53: 300}
     assert payloads[1].keys() == {0x05, 0x31}
     assert payloads[1][0x31] == 1
@@ -380,11 +397,11 @@ async def test_the_bring_up_sets_the_clock_to_local_time(hass: HomeAssistant) ->
     UTC would run a new lamp's schedule and its circadian curve hours off.
     """
     await hass.config.async_set_time_zone("Asia/Kolkata")  # 5 h 30 min from UTC
-    coordinator, client = _connected_coordinator(hass)
+    coordinator, lamp, link = await _holding_a_link(hass)
 
-    await coordinator._async_activate(turn_over(coordinator, coordinator._client))
+    await coordinator._async_activate(turn_over(coordinator, link))
 
-    written = cbor.decode(client.write_gatt_char.await_args_list[1].args[1])
+    written = cbor.decode(lamp.written[1][1])
     clock = protocol.device_time(written)
     assert clock is not None
     local = dt_util.now().replace(tzinfo=None)
@@ -1534,30 +1551,24 @@ async def test_a_device_reporting_unactivated_is_brought_up(
     and accepts config writes, but gates its light output on 0x14, so without
     this it stays dark however many commands it is sent.
     """
-    coordinator, client = _connected_coordinator(hass)
+    coordinator, lamp, link = await _holding_a_link(hass)
     coordinator.state[KEY_ACTIVATED] = False
 
-    await coordinator._async_activate_if_needed(
-        turn_over(coordinator, coordinator._client)
-    )
+    await coordinator._async_activate_if_needed(turn_over(coordinator, link))
 
-    written = [
-        cbor.decode(call.args[1]) for call in client.write_gatt_char.await_args_list
-    ]
+    written = [cbor.decode(frame) for _uuid, frame in lamp.written]
     assert KEY_ACTIVATED in written[-1]
     assert written[-1][KEY_ACTIVATED] is True  # the flag that ungates the light
 
 
 async def test_an_activated_device_is_left_alone(hass: HomeAssistant) -> None:
     """A lamp already reporting 0x14 True is not put through the bring-up."""
-    coordinator, client = _connected_coordinator(hass)
+    coordinator, lamp, link = await _holding_a_link(hass)
     coordinator.state[KEY_ACTIVATED] = True
 
-    await coordinator._async_activate_if_needed(
-        turn_over(coordinator, coordinator._client)
-    )
+    await coordinator._async_activate_if_needed(turn_over(coordinator, link))
 
-    client.write_gatt_char.assert_not_awaited()
+    assert lamp.written == []
 
 
 async def test_muted_state_request_recovers_after_the_cooldown(
@@ -1973,19 +1984,19 @@ async def test_the_wait_for_the_activation_flag_ends_with_the_link(
     exchange waits leaves nothing to wait for - and nothing is written blind
     to a lamp whose flag was never read.
     """
-    coordinator, client = _connected_coordinator(hass)
+    coordinator, lamp, link = await _holding_a_link(hass)
     waiting = asyncio.create_task(
-        coordinator._async_activate_if_needed(turn_over(coordinator, client))
+        coordinator._async_activate_if_needed(turn_over(coordinator, link))
     )
     await asyncio.sleep(0)
     assert not waiting.done()  # the flag has not come, and it waits
 
-    client.is_connected = False  # the link goes
+    link.is_connected = False  # the link goes
     async with asyncio.timeout(1):  # and the wait with it, at its next look
         await waiting
 
     assert coordinator._activation_checked is False
-    client.write_gatt_char.assert_not_awaited()
+    assert lamp.written == []
 
 
 async def test_the_bring_up_is_attempted_once_per_session(
@@ -1996,19 +2007,15 @@ async def test_the_bring_up_is_attempted_once_per_session(
     The check costs up to 3 s waiting for 0x14, and it runs on every connect,
     so repeating it would put that on the command path for the whole session.
     """
-    coordinator, client = _connected_coordinator(hass)
+    coordinator, lamp, link = await _holding_a_link(hass)
     coordinator.state[KEY_ACTIVATED] = True
-    await coordinator._async_activate_if_needed(
-        turn_over(coordinator, coordinator._client)
-    )
-    client.write_gatt_char.assert_not_awaited()
+    await coordinator._async_activate_if_needed(turn_over(coordinator, link))
+    assert lamp.written == []
 
     # Settled. Even a later False must not restart the bring-up.
     coordinator.state[KEY_ACTIVATED] = False
-    await coordinator._async_activate_if_needed(
-        turn_over(coordinator, coordinator._client)
-    )
-    client.write_gatt_char.assert_not_awaited()
+    await coordinator._async_activate_if_needed(turn_over(coordinator, link))
+    assert lamp.written == []
 
 
 async def test_a_failed_reconnect_does_not_wedge_reconnection(
@@ -3395,15 +3402,13 @@ async def test_a_stale_device_clock_is_corrected(hass: HomeAssistant) -> None:
     surfaces it either, because the clock is not an entity.
     """
     await hass.config.async_set_time_zone("Asia/Kolkata")  # 5 h 30 min from UTC
-    coordinator, client = _connected_coordinator(hass)
+    coordinator, lamp, link = await _holding_a_link(hass)
     stale = bytes.fromhex("07ea02010f0e2c")  # 2026-02-01 15:14:44
     coordinator.state[KEY_TIME] = stale
 
-    await coordinator._async_sync_clock_if_needed(
-        turn_over(coordinator, coordinator._client)
-    )
+    await coordinator._async_sync_clock_if_needed(turn_over(coordinator, link))
 
-    written = cbor.decode(client.write_gatt_char.await_args.args[1])
+    written = cbor.decode(lamp.written[-1][1])
     assert written[KEY_TIME] != stale
     assert written[KEY_TIME_SYNCED] == 1
     corrected = protocol.device_time(written)
@@ -3421,43 +3426,37 @@ async def test_a_clock_that_is_near_enough_is_left_alone(
     is seconds out would mean a write each time, on a link that is the scarce
     resource here.
     """
-    coordinator, client = _connected_coordinator(hass)
+    coordinator, lamp, link = await _holding_a_link(hass)
     coordinator.state[KEY_TIME] = protocol.encode_device_time(dt_util.now())
 
-    await coordinator._async_sync_clock_if_needed(
-        turn_over(coordinator, coordinator._client)
-    )
+    await coordinator._async_sync_clock_if_needed(turn_over(coordinator, link))
 
-    client.write_gatt_char.assert_not_awaited()
+    assert lamp.written == []
 
 
 async def test_an_unreadable_clock_is_not_corrected_blind(
     hass: HomeAssistant,
 ) -> None:
     """With nothing read back, there is no drift to judge and nothing to fix."""
-    coordinator, client = _connected_coordinator(hass)
+    coordinator, lamp, link = await _holding_a_link(hass)
     assert KEY_TIME not in coordinator.state
 
-    await coordinator._async_sync_clock_if_needed(
-        turn_over(coordinator, coordinator._client)
-    )
+    await coordinator._async_sync_clock_if_needed(turn_over(coordinator, link))
 
-    client.write_gatt_char.assert_not_awaited()
+    assert lamp.written == []
 
 
 async def test_a_clock_that_is_no_date_is_corrected(
     hass: HomeAssistant,
 ) -> None:
     """Thirteen months is a report, and a wrong one: it is set right, not left."""
-    coordinator, client = _connected_coordinator(hass)
+    coordinator, lamp, link = await _holding_a_link(hass)
     coordinator.state[KEY_TIME] = bytes.fromhex("07ea0d12151823")
 
-    await coordinator._async_sync_clock_if_needed(
-        turn_over(coordinator, coordinator._client)
-    )
+    await coordinator._async_sync_clock_if_needed(turn_over(coordinator, link))
 
-    client.write_gatt_char.assert_awaited_once()
-    written = cbor.decode(client.write_gatt_char.await_args.args[1])
+    assert len(lamp.written) == 1
+    written = cbor.decode(lamp.written[-1][1])
     assert protocol.device_time(written) is not None  # a date the lamp can keep
     assert written[KEY_TIME_SYNCED] == 1
 
