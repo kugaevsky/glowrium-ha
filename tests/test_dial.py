@@ -8,6 +8,7 @@ then dials through Home Assistant's Bluetooth as it always has.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from unittest.mock import AsyncMock, MagicMock
 
@@ -26,6 +27,7 @@ from custom_components.glowrium.const import (
     INFO_UUID,
     KEY_BRIGHTNESS,
     KEY_POWER,
+    NOTIFY_UUID,
     WRITE_UUID,
 )
 from custom_components.glowrium.coordinator import GlowriumCoordinator
@@ -234,6 +236,85 @@ async def test_a_lamp_that_acts_on_a_write_and_loses_the_acknowledgement() -> No
 
     assert heard == [b"\xa1\x06\xf5"]
     assert lamp.written == [(WRITE_UUID, b"\xa1\x06\xf5")]
+
+
+async def test_a_lamp_that_answers_reports_the_ids_it_was_asked_for() -> None:
+    """The state request is a write of ids; the answer is one report of them.
+
+    As a G7 answers: inside the write, with every id asked for - zero unless
+    the lamp was given a value - and only those it knows (``only``). What it
+    was asked is kept apart from what it was commanded (``asked``).
+    """
+    lamp = ScriptedLamp()
+    lamp.answers({KEY_POWER: True}, only=(KEY_POWER, KEY_BRIGHTNESS))
+    heard: list[bytes] = []
+    link = await lamp.dial(MagicMock())
+    await link.start_notify("any", lambda _characteristic, data: heard.append(data))
+
+    await link.write_gatt_char(NOTIFY_UUID, bytes((KEY_POWER, KEY_BRIGHTNESS, 0x14)))
+    await link.write_gatt_char(WRITE_UUID, b"\xa0")
+
+    assert [cbor.decode(frame) for frame in heard] == [
+        {KEY_POWER: True, KEY_BRIGHTNESS: 0}
+    ]
+    assert lamp.asked == [bytes((KEY_POWER, KEY_BRIGHTNESS, 0x14))]
+    assert lamp.written[-1] == (WRITE_UUID, b"\xa0")
+
+
+async def test_a_lamp_may_answer_in_a_moment_or_with_a_frame_of_its_own() -> None:
+    """``after`` holds the answer back; ``frame`` is reported as it is given."""
+    lamp = ScriptedLamp()
+    lamp.answers(after=0.01, frame=b"\xa1\x08\x18\x46")
+    heard: list[bytes] = []
+    link = await lamp.dial(MagicMock())
+    await link.start_notify("any", lambda _characteristic, data: heard.append(data))
+
+    writing = asyncio.create_task(link.write_gatt_char(NOTIFY_UUID, bytes([0x08])))
+    await asyncio.sleep(0)
+    assert heard == []  # not yet
+    await writing
+
+    assert heard == [b"\xa1\x08\x18\x46"]
+
+
+async def test_a_lamp_is_read_what_it_was_given_to_read_in_the_order_asked() -> None:
+    """``readable`` gives a characteristic a value; the rest fail as before.
+
+    What the lamp was asked, written and read is kept in one order
+    (``exchanges``): the device info is to be read last on a link, and that
+    is a fact about order.
+    """
+    lamp = ScriptedLamp()
+    lamp.readable(INFO_UUID, b"brand:x;;")
+    link = await lamp.dial(MagicMock())
+    await link.start_notify("any", MagicMock())
+
+    await link.write_gatt_char(WRITE_UUID, b"\xa0")
+    assert await link.read_gatt_char(INFO_UUID) == bytearray(b"brand:x;;")
+    with pytest.raises(BleakError, match="Not connected"):
+        await link.read_gatt_char(NOTIFY_UUID)
+
+    assert link.subscribed
+    assert lamp.read == [INFO_UUID, NOTIFY_UUID]
+    assert lamp.exchanges == [
+        ("write", WRITE_UUID),
+        ("read", INFO_UUID),
+        ("read", NOTIFY_UUID),
+    ]
+
+
+async def test_a_lamp_that_never_acknowledges_keeps_a_write_waiting() -> None:
+    """The write neither returns nor fails: what a deadline is for."""
+    lamp = ScriptedLamp()
+    lamp.never_acknowledges_a_write()
+    link = await lamp.dial(MagicMock())
+
+    writing = asyncio.create_task(link.write_gatt_char(WRITE_UUID, b"\xa0"))
+    await asyncio.sleep(0.01)
+
+    assert not writing.done()
+    assert lamp.written == [(WRITE_UUID, b"\xa0")]  # it was put to the lamp
+    writing.cancel()
 
 
 def test_a_helper_given_the_coordinator_alone_finds_its_lamp(

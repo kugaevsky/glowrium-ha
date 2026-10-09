@@ -12,6 +12,7 @@ that will not hang up - puts it behind the lamp's with ``dials_through``.
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import Awaitable, Callable
 from typing import Any
 from weakref import WeakKeyDictionary
@@ -19,6 +20,8 @@ from weakref import WeakKeyDictionary
 from bleak.exc import BleakError
 from homeassistant.core import HomeAssistant
 
+from custom_components.glowrium import cbor
+from custom_components.glowrium.const import NOTIFY_UUID
 from custom_components.glowrium.coordinator import GlowriumCoordinator
 from custom_components.glowrium.link import Link, Turn, Unclosed
 
@@ -40,6 +43,7 @@ class LampLink:
         self._heard: Callable[[Any, bytearray], None] | None = None
         self.is_connected = True
         self.hung_up = False
+        self.subscribed = False
 
     async def start_notify(
         self, _uuid: str, heard: Callable[[Any, bytearray], None]
@@ -47,23 +51,25 @@ class LampLink:
         """Subscribe: what the lamp says from here on goes to ``heard``."""
         self._gone_is_an_error()
         self._heard = heard
+        self.subscribed = True
 
     async def write_gatt_char(
         self, uuid: str, data: bytes, response: bool = True
     ) -> None:
         """Take a write, and note it on the lamp - which may be scripted to fail it."""
         self._gone_is_an_error()
-        self._lamp.taken(self, uuid, bytes(data))
+        await self._lamp.taken(self, uuid, bytes(data))
 
-    async def read_gatt_char(self, _uuid: str) -> bytearray:
-        """Read a characteristic: nothing, as of a lamp that cannot be read.
+    async def read_gatt_char(self, uuid: str) -> bytearray:
+        """Read a characteristic: what the lamp was given to read there, or nothing.
 
-        The first exchange on a link ends with the device-info read, and the
-        device half carries on without it when it fails - as it does on a
-        link that is gone, which is what the error says.
+        Nothing fails as a lamp that cannot be read does. The first exchange
+        on a link ends with the device-info read, and the device half carries
+        on without it when it fails - as it does on a link that is gone,
+        which is what the error says.
         """
         self._gone_is_an_error()
-        raise BleakError("Not connected")
+        return self._lamp.read_of(uuid)
 
     async def disconnect(self) -> None:
         """Hang up. The lamp says nothing more on this link."""
@@ -94,14 +100,56 @@ class ScriptedLamp:
         self.dials = 0
         self.links: list[LampLink] = []
         self.written: list[tuple[str, bytes]] = []
+        # The characteristics read, in order; and what the lamp was asked,
+        # written and read, in one order - the device info is to be read last
+        # on a link, and that is a fact about order.
+        self.read: list[str] = []
+        self.exchanges: list[tuple[str, str]] = []
         self._in_range = True
         self._through: Callable[..., Awaitable[Any]] | None = None
+        self._readable: dict[str, bytes] = {}
+        # How the lamp answers the state request, once told to (see answers).
+        self._answer: (
+            tuple[dict[int, Any] | None, tuple[int, ...] | None, float, bytes | None]
+            | None
+        ) = None
+        self._never_acknowledges = False
         # What the next writes meet, when the lamp is scripted to fail them:
         # the error, how many writes (None: every one), and what the lamp
         # reports back first, if it acts on the write (see fails_writes).
         self._failing: (
             tuple[Exception, int | None, Callable[[bytes], bytes] | None] | None
         ) = None
+
+    @property
+    def asked(self) -> list[bytes]:
+        """What the lamp was asked to report: the ids of each state request."""
+        return [frame for uuid, frame in self.written if uuid == NOTIFY_UUID]
+
+    def answers(
+        self,
+        values: dict[int, Any] | None = None,
+        *,
+        only: tuple[int, ...] | None = None,
+        after: float = 0.0,
+        frame: bytes | None = None,
+    ) -> None:
+        """Answer the state request as a G7 does: one report, inside the write.
+
+        It carries every id asked for, zero unless ``values`` gives one, and
+        only the ids in ``only`` if that is given - a lamp that knows some of
+        what it is asked. ``after`` holds the answer back for that long;
+        ``frame`` is reported as it is given, in place of all of that.
+        """
+        self._answer = (values, only, after, frame)
+
+    def readable(self, uuid: str, data: bytes) -> None:
+        """Give a characteristic a value to be read; the rest fail as before."""
+        self._readable[uuid] = data
+
+    def never_acknowledges_a_write(self) -> None:
+        """Keep every write waiting: it neither returns nor fails."""
+        self._never_acknowledges = True
 
     def fails_writes(
         self,
@@ -119,18 +167,39 @@ class ScriptedLamp:
         """
         self._failing = (error, times, saying)
 
-    def taken(self, link: LampLink, uuid: str, frame: bytes) -> None:
-        """Note a write ``link`` was given, and fail it if the lamp is scripted to."""
+    async def taken(self, link: LampLink, uuid: str, frame: bytes) -> None:
+        """Note a write ``link`` was given, and do with it what the lamp is scripted to.
+
+        Fail it, answer it if it is the state request, or keep it waiting.
+        """
         self.written.append((uuid, frame))
-        if self._failing is None:
-            return
-        error, left, saying = self._failing
-        if left is not None:
-            left -= 1
-            self._failing = (error, left, saying) if left > 0 else None
-        if saying is not None:
-            link.say(saying(frame))
-        raise error
+        self.exchanges.append(("write", uuid))
+        if self._never_acknowledges:
+            await asyncio.Event().wait()
+        if self._failing is not None:
+            error, left, saying = self._failing
+            if left is not None:
+                left -= 1
+                self._failing = (error, left, saying) if left > 0 else None
+            if saying is not None:
+                link.say(saying(frame))
+            raise error
+        if uuid == NOTIFY_UUID and self._answer is not None:
+            values, only, after, raw = self._answer
+            if after:
+                await asyncio.sleep(after)
+            if raw is None:
+                asked = [key for key in frame if only is None or key in only]
+                raw = cbor.encode(dict.fromkeys(asked, 0) | (values or {}))
+            link.say(raw)
+
+    def read_of(self, uuid: str) -> bytearray:
+        """Note a read, and return what the lamp was given to read there."""
+        self.read.append(uuid)
+        self.exchanges.append(("read", uuid))
+        if uuid in self._readable:
+            return bytearray(self._readable[uuid])
+        raise BleakError("Not connected")
 
     async def dial(self, lost: Callable[[Any], None]) -> Any:
         """Hand out a link, as the coordinator's dial: this is what it is given."""

@@ -1286,21 +1286,14 @@ async def test_a_report_read_only_in_part_is_still_the_answer_to_the_request(
     single item nobody has a reading for would have lost its link on every
     connect - what 0.2.0 and 0.2.1 did to every lamp.
     """
-    coordinator, client = _connected_coordinator(hass)
+    coordinator, lamp, link = await _holding_a_link(hass)
     monkeypatch.setattr(coordinator_module, "_REPORT_TIMEOUT", 0.05)
+    lamp.answers(frame=_PARTLY_READABLE)
+    lamp.readable(NOTIFY_UUID, cbor.encode({KEY_POWER: False}))
 
-    async def _write(uuid: str, _payload: bytes, **_kwargs: object) -> None:
-        if uuid == NOTIFY_UUID:
-            coordinator._on_notify(None, bytearray(_PARTLY_READABLE))
+    assert await coordinator._request_state(turn_over(coordinator, link)) is True
 
-    client.write_gatt_char = AsyncMock(side_effect=_write)
-    client.read_gatt_char = AsyncMock(
-        return_value=bytearray(cbor.encode({KEY_POWER: False}))
-    )
-
-    assert await coordinator._request_state(turn_over(coordinator, client)) is True
-
-    client.read_gatt_char.assert_not_awaited()
+    assert lamp.read == []
     assert coordinator.state == {KEY_POWER: True, KEY_BRIGHTNESS: 70}
 
 
@@ -1394,28 +1387,13 @@ async def test_command_writes_before_reading_anything(hass: HomeAssistant) -> No
     inside the command budget. On a lamp where the connect alone is marginal
     that is what turned a working command into a reported failure.
     """
-    coordinator, client = _connected_coordinator(hass)
-    coordinator._client = None
-    order: list[str] = []
-
-    async def _connect(*_a: object, **_kw: object) -> MagicMock:
-        order.append("connect")
-        return client
-
-    async def _read(_uuid: str) -> bytes:
-        order.append("read")
-        return b""
-
-    _dialling(coordinator).side_effect = _connect
-    client.read_gatt_char = AsyncMock(side_effect=_read)
-    client.write_gatt_char = AsyncMock(
-        side_effect=lambda *a, **k: order.append("write")
-    )
+    coordinator, lamp = _at_a_lamp(hass)
 
     await coordinator.async_set_power(True)
     # The point of the fix: a command asks for a bare link. A link that was
     # primed would have had the state request written to it first.
-    assert order == ["connect", "write"]  # nothing read, nothing asked, on the way
+    assert lamp.dials == 1
+    assert lamp.exchanges == [("write", WRITE_UUID)]  # nothing read, nothing asked
 
 
 async def test_a_command_connect_is_primed_by_the_poll(hass: HomeAssistant) -> None:
@@ -1426,23 +1404,23 @@ async def test_a_command_connect_is_primed_by_the_poll(hass: HomeAssistant) -> N
     would pass with that method emptied out; what matters is that the lamp is
     asked and its answer lands.
     """
-    coordinator, client = _connected_coordinator(hass)
-    asked = _answers(coordinator, client, {KEY_POWER: True, KEY_ACTIVATED: True})
-    client.read_gatt_char = AsyncMock(return_value=bytearray(b"brand:x;;"))
+    coordinator, lamp, _link = await _holding_a_link(hass)
+    lamp.answers({KEY_POWER: True, KEY_ACTIVATED: True})
+    lamp.readable(INFO_UUID, b"brand:x;;")
 
     # A link exists that nothing has primed - exactly what a command leaves.
-    coordinator._async_poll_reconnect(None)
+    link_of(coordinator).tick()
     await hass.async_block_till_done()
 
-    asked.assert_awaited_with(NOTIFY_UUID, bytes(STATE_KEYS), response=True)
+    assert lamp.asked[-1] == bytes(STATE_KEYS)
     assert coordinator.state[KEY_POWER] is True  # the properties actually landed
-    client.read_gatt_char.assert_awaited_once_with(INFO_UUID)  # and the model
+    assert lamp.read == [INFO_UUID]  # and the model
 
     # And it is not asked again on every tick from then on.
-    count = asked.await_count
-    coordinator._async_poll_reconnect(None)
+    count = len(lamp.asked)
+    link_of(coordinator).tick()
     await hass.async_block_till_done()
-    assert asked.await_count == count
+    assert len(lamp.asked) == count
 
 
 @pytest.mark.parametrize("reached", ["by a background connect", "by the poll"])
@@ -1458,19 +1436,20 @@ async def test_what_the_first_exchange_wrote_is_told_to_the_entities(
     more when it is over - after a background connect, and after the exchange
     the poll makes on a link a command took.
     """
-    coordinator, client = _connected_coordinator(hass)
-    _answers(coordinator, client, {KEY_ACTIVATED: False})
-    client.read_gatt_char = AsyncMock(return_value=bytearray(b"brand:x;;"))
+    if reached == "by the poll":
+        coordinator, lamp, _link = await _holding_a_link(hass)
+    else:
+        coordinator, lamp = _at_a_lamp(hass)
+    lamp.answers({KEY_ACTIVATED: False})
+    lamp.readable(INFO_UUID, b"brand:x;;")
     shown: list[bool | None] = []
     coordinator.async_add_listener(lambda: shown.append(coordinator.activated))
 
     if reached == "by the poll":
-        coordinator._async_poll_reconnect(None)  # the link is one a command made
+        link_of(coordinator).tick()  # the link is one a command made
         await hass.async_block_till_done()
     else:
-        coordinator._client = None
-        _dialling(coordinator, client)
-        await coordinator._async_reconnect()
+        await link_of(coordinator).reconnect()
 
     assert coordinator.activated is True
     assert False in shown  # the lamp's own report, before anything was written
@@ -1489,19 +1468,15 @@ async def test_a_first_exchange_on_a_held_link_does_not_wait_for_ever(
     tick.
     """
     monkeypatch.setattr(link_module, "_ASK_TIMEOUT", 0.05)
-    coordinator, client = _connected_coordinator(hass)
-
-    async def _never(*_args: object, **_kwargs: object) -> None:
-        await asyncio.Event().wait()
-
-    client.write_gatt_char = AsyncMock(side_effect=_never)
+    coordinator, lamp, link = await _holding_a_link(hass)
+    lamp.never_acknowledges_a_write()
 
     async with asyncio.timeout(2):
-        await coordinator._async_prime()
+        await link_of(coordinator).prime_held()
 
-    assert not coordinator._lock.locked()
-    assert coordinator._client is client
-    assert coordinator._primed_client is not client
+    assert not link_of(coordinator).lock.locked()
+    assert link_of(coordinator).client is link
+    assert link_of(coordinator).diagnostics()["primed"] is False
 
 
 async def test_two_ticks_do_not_make_the_first_exchange_twice(
@@ -1513,27 +1488,16 @@ async def test_two_ticks_do_not_make_the_first_exchange_twice(
     under way, and begins another. Once it has the lock, the second looks at
     whether the link has had its exchange meanwhile.
     """
-    coordinator, client = _connected_coordinator(hass)
-    answer = _answers(coordinator, client, {KEY_ACTIVATED: True}).side_effect
-    client.read_gatt_char = AsyncMock(return_value=bytearray(b"brand:x;;"))
+    coordinator, lamp, _link = await _holding_a_link(hass)
+    # Long enough for the next tick to queue up behind this one.
+    lamp.answers({KEY_ACTIVATED: True}, after=0.01)
+    lamp.readable(INFO_UUID, b"brand:x;;")
 
-    async def _in_a_moment(*args: object, **kwargs: object) -> None:
-        # Long enough for the next tick to queue up behind this one.
-        await asyncio.sleep(0.01)
-        await answer(*args, **kwargs)
-
-    client.write_gatt_char = AsyncMock(side_effect=_in_a_moment)
-
-    coordinator._async_poll_reconnect(None)
-    coordinator._async_poll_reconnect(None)
+    link_of(coordinator).tick()
+    link_of(coordinator).tick()
     await hass.async_block_till_done()
 
-    asked = [
-        call
-        for call in client.write_gatt_char.await_args_list
-        if call.args[0] == NOTIFY_UUID
-    ]
-    assert len(asked) == 1
+    assert len(lamp.asked) == 1
 
 
 async def test_a_device_reporting_unactivated_is_brought_up(
@@ -1873,22 +1837,16 @@ async def test_a_background_connect_primes_once(hass: HomeAssistant) -> None:
     the link primed, and only then read the device-info string. Without the
     mark the poll re-interrogates the lamp every 30 s forever.
     """
-    coordinator, client = _connected_coordinator(hass)
-    coordinator._client = None
-    client.is_connected = True
-    client.start_notify = AsyncMock()
-    _answers(coordinator, client, {KEY_POWER: True, KEY_ACTIVATED: True})
-    client.read_gatt_char = AsyncMock(
-        return_value=bytearray(b"brand:Glowrium;pkey:Glowrium-C051;version:4;;")
-    )
-    lamp_of(coordinator).dials_through(AsyncMock(return_value=client))
+    coordinator, lamp = _at_a_lamp(hass)
+    lamp.answers({KEY_POWER: True, KEY_ACTIVATED: True})
+    lamp.readable(INFO_UUID, b"brand:Glowrium;pkey:Glowrium-C051;version:4;;")
 
-    await coordinator._connect_locked()
+    await link_of(coordinator).connect()
 
-    client.start_notify.assert_awaited_once()  # or no state ever arrives
+    assert lamp.links[0].subscribed  # or no state ever arrives
     assert coordinator.model_id == "Glowrium-C051"
     assert coordinator.state[KEY_POWER] is True
-    assert coordinator._primed_client is client
+    assert link_of(coordinator).diagnostics()["primed"] is True
 
 
 async def test_the_device_info_is_the_last_thing_read_and_read_once(
@@ -1901,46 +1859,27 @@ async def test_the_device_info_is_the_last_thing_read_and_read_once(
     arrived and whatever had to be written - here a stale clock - has been.
     After that the model is known, and no later link is read at all.
     """
-    coordinator, _ = _connected_coordinator(hass)
-    coordinator._client = None
-    coordinator._activation_checked = True
-    order: list[str] = []
+    coordinator, lamp = _at_a_lamp(hass)
+    stale = bytes.fromhex("07e80101000000")  # 2024-01-01 00:00:00
+    lamp.answers({KEY_TIME: stale})
+    lamp.readable(INFO_UUID, b"brand:Glowrium;pkey:Glowrium-C051;version:4;;")
 
-    def _lamp() -> MagicMock:
-        client = _fresh_client()
-        stale = bytes.fromhex("07e80101000000")  # 2024-01-01 00:00:00
-
-        async def _write(uuid: str, payload: bytes, **_kwargs: object) -> None:
-            if uuid != NOTIFY_UUID:
-                order.append("clock written")
-                return
-            order.append("state asked")
-            answer = {key: stale if key == KEY_TIME else 0 for key in bytes(payload)}
-            coordinator._on_notify(None, bytearray(cbor.encode(answer)))
-
-        async def _read(uuid: str) -> bytearray:
-            order.append("info read" if uuid == INFO_UUID else "state read")
-            return bytearray(b"brand:Glowrium;pkey:Glowrium-C051;version:4;;")
-
-        client.write_gatt_char = AsyncMock(side_effect=_write)
-        client.read_gatt_char = AsyncMock(side_effect=_read)
-        return client
-
-    first, second = _lamp(), _lamp()
-    _dialling(coordinator, first, second)
-
-    await coordinator._connect_locked()
-    assert order == ["state asked", "clock written", "info read"]
+    await link_of(coordinator).connect()
+    assert lamp.exchanges == [
+        ("write", NOTIFY_UUID),  # state asked
+        ("write", WRITE_UUID),  # clock written
+        ("read", INFO_UUID),  # info read
+    ]
     assert coordinator.model_id == "Glowrium-C051"
 
-    coordinator._async_on_disconnect(first)  # the read cost the link
+    lamp.links[0].lose()  # the read cost the link
     await hass.async_block_till_done()
-    order.clear()
-    await coordinator._connect_locked()
+    lamp.exchanges.clear()
+    await link_of(coordinator).connect()
 
-    assert "info read" not in order
-    assert "state read" not in order
-    second.read_gatt_char.assert_not_awaited()
+    assert ("read", INFO_UUID) not in lamp.exchanges
+    assert ("read", NOTIFY_UUID) not in lamp.exchanges
+    assert lamp.read == [INFO_UUID]  # once, in the whole session
 
 
 async def test_a_command_connect_reads_nothing(hass: HomeAssistant) -> None:
@@ -1950,16 +1889,12 @@ async def test_a_command_connect_reads_nothing(hass: HomeAssistant) -> None:
     model was not known yet. That is a read between a button and its lamp,
     and on BlueZ a link with two seconds to live.
     """
-    coordinator, _ = _connected_coordinator(hass)
-    coordinator._client = None
-    client = _fresh_client()
-    client.write_gatt_char = AsyncMock()
-    _dialling(coordinator, client)
+    coordinator, lamp = _at_a_lamp(hass)
 
     await coordinator.async_set_power(True)
 
-    client.read_gatt_char.assert_not_awaited()
-    client.write_gatt_char.assert_awaited_once()
+    assert lamp.read == []
+    assert len(lamp.written) == 1
 
 
 async def test_the_wait_for_the_activation_flag_ends_with_the_link(
@@ -2979,13 +2914,12 @@ async def test_a_prime_that_got_nothing_does_not_count_as_primed(
     and no reason to prime, and the entities sat at one of fourteen
     indefinitely.
     """
-    coordinator, client = _connected_coordinator(hass)
-    client.read_gatt_char = AsyncMock(side_effect=BleakError("Not connected"))
-    client.write_gatt_char = AsyncMock(side_effect=BleakError("Not connected"))
+    coordinator, lamp, _link = await _holding_a_link(hass)
+    lamp.fails_writes(BleakError("Not connected"))
 
-    await coordinator._async_prime()
+    await link_of(coordinator).prime_held()
 
-    assert coordinator._primed_client is not client
+    assert link_of(coordinator).diagnostics()["primed"] is False
 
 
 async def test_a_link_that_answers_nothing_is_dropped(hass: HomeAssistant) -> None:
@@ -2996,14 +2930,13 @@ async def test_a_link_that_answers_nothing_is_dropped(hass: HomeAssistant) -> No
     never reconnects and the coordinator is wedged until the device's own
     churn. Dropping it lets the poll do its job.
     """
-    coordinator, client = _connected_coordinator(hass)
-    client.read_gatt_char = AsyncMock(side_effect=BleakError("Not connected"))
-    client.write_gatt_char = AsyncMock(side_effect=BleakError("Not connected"))
+    coordinator, lamp, link = await _holding_a_link(hass)
+    lamp.fails_writes(BleakError("Not connected"))
 
-    await coordinator._async_prime()
+    await link_of(coordinator).prime_held()
 
-    assert coordinator._client is None
-    assert coordinator._is_connected is False
+    assert link.hung_up
+    assert link_of(coordinator).diagnostics()["connected"] is False
 
 
 async def test_a_connect_whose_read_fails_is_not_primed_either(
@@ -3015,17 +2948,12 @@ async def test_a_connect_whose_read_fails_is_not_primed_either(
     marking it primed here would stop the poll going back for the properties
     just as surely.
     """
-    coordinator, client = _connected_coordinator(hass)
-    coordinator._client = None
-    client.is_connected = True
-    client.start_notify = AsyncMock()
-    client.read_gatt_char = AsyncMock(side_effect=BleakError("Not connected"))
-    client.write_gatt_char = AsyncMock(side_effect=BleakError("Not connected"))
-    lamp_of(coordinator).dials_through(AsyncMock(return_value=client))
+    coordinator, lamp = _at_a_lamp(hass)
+    lamp.fails_writes(BleakError("Not connected"))
 
-    await coordinator._connect_locked()
+    await link_of(coordinator).connect()
 
-    assert coordinator._primed_client is not client
+    assert link_of(coordinator).diagnostics()["primed"] is False
 
 
 async def test_a_connect_that_cannot_be_read_is_dropped_at_once(
@@ -3039,19 +2967,13 @@ async def test_a_connect_that_cannot_be_read_is_dropped_at_once(
     before failing and reconnecting. The poll rebuilds it either way; there is
     no reason to hold it in the meantime.
     """
-    coordinator, client = _connected_coordinator(hass)
-    coordinator._client = None
-    client.is_connected = True
-    client.start_notify = AsyncMock()
-    client.disconnect = AsyncMock()
-    client.read_gatt_char = AsyncMock(side_effect=BleakError("Not connected"))
-    client.write_gatt_char = AsyncMock(side_effect=BleakError("Not connected"))
-    lamp_of(coordinator).dials_through(AsyncMock(return_value=client))
+    coordinator, lamp = _at_a_lamp(hass)
+    lamp.fails_writes(BleakError("Not connected"))
 
-    await coordinator._connect_locked()
+    await link_of(coordinator).connect()
 
-    assert coordinator._client is None
-    assert coordinator._is_connected is False
+    assert lamp.links[0].hung_up
+    assert link_of(coordinator).diagnostics()["connected"] is False
 
 
 def _refusing_client() -> MagicMock:
@@ -3346,17 +3268,16 @@ async def test_the_request_is_repeated_on_every_connect(hass: HomeAssistant) -> 
     invisible until a restart, which is the opposite of what a reconnect is
     for.
     """
-    coordinator, client = _connected_coordinator(hass)
-    asked = _answers(coordinator, client)
-    client.read_gatt_char = AsyncMock()
+    coordinator, lamp, link = await _holding_a_link(hass)
+    lamp.answers()
 
-    await coordinator._request_state(turn_over(coordinator, client))
-    assert asked.await_count == 1
+    await coordinator._request_state(turn_over(coordinator, link))
+    assert len(lamp.asked) == 1
     assert all(key in coordinator.state for key in STATE_KEYS)  # all known now
 
-    await coordinator._request_state(turn_over(coordinator, client))
-    assert asked.await_count == 2, "a later connect must ask again"
-    client.read_gatt_char.assert_not_awaited()
+    await coordinator._request_state(turn_over(coordinator, link))
+    assert len(lamp.asked) == 2, "a later connect must ask again"
+    assert lamp.read == []
 
 
 async def test_a_stale_device_clock_is_corrected(hass: HomeAssistant) -> None:
@@ -3434,8 +3355,11 @@ async def test_both_priming_paths_check_the_clock(hass: HomeAssistant) -> None:
     checked, a lamp whose link is good enough never to need re-priming would
     keep a stale clock for ever.
     """
-    for path in ("_connect_locked", "_async_prime"):
-        coordinator, client = _connected_coordinator(hass)
+    for path in ("a background connect", "the poll"):
+        if path == "the poll":
+            coordinator, lamp, _link = await _holding_a_link(hass)
+        else:
+            coordinator, lamp = _at_a_lamp(hass)
         checked = 0
 
         async def _note(_turn: object) -> None:
@@ -3444,17 +3368,13 @@ async def test_both_priming_paths_check_the_clock(hass: HomeAssistant) -> None:
 
         coordinator._async_sync_clock_if_needed = _note
         coordinator._request_state = AsyncMock(return_value=True)
-        client.read_gatt_char = AsyncMock(return_value=bytearray(b"brand:x;;"))
+        lamp.readable(INFO_UUID, b"brand:x;;")
         coordinator._async_activate_if_needed = AsyncMock()
 
-        if path == "_connect_locked":
-            coordinator._client = None  # a real connect, not the early return
-            client.is_connected = True
-            client.start_notify = AsyncMock()
-            lamp_of(coordinator).dials_through(AsyncMock(return_value=client))
-            await coordinator._connect_locked()
+        if path == "the poll":
+            await link_of(coordinator).prime_held()
         else:
-            await coordinator._async_prime()
+            await link_of(coordinator).connect()
 
         assert checked == 1, path
 
@@ -3488,12 +3408,12 @@ async def test_dst_falls_back_to_an_hour_when_unread(hass: HomeAssistant) -> Non
     refusing would leave the switch unusable until the lamp reports - so a
     default is the better trade here.
     """
-    coordinator, client = _connected_coordinator(hass)
+    coordinator, lamp = _at_a_lamp(hass)
     assert KEY_DST not in coordinator.state
 
     await coordinator.async_set_dst(True)
 
-    assert cbor.decode(client.write_gatt_char.await_args.args[1])[KEY_DST] == DST_ON
+    assert cbor.decode(lamp.written[-1][1])[KEY_DST] == DST_ON
 
 
 def _dialling(coordinator: GlowriumCoordinator, *clients: MagicMock) -> AsyncMock:
