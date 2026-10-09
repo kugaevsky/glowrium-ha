@@ -95,8 +95,7 @@ async def _holding_a_link(
     """
     coordinator, lamp = _at_a_lamp(hass, name)
     await coordinator.async_set_indicator(True)
-    lamp.written.clear()
-    lamp.exchanges.clear()
+    lamp.forget()
     nothing_heard(coordinator)  # the command's echo gone; a mirror forgets nothing
     return coordinator, lamp, lamp.links[-1]
 

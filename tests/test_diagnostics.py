@@ -41,7 +41,15 @@ from custom_components.glowrium.const import (
 from custom_components.glowrium.coordinator import _parse_device_info
 from custom_components.glowrium.diagnostics import async_get_config_entry_diagnostics
 
-from .lamp import ScriptedLamp, flood, in_range, link_of, nothing_heard, turn_over
+from .lamp import (
+    ScriptedLamp,
+    flood,
+    in_range,
+    link_of,
+    nothing_heard,
+    taken_bare,
+    turn_over,
+)
 
 ADDRESS = "AA:BB:CC:DD:EE:FF"
 TITLE = "Glowrium-G7_DDEEFF"
@@ -684,8 +692,7 @@ async def _hold(
         if primed:
             await link_of(coordinator).connect()  # and the first exchange on it
         else:
-            async with link_of(coordinator).lock:
-                await link_of(coordinator).open()  # taken bare, nothing asked
+            await taken_bare(link_of(coordinator))  # nothing asked
     lamp.links[0].is_connected = connected
 
 

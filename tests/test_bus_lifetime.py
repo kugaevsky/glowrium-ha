@@ -50,7 +50,15 @@ from custom_components.glowrium.const import (
 )
 from custom_components.glowrium.coordinator import GlowriumCoordinator
 
-from .lamp import LampLink, ScriptedLamp, lamp_of, link_of, nothing_heard, turn_over
+from .lamp import (
+    LampLink,
+    ScriptedLamp,
+    lamp_of,
+    link_of,
+    nothing_heard,
+    taken_bare,
+    turn_over,
+)
 
 _NOT_CONNECTED = "[org.bluez.Error.Failed] Not connected"
 
@@ -373,6 +381,27 @@ async def test_the_bus_is_found_even_after_the_wrapper_let_go_of_it(
     assert host.open_buses == 0
 
 
+async def test_a_client_nothing_was_noted_of_still_has_its_bus_closed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """With no note of a client, what is behind it is asked of the client.
+
+    What is behind a client the link dials is noted when it is taken, and of
+    one that would not close by the holder of those. A client that comes to
+    the hang-up with neither note - hung up a second time, or by something
+    that did not dial it through the link - has a bus behind it all the
+    same, and the hang-up is the one place that ever closes it.
+    """
+    monkeypatch.setattr(link_module, "_HANG_UP_TIMEOUT", 0.01)
+    link, host = _a_link(), _WedgedBlueZ()
+    client = await host.dial()  # not through the link: nothing is noted of it
+
+    await link.hang_up(client)
+
+    assert host.open_buses == 0
+    assert not link.unclosed
+
+
 class _ProxyBackend:
     """A backend with no D-Bus connection of its own, as a Bluetooth proxy's."""
 
@@ -638,7 +667,7 @@ async def test_no_dial_gets_in_across_a_reload_either(
     monkeypatch.setattr(link_module, "_COMMAND_TIMEOUT", 2.0)
     monkeypatch.setattr(link_module, "_CONFIRM_TIMEOUT", 0.01)
     first = lamp.coordinator(hass, unclosed=held)
-    await link_of(first).open()  # a link it holds when the reload comes
+    await taken_bare(link_of(first))  # a link it holds when the reload comes
 
     await first.async_stop()  # gives the hang-up its three seconds, and goes
     assert not held.clients  # still being hung up: not kept yet
@@ -700,7 +729,7 @@ async def test_a_dial_waits_for_every_hang_up_under_way_and_none_stays_noted() -
         client.disconnect = one.wait
         link.hang_up(client)
 
-    opening = asyncio.create_task(link.open())
+    opening = asyncio.create_task(taken_bare(link))
     await asyncio.sleep(0.01)
     may_end[0].set()
     await asyncio.sleep(0.01)
@@ -832,7 +861,7 @@ async def test_a_disconnect_that_returns_is_not_taken_at_its_word() -> None:
     """
     host = _WedgedBlueZ()
     link = _a_link(host.dial)
-    client = await link.open()
+    client = await taken_bare(link)
     client.disconnect = AsyncMock()  # returns, having closed nothing
 
     await link.hang_up(client)
@@ -910,7 +939,7 @@ class _StubBus:
 
 
 class _HaClient:
-    """Home Assistant's wrapper around a backend, as far as hanging up goes."""
+    """Home Assistant's wrapper around a backend: a link taken, and hung up."""
 
     def __init__(self, backend: BleakClientBlueZDBus) -> None:
         self._backend: BleakClientBlueZDBus | None = backend
@@ -918,6 +947,9 @@ class _HaClient:
     @property
     def is_connected(self) -> bool:
         return self._backend is not None and self._backend.is_connected
+
+    async def start_notify(self, _uuid: str, _heard: Any) -> None:
+        return  # the subscription is not what these tests are about
 
     async def disconnect(self) -> None:
         if self._backend is None:
@@ -973,9 +1005,9 @@ async def test_bleaks_own_client_ends_up_closed(
     bus = _StubBus(answer)
     backend, removed = _bleaks_own_client(bus)
     monitor = backend._disconnect_monitor_event
-    client = _GattClient(backend)
+    client = _HaClient(backend)
     link = _a_link(AsyncMock(return_value=client))
-    assert await link.open() is client  # taken as a link is: dialled, subscribed
+    assert await taken_bare(link) is client  # as a link is: dialled, subscribed
 
     await link.hang_up(client)
 
@@ -1035,9 +1067,6 @@ class _GattClient(_HaClient):
         path = "/org/bluez/hci0/dev_AA_BB_CC_DD_EE_FF/service0001/char0002"
         return SimpleNamespace(obj=(path, {}), uuid=uuid)
 
-    async def start_notify(self, _uuid: str, _heard: Any) -> None:
-        return  # the subscription is not what these tests are about
-
     async def write_gatt_char(self, uuid: str, data: bytes, response: bool) -> None:
         assert self._backend is not None
         await self._backend.write_gatt_char(self._characteristic(uuid), data, response)
@@ -1068,8 +1097,7 @@ async def _on_a_busy_link(
     backend, _ = _bleaks_own_client(bus)
     client = _GattClient(backend)
     lamp.dials_through(AsyncMock(return_value=client))
-    async with link_of(coordinator).lock:
-        await link_of(coordinator).open()  # taken bare: nothing asked on the bus
+    await taken_bare(link_of(coordinator))  # nothing asked on the bus
     lamp.dials_through(None)  # the next dial is the lamp's own
     return coordinator, client, bus
 
@@ -1201,8 +1229,7 @@ async def test_an_assertion_on_a_link_that_is_up_is_nobodys_lost_link(
     client.write_gatt_char.side_effect = AssertionError("not about the bus")
     client.read_gatt_char.side_effect = AssertionError("not about the bus")
     lamp.dials_through(AsyncMock(return_value=client))
-    async with link_of(coordinator).lock:
-        await link_of(coordinator).open()
+    await taken_bare(link_of(coordinator))
 
     with pytest.raises(AssertionError, match="not about the bus"):
         await coordinator.async_set_power(True)
@@ -1424,6 +1451,36 @@ def test_the_coordinator_holds_no_client_and_reaches_the_link_for_its_offer() ->
     assert elsewhere == []
 
 
+def test_no_test_gives_a_link_its_client_by_hand() -> None:
+    """A link in a test is taken as the integration takes one.
+
+    Dialled, subscribed to, and then held: through a command, the link's
+    connect, or its bare ``open``. A client assigned to a link is a link no
+    dial made and nobody subscribed to, with nothing noted of what stands
+    behind it - and it was a mock where the scripted lamp stands now (#21,
+    stage 3). This reads the tests, as its neighbours read the integration.
+    """
+    by_hand: list[str] = []
+    for source in sorted(Path(__file__).parent.glob("*.py")):
+        for node in ast.walk(ast.parse(source.read_text(encoding="utf-8"))):
+            if isinstance(node, ast.Attribute) and isinstance(node.ctx, ast.Store):
+                name: object = node.attr
+            elif (
+                isinstance(node, ast.Call)
+                and isinstance(node.func, ast.Name)
+                and node.func.id == "setattr"
+                and len(node.args) > 1
+                and isinstance(node.args[1], ast.Constant)
+            ):
+                name = node.args[1].value
+            else:
+                continue
+            if name in ("client", "primed"):
+                by_hand.append(f"{source.name}:{node.lineno}")
+
+    assert by_hand == []
+
+
 def test_a_link_is_hung_up_and_the_entities_told_in_one_place() -> None:
     """Hanging a link up and telling the entities is one method of the link.
 
@@ -1473,7 +1530,7 @@ async def test_a_hang_up_cancelled_half_way_still_closes_the_bus(
     host = _WedgedBlueZ()
     link = _a_link(host.dial)
     monkeypatch.setattr(link_module, "_HANG_UP_TIMEOUT", 60)
-    client = await link.open()
+    client = await taken_bare(link)
 
     hang_up = link.hang_up(client)
     await asyncio.sleep(0.01)  # into disconnect(), waiting on BlueZ
@@ -1488,27 +1545,6 @@ async def test_a_hang_up_cancelled_half_way_still_closes_the_bus(
 
 
 _STATE = bytearray.fromhex("a306f508184614f5")  # {power: on, brightness: 70, activated}
-
-
-def _lamp(client: Any) -> AsyncMock:
-    """Put a lamp behind ``client`` that answers the state request, as a G7 does.
-
-    The request is a write of ids to ``NOTIFY_UUID``, and the answer is a
-    notification carrying exactly those - on a real lamp, before the write has
-    returned - said through what the link subscribed with. Any other write is
-    accepted.
-    """
-
-    async def _write(uuid: str, payload: bytes, **_kwargs: object) -> None:
-        if uuid != NOTIFY_UUID:
-            return
-        answer = dict.fromkeys(bytes(payload), 0)
-        answer |= {KEY_POWER: True, KEY_ACTIVATED: True}
-        heard = client.start_notify.await_args.args[1]
-        heard(None, bytearray(cbor.encode(answer)))
-
-    client.write_gatt_char = AsyncMock(side_effect=_write)
-    return client.write_gatt_char
 
 
 class _Clock:
@@ -1987,8 +2023,7 @@ async def test_the_repair_goes_when_the_lamp_answers_again(
     It is taken down by the same thing that ends the episode: the lamp saying
     something. BlueZ answering disconnects again is not that.
     """
-    coordinator, host, clock, dialled = _coordinator_on_a_clock(hass, monkeypatch)
-    coordinator._activation_checked = True
+    coordinator, host, clock, _dialled = _coordinator_on_a_clock(hass, monkeypatch)
     await _ticks(link_of(coordinator), clock, 3, hass=hass)
     assert _stack_issue(hass) is not None
 
@@ -1996,14 +2031,10 @@ async def test_the_repair_goes_when_the_lamp_answers_again(
     await _ticks(link_of(coordinator), clock, 6, hass=hass)
     assert _stack_issue(hass) is not None
 
-    async def _healthy(*_args: object, **_kwargs: object) -> _WedgedClient:
-        dialled.append(clock.now)
-        client = await host.dial()
-        _lamp(client)
-        client.read_gatt_char = AsyncMock(return_value=bytearray(b"brand:x;;"))
-        return client
-
-    lamp_of(coordinator).dials_through(_healthy)
+    lamp = lamp_of(coordinator)
+    lamp.answers({KEY_POWER: True, KEY_ACTIVATED: True})
+    lamp.readable(INFO_UUID, b"brand:x;;")
+    lamp.dials_through(None)  # the stack has come round: the next dial reaches the lamp
     await _ticks(link_of(coordinator), clock, 12, hass=hass)
 
     assert _stack_issue(hass) is None
@@ -2070,7 +2101,7 @@ async def test_the_hang_up_of_the_unload_itself_raises_no_repair(
     coordinator, _host, clock, _dialled = _coordinator_on_a_clock(hass, monkeypatch)
     await _ticks(link_of(coordinator), clock, 2, hass=hass)
     assert link_of(coordinator).stuck_hang_ups == 2
-    await link_of(coordinator).open()  # a link held when the unload comes
+    await taken_bare(link_of(coordinator))  # a link held when the unload comes
 
     with caplog.at_level(logging.WARNING, logger=coordinator_module.__name__):
         await coordinator.async_stop()
@@ -2112,7 +2143,7 @@ async def test_a_stopped_coordinator_ends_no_episode_and_takes_down_no_repair(
         assert _stack_issue(hass) is not None
     else:
         await _ticks(link_of(coordinator), clock, 2, hass=hass)
-        await link_of(coordinator).open()  # a link held when it is stopped
+        await taken_bare(link_of(coordinator))  # a link held when it is stopped
     await coordinator.async_stop()
     await asyncio.sleep(0.1)
     await hass.async_block_till_done()
@@ -2251,9 +2282,7 @@ async def _holding(
     coordinator = lamp.coordinator(hass)
     await link_of(coordinator).connect()
     assert link_of(coordinator).diagnostics()["primed"]
-    lamp.written.clear()
-    lamp.exchanges.clear()
-    lamp.read.clear()
+    lamp.forget()
     nothing_heard(coordinator)
     return coordinator, lamp, lamp.links[-1], clock
 
@@ -2274,8 +2303,7 @@ async def _held(
     link = _a_link(lamp.dial, greet=_asks, probe=_asks)
     await link.connect()
     assert link.diagnostics()["primed"]
-    lamp.written.clear()
-    lamp.exchanges.clear()
+    lamp.forget()
     return link, lamp, lamp.links[-1], clock
 
 
@@ -2295,22 +2323,22 @@ async def test_a_link_called_not_connected_and_never_dropped_is_let_go(
     that day - never came. The client went on reading as connected, so nothing
     dialled again. Five hours, until somebody pressed a button.
     """
-    coordinator, lamp, link, clock = await _holding(hass, monkeypatch)
+    coordinator, lamp, held, clock = await _holding(hass, monkeypatch)
     coordinator._state_request_failures = 1  # a lamp that is read first
     lamp.fails_writes(BleakError(_NOT_CONNECTED))
 
     assert await coordinator._request_state(
-        turn_over(coordinator, link)
+        turn_over(coordinator, held)
     )  # the read did answer
     clock.now += 5
     await _tick(link_of(coordinator), hass)  # inside the grace BlueZ is given
-    assert link_of(coordinator).client is link
+    assert link_of(coordinator).client is held
 
     clock.now += 30
     await _tick(link_of(coordinator), hass)
 
     assert link_of(coordinator).client is None
-    assert link.hang_ups == 1
+    assert held.hang_ups == 1
 
 
 async def test_a_lamp_that_speaks_again_is_not_let_go(
@@ -2322,18 +2350,18 @@ async def test_a_lamp_that_speaks_again_is_not_let_go(
     has answered a request with "Unlikely Error" and gone on notifying. What
     it says afterwards settles it, whatever BlueZ called the link before.
     """
-    coordinator, lamp, link, clock = await _holding(hass, monkeypatch)
+    coordinator, lamp, held, clock = await _holding(hass, monkeypatch)
     coordinator._state_request_failures = 1
     lamp.fails_writes(BleakError("GATT Protocol Error: Unlikely Error"))
-    await coordinator._request_state(turn_over(coordinator, link))
+    await coordinator._request_state(turn_over(coordinator, held))
 
     clock.now += 5
     lamp.say(_STATE)  # and it is still talking
     clock.now += 30
     await _tick(link_of(coordinator), hass)
 
-    assert link_of(coordinator).client is link
-    assert link.hang_ups == 0
+    assert link_of(coordinator).client is held
+    assert held.hang_ups == 0
 
 
 async def test_a_link_bluez_did_report_dropped_is_not_hung_up_twice(
@@ -2349,7 +2377,7 @@ async def test_a_link_bluez_did_report_dropped_is_not_hung_up_twice(
     lamp.lose()  # two seconds later, as usual
     await hass.async_block_till_done()
     # A link taken since, and nothing heard on it yet: the note stands.
-    fresh = await link_of(coordinator).open()
+    fresh = await taken_bare(link_of(coordinator))
     clock.now += 60
     await _tick(link_of(coordinator), hass)
 
@@ -2368,7 +2396,7 @@ async def test_a_silent_link_is_asked_whether_it_is_still_there(
     the lamp's state, which is worth having anyway. Asked, not read: a read
     would end the very link it was checking.
     """
-    coordinator, lamp, link, clock = await _holding(hass, monkeypatch)
+    coordinator, lamp, held, clock = await _holding(hass, monkeypatch)
 
     clock.now += link_module._PROBE_INTERVAL - 1
     await _tick(link_of(coordinator), hass)
@@ -2379,7 +2407,7 @@ async def test_a_silent_link_is_asked_whether_it_is_still_there(
 
     assert len(lamp.asked) == 1
     assert lamp.read == []
-    assert link_of(coordinator).client is link
+    assert link_of(coordinator).client is held
     assert coordinator.state[KEY_POWER] is True  # and the answer was taken in
     assert link_of(coordinator).last_answer == clock.now
 
@@ -2395,7 +2423,7 @@ async def test_a_silent_link_that_does_not_answer_is_dropped(
     hass: HomeAssistant, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """And one that answers nothing is hung up, for the poll to rebuild."""
-    coordinator, lamp, link, clock = await _holding(hass, monkeypatch)
+    coordinator, lamp, held, clock = await _holding(hass, monkeypatch)
     lamp.fails_writes(BleakError(_NOT_CONNECTED))
     lamp.fails_reads(BleakError(_NOT_CONNECTED))
 
@@ -2403,7 +2431,7 @@ async def test_a_silent_link_that_does_not_answer_is_dropped(
     await _tick(link_of(coordinator), hass)
 
     assert link_of(coordinator).client is None
-    assert link.hang_ups == 1
+    assert held.hang_ups == 1
 
 
 async def test_a_question_that_is_never_answered_drops_the_link_too(
@@ -2457,7 +2485,7 @@ async def test_a_link_that_is_talking_is_not_asked(
     hass: HomeAssistant, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """A notification is an answer. So is a command that went through."""
-    coordinator, lamp, _link, clock = await _holding(hass, monkeypatch)
+    coordinator, lamp, _, clock = await _holding(hass, monkeypatch)
 
     clock.now += link_module._PROBE_INTERVAL - 10
     lamp.say(_STATE)  # the lamp reports a change
@@ -2546,17 +2574,17 @@ async def test_a_refusal_is_not_taken_for_a_link_that_is_going(
     hass: HomeAssistant, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """A lamp that says no has answered; nothing about it is waiting to drop."""
-    coordinator, lamp, link, clock = await _holding(hass, monkeypatch)
+    coordinator, lamp, held, clock = await _holding(hass, monkeypatch)
     coordinator._state_request_failures = 1
     lamp.fails_writes(BleakError("Insufficient authorization (8)"))
 
-    await coordinator._request_state(turn_over(coordinator, link))
+    await coordinator._request_state(turn_over(coordinator, held))
     clock.now += 60
     await _tick(link_of(coordinator), hass)
 
     assert link_of(coordinator).lost is None
-    assert link_of(coordinator).client is link
-    assert link.hang_ups == 0
+    assert link_of(coordinator).client is held
+    assert held.hang_ups == 0
 
 
 async def test_two_ticks_do_not_ask_the_same_question_twice(

@@ -175,10 +175,20 @@ class ScriptedLamp:
         only the ids in ``only`` if that is given - a lamp that knows some of
         what it is asked. ``after`` holds the answer back for that long;
         ``frame`` is reported as it is given, in place of all of that. A lamp
-        that answers no longer keeps writes waiting.
+        that answers is no longer one that never acknowledges a write.
         """
         self._never_acknowledges = False
         self._answer = (values, only, after, frame)
+
+    def forget(self) -> None:
+        """Forget what was written, asked and read so far.
+
+        For a helper that takes a link for a test: what the taking wrote
+        and read is cleared away, and what comes next is the test's.
+        """
+        self.written.clear()
+        self.exchanges.clear()
+        self.read.clear()
 
     def readable(self, uuid: str, data: bytes | None) -> None:
         """Give a characteristic a value to be read, or take it away (``None``).
@@ -194,9 +204,9 @@ class ScriptedLamp:
         """Keep every write waiting: it neither returns nor fails."""
         self._never_acknowledges = True
 
-    def acknowledges_when(self, let_go: asyncio.Event) -> None:
-        """Hold every write until ``let_go`` is set: a lamp slow to acknowledge."""
-        self._acknowledges_when = let_go
+    def acknowledges_when(self, acknowledged: asyncio.Event) -> None:
+        """Hold every write until ``acknowledged`` is set: a slow acknowledgement."""
+        self._acknowledges_when = acknowledged
 
     def never_answers_a_read(self) -> None:
         """Keep every read waiting: it neither returns nor fails."""
@@ -261,7 +271,7 @@ class ScriptedLamp:
         """Note a write ``link`` was given, and do with it what the lamp is scripted to.
 
         Fail it, answer it if it is the state request, or keep it waiting -
-        for ever, or until it is let go.
+        for ever, or until it is told to acknowledge.
         """
         self.written.append((uuid, frame))
         self.exchanges.append(("write", uuid))
@@ -400,13 +410,23 @@ def link_of(coordinator: GlowriumCoordinator) -> Link:
 
 
 def turn_over(coordinator: GlowriumCoordinator, client: Any) -> Turn:
-    """Return a turn at the lamp on ``client``, for a test that built one by hand.
+    """Return a turn at the lamp on ``client``: as a rule, the lamp's own link.
 
     The device half's exchanges take a turn, which the link makes over a client
-    it holds. A test that calls one of them directly on a client of its own
-    making has the same made here.
+    it holds. A test that calls one of them directly - one step of the first
+    exchange, where the test is of that step - has the same made here.
     """
     return Turn(link_of(coordinator), client)
+
+
+async def taken_bare(link: Link) -> Any:
+    """Take a link as a command takes one, and return its client.
+
+    Under the link's lock, as ``Link.open`` says its caller holds it: dialled,
+    subscribed to, and nothing asked of the lamp.
+    """
+    async with link.lock:
+        return await link.open()
 
 
 def lamp_of(coordinator: GlowriumCoordinator) -> ScriptedLamp:
