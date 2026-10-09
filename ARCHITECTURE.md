@@ -16,9 +16,10 @@ Android app (btsnoop captures) and verified against real hardware. Everything is
 
 ## High-level overview
 
-The integration is a thin, active BLE client. A single **coordinator** owns the
-connection to one lamp, mirrors the device's state, and exposes control methods;
-Home Assistant entities are stateless views over that coordinator.
+The integration is a thin, active BLE client. One **coordinator** stands for one
+lamp: its **link** (`link.py`) owns the connection, the coordinator mirrors the
+device's state and exposes control methods, and Home Assistant entities are
+stateless views over that coordinator.
 
 - **Transport:** a vendor GATT service (`facebd0x-…`, advertised as *"rabbit iot
   ble"*). Commands are **CBOR** maps written to one characteristic; state arrives
