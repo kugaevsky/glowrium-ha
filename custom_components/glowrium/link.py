@@ -8,12 +8,12 @@ and when one that has gone silent is asked whether it is still there. Nothing
 here knows Home Assistant or the lamp's protocol; what it needs of either it
 is handed.
 
-What is said in the first exchange and to a silent link is the coordinator's:
-two callables it hands in, each given a ``Turn``. A command is still
-delivered by the coordinator. Until that has moved here too it reaches the
-link's state by name, and those attributes are public. What it imports from
-here by an underscored name keeps the name it had when it was the
-coordinator's.
+What is said is the coordinator's, and it says it on a ``Turn``: in the
+first exchange and to a silent link, which are two callables it hands in,
+and in a command, which it hands to ``Link.send``. Some of the link's state
+is still public: the coordinator keeps the names it always had for it, for
+the tests and the bench that have not moved yet. What it imports from here
+by an underscored name keeps the name it had when it was the coordinator's.
 """
 
 from __future__ import annotations
@@ -55,9 +55,8 @@ _STOP_TIMEOUT = 3.0
 # and an unload, each under a deadline of its own - and Home Assistant when it
 # is stopping, which is why a hang-up then gets _STOP_TIMEOUT instead. It
 # matches how long bleak itself waits for BlueZ to confirm a disconnect, and it
-# has to stay below the coordinator's ceiling on a command, or a link that will
-# not confirm it has
-# closed leaves the retry no time to dial.
+# has to stay below the ceiling on a command (_COMMAND_TIMEOUT), or a link that
+# will not confirm it has closed leaves the retry no time to dial.
 _HANG_UP_TIMEOUT = 10.0
 # How many hang-ups in a row BlueZ may leave unanswered before it is taken for
 # what it is: a stack holding on to a link that no longer exists. Seen on a
@@ -72,19 +71,33 @@ _STACK_FAULT_AFTER = 3
 # doubles from the poll interval up to this. A command is never held back, and
 # the first answer from the lamp ends it.
 _STACK_FAULT_BACKOFF_MAX = 300.0
+_WRITE_ATTEMPTS = 2  # the initial write plus one reconnect-and-retry
+# Ceiling on getting one user-facing command out, so a button reports a clear
+# failure instead of appearing to hang while the retries stack up. It has to
+# outlast a background connect (see _CONNECT_TIMEOUT). A failed command may
+# then spend up to _CONFIRM_TIMEOUT more deciding whether it failed after all,
+# so the worst a user waits is the sum of the two.
+_COMMAND_TIMEOUT = 25.0
+# How long a failed command waits for the device to report the state it asked
+# for before the failure is believed. A write-with-response on a marginal link
+# can reach the lamp and be acted on while the acknowledgement is lost, which
+# bleak reports as failure. Observed once on a G7 at RSSI -88: the confirming
+# notification arrived 22-32 ms BEFORE the error was raised, so this is grace
+# for a slower link rather than a wait anyone should routinely pay.
+_CONFIRM_TIMEOUT = 2.0
 # Ceiling on a background connect: the wait for the lock, the wait for a
 # hang-up still under way (see Link.open), the dial, the subscription and the
 # first exchange. Without it a connect to an unreachable device holds the lock
 # indefinitely, and everything else that needs the lock waits behind it with
 # no deadline of its own.
 #
-# It is deliberately SHORTER than the coordinator's _COMMAND_TIMEOUT, and the
-# relationship is the point rather than the number: a background connect holds
-# the lock while a command waits for it inside its own budget, so a holder
-# allowed longer than the waiter means pressing a switch during a background
-# connect reports failure on a reachable lamp, having attempted nothing. It is
-# also shorter than _RECONNECT_INTERVAL, so the connect spawned by one poll
-# tick is over before the next.
+# It is deliberately SHORTER than _COMMAND_TIMEOUT, and the relationship is the
+# point rather than the number: a background connect holds the lock while a
+# command waits for it inside its own budget, so a holder allowed longer than
+# the waiter means pressing a switch during a background connect reports
+# failure on a reachable lamp, having attempted nothing. It is also shorter
+# than _RECONNECT_INTERVAL, so the connect spawned by one poll tick is over
+# before the next.
 #
 # And it is no shorter than what the library gives one try of its own
 # (BLEAK_TIMEOUT, 20 s): a ceiling close to what a connect takes on a weak
@@ -562,8 +575,8 @@ class Link:
         # often the lamp advertises and the tick comes round.
         self.reconnecting = False
         # The client the first exchange has been made on. A command takes a
-        # link without one (see connect_locked), so this is how the tick
-        # notices a link whose lamp was never asked for its state.
+        # link without one (see send), so this is how the tick notices a link
+        # whose lamp was never asked for its state.
         self.primed: BleakClientWithServiceCache | None = None
         self.present = False
         # What the log last said about the lamp being in reach (see
@@ -622,11 +635,11 @@ class Link:
     async def open(self) -> BleakClientWithServiceCache:
         """Dial, subscribe, and only then keep the client; return it.
 
-        The caller holds ``lock`` and has seen that no client is held. That
-        is ``connect_locked``, which a background connect and a command both
-        come through, so that neither can race the other. What is done on
-        the new link - the first exchange, or a command's own write and
-        nothing else - comes after, and is not this method's business.
+        The caller holds ``lock`` and has seen that no client is held: a
+        background connect (``connect_locked``) or a command (``send``),
+        neither of which can race the other for that. What is done on the
+        new link - the first exchange, or a command's own write and nothing
+        else - comes after, and is not this method's business.
         """
         self._refuse_what_must_not_be_dialled()
         under_way = self._kept.under_way()
@@ -661,7 +674,7 @@ class Link:
             if isinstance(err, Exception):
                 # A failure rather than a cancellation, so the caller may dial
                 # again at once - and must not be handed the link that is
-                # being closed (see the coordinator's _async_write).
+                # being closed (see send).
                 # Shielded: a deadline ends the wait, not the hang-up. A
                 # cancellation is not kept waiting at all: its deadline has
                 # already run out, and the lock is held here.
@@ -672,13 +685,120 @@ class Link:
         self.client = client
         return client
 
-    def turn(self, client: BleakClientWithServiceCache) -> Turn:
-        """Return a turn at the lamp on ``client``.
+    async def send(self, say: Talk, *, vouch: Callable[[], Awaitable[bool]]) -> None:
+        """Deliver a command: under the lock, on a link, with one reconnect.
 
-        For a command's write, while the coordinator still delivers it: it
-        makes that one call through this, on the client the link holds.
+        ``say`` is the command, said on the turn it is given - once, or once
+        more on a new link if the first was lost under it. It runs inside
+        ``lock`` so it cannot race a background connect.
+
+        The whole attempt - including the wait for ``lock``, which a
+        background connect may be holding - is capped by
+        ``_COMMAND_TIMEOUT``. A command that could not be delivered ends as
+        a ``LinkLostError``, or as the link's own "no" where it would not
+        dial (``_NoNewLinkError``): one thing for the caller to tell the
+        user, rather than a stack trace after a long hang.
+
+        ``vouch`` is asked once, when the command was put to a link and the
+        write failed all the same: has the lamp done what it was told? On a
+        weak link the acknowledgement is what goes missing. It is given
+        ``_CONFIRM_TIMEOUT`` to say yes, and a command it vouches for is
+        delivered.
         """
-        return Turn(self, client)
+        # Whether the command got as far as a link. One that never did has
+        # nothing to be vouched for.
+        said = False
+        # The client the last attempt failed on, if it got as far as having one.
+        failed: BleakClientWithServiceCache | None = None
+        # The client a write is being waited on, for as long as it is.
+        writing_to: BleakClientWithServiceCache | None = None
+        try:
+            async with asyncio.timeout(_COMMAND_TIMEOUT), self.lock:
+                for attempt in range(1, _WRITE_ATTEMPTS + 1):
+                    try:
+                        # The link and its own write, nothing else. The first
+                        # exchange is expensive: the state request and the
+                        # wait for its answer, up to 3 s waiting for the
+                        # activation flag and, the first time, the device-info
+                        # read, all before the write is even attempted and all
+                        # inside the command's budget. On a lamp where the
+                        # connect alone is marginal, that is what turns a
+                        # working command into a reported failure. The tick
+                        # makes it afterwards (see tick).
+                        held = self.client
+                        writing_to = (
+                            held
+                            if held is not None and held.is_connected
+                            else await self.open()
+                        )
+                        said = True
+                        await say(Turn(self, writing_to))
+                        writing_to = None
+                        break
+                    except _LINK_ERRORS as err:
+                        writing_to = None
+                        client, self.client = self.client, None
+                        if attempt == _WRITE_ATTEMPTS or isinstance(
+                            err, _NoNewLinkError
+                        ):
+                            # The last attempt - or the link's own "no",
+                            # which a second attempt would only be given
+                            # again.
+                            failed = client
+                            raise
+                        _LOGGER.debug(
+                            "Write to %s failed (%s); reconnecting and retrying",
+                            self.address,
+                            _reason(err),
+                        )
+                        if client is not None:
+                            # Finished before the retry dials: the hang-up
+                            # closes the link in BlueZ, and a connect made
+                            # ahead of that either fails or is handed the very
+                            # link being closed. Shielded, so the command's
+                            # deadline ends the wait and not the hang-up.
+                            await asyncio.shield(self.hang_up(client))
+        except _LINK_ERRORS as err:
+            if writing_to is not None and writing_to is self.client:
+                # The deadline ran out inside the write. The handler above
+                # never saw it - a deadline arrives as a cancellation - so the
+                # link is still held, and a link that has kept a write waiting
+                # this long is not one to hand the next command. Unless it has
+                # been let go of meanwhile: then it is no longer ours to take.
+                failed, self.client = writing_to, None
+            try:
+                if said and await self._vouched(vouch):
+                    _LOGGER.debug(
+                        "Command to %s reported %s, but the device reports the "
+                        "state it asked for - treating it as delivered",
+                        self.address,
+                        _reason(err),
+                    )
+                else:
+                    _LOGGER.debug(
+                        "Command to %s failed: %s", self.address, _reason(err)
+                    )
+                    if isinstance(err, (_NoNewLinkError, LinkLostError)):
+                        # Already what this ends as: the link's own "no",
+                        # which says which of its reasons it was - the caller
+                        # has words for each - or a turn that lost its link.
+                        raise
+                    raise LinkLostError(_reason(err)) from err
+            finally:
+                # Only now. The link let go of this client when the write
+                # failed, but its notifications are the channel the vouching
+                # above listens on, so it had to stay up until the device had
+                # its chance to answer.
+                if failed is not None:
+                    self.hang_up(failed)
+
+    async def _vouched(self, vouch: Callable[[], Awaitable[bool]]) -> bool:
+        """Ask whether the lamp did what a failed write told it, and not for long."""
+        try:
+            async with asyncio.timeout(_CONFIRM_TIMEOUT):
+                return await vouch()
+        except TimeoutError:
+            return False
 
     async def connect(self) -> None:
         """Connect if not already connected, under a bounded wait for the lock.
@@ -694,27 +814,17 @@ class Link:
         async with asyncio.timeout(_CONNECT_TIMEOUT), self.lock:
             await self.connect_locked()
 
-    async def connect_locked(self, *, greet: bool = True) -> None:
-        """Establish the GATT link, and unless told otherwise greet the lamp.
+    async def connect_locked(self) -> None:
+        """Establish the GATT link, and make the first exchange on it.
 
-        The caller must hold ``lock``; ``connect`` and the coordinator's
-        write path both funnel through here so a command can never race a
-        background connect.
-
-        A command passes ``greet=False``. It needs the link and its own write,
-        nothing else - and the first exchange is expensive: the state request
-        and the wait for its answer, up to 3 s waiting for the activation flag
-        and, the first time, the device-info read, all before the write is
-        even attempted and all inside the command budget. On a lamp where the
-        connect alone is marginal, that is what turns a working command into a
-        reported failure. The tick picks the first exchange up afterwards
-        (see ``tick``).
+        The caller must hold ``lock``: that is ``connect``. A command takes
+        its link under the same lock (``send``), so that neither can race the
+        other - a connect that waited for the lock while a command dialled
+        finds the link held, and dials nothing.
         """
         if self.connected:
             return
         client = await self.open()
-        if not greet:
-            return
         if await self._greet_on(client, "%s: connected and primed"):
             self._reach_changed()
 

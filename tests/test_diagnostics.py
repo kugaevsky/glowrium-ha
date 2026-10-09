@@ -39,6 +39,8 @@ from custom_components.glowrium.const import (
 from custom_components.glowrium.coordinator import _parse_device_info
 from custom_components.glowrium.diagnostics import async_get_config_entry_diagnostics
 
+from .lamp import turn_over
+
 ADDRESS = "AA:BB:CC:DD:EE:FF"
 TITLE = "Glowrium-G7_DDEEFF"
 LATITUDE, LONGITUDE = 12.3456, 65.4321
@@ -243,7 +245,9 @@ async def test_a_clock_the_integration_set_is_judged_from_when_it_set_it(
         "custom_components.glowrium.coordinator.dt_util.now",
         return_value=HEARD_AT + timedelta(minutes=2),
     ):
-        await coordinator._async_sync_clock_if_needed()
+        await coordinator._async_sync_clock_if_needed(
+            turn_over(coordinator, coordinator._client)
+        )
     coordinator._client = None  # nothing real to hang up when the test ends
 
     data = await _downloaded(hass, entry)

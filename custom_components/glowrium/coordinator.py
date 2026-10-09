@@ -57,6 +57,7 @@ from .link import (
     _RECONNECT_INTERVAL,
     Dial,
     Link,
+    LinkLostError,
     RefusedError,
     Turn,
     Unclosed,
@@ -67,20 +68,6 @@ from .link import (
 from .models import GlowriumModel, resolve_model
 
 _LOGGER = logging.getLogger(__name__)
-_WRITE_ATTEMPTS = 2  # the initial write plus one reconnect-and-retry
-# Ceiling on getting one user-facing command out, so a button reports a clear
-# failure instead of appearing to hang while the retries stack up. It has to
-# outlast a background connect (the link's _CONNECT_TIMEOUT). A failed command
-# may then spend up to _CONFIRM_TIMEOUT more deciding whether it failed after
-# all, so the worst a user waits is the sum of the two.
-_COMMAND_TIMEOUT = 25.0
-# How long a failed command waits for the device to report the state it asked
-# for before the failure is believed. A write-with-response on a marginal link
-# can reach the lamp and be acted on while the acknowledgement is lost, which
-# bleak reports as failure. Observed once on a G7 at RSSI -88: the confirming
-# notification arrived 22-32 ms BEFORE the error was raised, so this is grace
-# for a slower link rather than a wait anyone should routinely pay.
-_CONFIRM_TIMEOUT = 2.0
 # Where the repair for a Bluetooth stack that will not hang up sends the
 # reader for what to do.
 _TROUBLESHOOTING_URL = "https://github.com/kugaevsky/glowrium-ha#troubleshooting"
@@ -486,10 +473,21 @@ class GlowriumCoordinator:
         await self._link.connect()
 
     async def _connect_locked(self, *, prime: bool = True) -> None:
-        await self._link.connect_locked(greet=prime)
+        if prime:
+            await self._link.connect_locked()
+        elif not self._is_connected:
+            # The bench: a link, and nothing asked on it before it measures.
+            await self._link.open()
 
     async def _async_prime(self) -> None:
         await self._link.prime_held()
+
+    async def _write_raw(self, payload: dict[int, Any]) -> None:
+        # For a caller that holds _lock itself and has seen to a link: the
+        # bench, when it writes what no command of the integration would.
+        if self._client is None:
+            raise BleakError("write attempted while disconnected")
+        await self._write_on(Turn(self._link, self._client), payload)
 
     # --- What the link is handed ----------------------------------------------
 
@@ -510,8 +508,8 @@ class GlowriumCoordinator:
         """
         if not await self._request_state(turn):
             return
-        await self._async_activate_if_needed()
-        await self._async_sync_clock_if_needed()
+        await self._async_activate_if_needed(turn)
+        await self._async_sync_clock_if_needed(turn)
         turn.answered()
         await self._async_read_device_info(turn)
 
@@ -1239,17 +1237,15 @@ class GlowriumCoordinator:
         if KEY_TIME in values:
             self._clock_heard_at = dt_util.now()
 
-    async def _write_raw(self, payload: dict[int, Any]) -> None:
-        """Write one command frame to the connected device.
+    async def _write_on(self, turn: Turn, payload: dict[int, Any]) -> None:
+        """Write one command frame on the turn that is given.
 
-        The caller must hold ``_lock`` and have ensured a connection: the
-        connect path uses this for the bring-up sequence, and the command path
-        (``_async_write``) wraps it with the lock and a retry.
+        A command is written through here, on the turn the link gives it for
+        each attempt (``_async_deliver``), and so is what the first exchange
+        has to write: the bring-up, a clock that has drifted.
         """
-        if self._client is None:
-            raise BleakError("write attempted while disconnected")
         self._writes_sent += 1  # counted before, so a raising write still counts
-        await self._link.turn(self._client).write(WRITE_UUID, cbor.encode(payload))
+        await turn.write(WRITE_UUID, cbor.encode(payload))
         # Optimistic local echo; the device also notifies its new state.
         self._mirror(payload)
 
@@ -1266,96 +1262,39 @@ class GlowriumCoordinator:
             self._async_notify_listeners()
 
     async def _async_deliver(self, payload: dict[int, Any]) -> None:
-        """Serialize a command under the connection lock, with one reconnect.
+        """Hand a command to the link, and say in the user's words if it failed.
 
-        The write runs inside ``_lock`` so it cannot race a background
-        reconnect; if it still fails (the link dropped mid-command) the
-        connection is rebuilt once and the write retried.
+        The link delivers it: under its lock, on a link it dials if none is
+        held, with one reconnect and inside one deadline (``Link.send``). What
+        it is handed is the write, to make on the turn it gives, and the
+        question it asks once if that write failed - has the lamp reported
+        what the command set? (``_async_device_confirms``).
 
-        The whole attempt - including the wait for ``_lock``, which a
-        background reconnect may be holding - is capped by
-        ``_COMMAND_TIMEOUT``, and every failure is reported as a
-        ``HomeAssistantError`` so the user gets a readable message rather than
-        a stack trace after a long hang.
+        Every failure is reported as a ``HomeAssistantError`` so the user gets
+        a readable message rather than a stack trace after a long hang.
         """
-        reports_before, writes_before = self._reports, self._writes_sent
-        # The client the last attempt failed on, if it got as far as having one.
-        failed: BleakClientWithServiceCache | None = None
-        # The client a write is being waited on, for as long as it is.
-        writing_to: BleakClientWithServiceCache | None = None
+        # Noted before the wait for the lock: a report that comes while the
+        # command waits is as fresh as one that comes after it.
+        reports_before = self._reports
         try:
-            async with asyncio.timeout(_COMMAND_TIMEOUT), self._lock:
-                for attempt in range(1, _WRITE_ATTEMPTS + 1):
-                    try:
-                        await self._connect_locked(prime=False)
-                        writing_to = self._client
-                        await self._write_raw(payload)
-                        writing_to = None
-                        break
-                    except _LINK_ERRORS as err:
-                        writing_to = None
-                        client, self._client = self._client, None
-                        if attempt == _WRITE_ATTEMPTS or isinstance(
-                            err, _NoNewLinkError
-                        ):
-                            # The last attempt - or the coordinator's own
-                            # "no", which a second attempt would only be
-                            # given again.
-                            failed = client
-                            raise
-                        _LOGGER.debug(
-                            "Write to %s failed (%s); reconnecting and retrying",
-                            self.address,
-                            _reason(err),
-                        )
-                        if client is not None:
-                            # Finished before the retry dials: the hang-up
-                            # closes the link in BlueZ, and a connect made
-                            # ahead of that either fails or is handed the very
-                            # link being closed. Shielded, so the command's
-                            # deadline ends the wait and not the hang-up.
-                            await asyncio.shield(self._hang_up(client))
-        except _LINK_ERRORS as err:
-            if writing_to is not None and writing_to is self._client:
-                # The deadline ran out inside the write. The handler above
-                # never saw it - a deadline arrives as a cancellation - so the
-                # link is still held, and a link that has kept a write waiting
-                # this long is not one to hand the next command. Unless it has
-                # been let go of meanwhile: then it is no longer ours to take.
-                failed, self._client = writing_to, None
-            try:
-                if (
-                    self._writes_sent > writes_before
-                    and await self._async_device_confirms(payload, reports_before)
-                ):
-                    _LOGGER.debug(
-                        "Command to %s reported %s, but the device reports the "
-                        "state it asked for - treating it as delivered",
-                        self.address,
-                        _reason(err),
-                    )
-                else:
-                    _LOGGER.debug(
-                        "Command to %s failed: %s", self.address, _reason(err)
-                    )
-                    raise HomeAssistantError(
-                        translation_domain=DOMAIN,
-                        # What stopped it, when it was the coordinator itself:
-                        # "out of range, try a proxy" is advice for the radio.
-                        translation_key=(
-                            err.translation_key
-                            if isinstance(err, _NoNewLinkError)
-                            else "cannot_connect"
-                        ),
-                        translation_placeholders={"name": self.name},
-                    ) from err
-            finally:
-                # Only now. The coordinator let go of this client when the
-                # write failed, but its notifications are the channel the
-                # confirmation above listens on, so it had to stay up until
-                # the device had its chance to answer.
-                if failed is not None:
-                    self._hang_up(failed)
+            await self._link.send(
+                lambda turn: self._write_on(turn, payload),
+                vouch=lambda: self._async_device_confirms(payload, reports_before),
+            )
+        except _NoNewLinkError as err:
+            # What stopped it, when it was the link itself: "out of range,
+            # try a proxy" is advice for the radio.
+            raise HomeAssistantError(
+                translation_domain=DOMAIN,
+                translation_key=err.translation_key,
+                translation_placeholders={"name": self.name},
+            ) from err
+        except LinkLostError as err:
+            raise HomeAssistantError(
+                translation_domain=DOMAIN,
+                translation_key="cannot_connect",
+                translation_placeholders={"name": self.name},
+            ) from err
 
     async def _async_device_confirms(
         self, payload: dict[int, Any], reports_before: int
@@ -1394,34 +1333,33 @@ class GlowriumCoordinator:
         ramp that is usually what it already was. What this leaves is a
         coincidence: one property reported with the value asked for, while
         another matches a mirror that is stale.
+
+        This waits for that report for as long as it is let: how long a
+        failed command is worth waiting on is the link's to say (its
+        ``_CONFIRM_TIMEOUT``), and it ends the wait there.
         """
         tracked = {key: value for key, value in payload.items() if key in STATE_KEYS}
         if not tracked:
             return False
-        try:
-            async with asyncio.timeout(_CONFIRM_TIMEOUT):
-                while True:
-                    # Clear before checking. Nothing can interleave between the
-                    # two here - both are synchronous and the reports come from
-                    # this same event loop - so the order is not load-bearing
-                    # today; it is the order that stays correct if a report ever
-                    # arrives from anywhere else.
-                    self._state_reported.clear()
-                    if all(self.state.get(k) == v for k, v in tracked.items()) and any(
-                        self._reported_at.get(k, 0) > reports_before for k in tracked
-                    ):
-                        return True
-                    await self._state_reported.wait()
-        except TimeoutError:
-            return False
+        while True:
+            # Clear before checking. Nothing can interleave between the two
+            # here - both are synchronous and the reports come from this same
+            # event loop - so the order is not load-bearing today; it is the
+            # order that stays correct if a report ever arrives from anywhere
+            # else.
+            self._state_reported.clear()
+            if all(self.state.get(k) == v for k, v in tracked.items()) and any(
+                self._reported_at.get(k, 0) > reports_before for k in tracked
+            ):
+                return True
+            await self._state_reported.wait()
 
-    async def _async_activate_if_needed(self) -> None:
+    async def _async_activate_if_needed(self, turn: Turn) -> None:
         """Bring the device up once if it reports as not yet activated (0x14).
 
-        Runs inside the connection lock, after the state request - which is
-        either a background connect or the priming the poll performs on a link
-        a command established. Never from a command itself: those connect with
-        ``prime=False`` and return before reaching here.
+        Part of the first exchange, after the state request: on a new link a
+        background connect made, or on one a command took, when the poll comes
+        to it. Never from a command itself, which takes its link without one.
         """
         if self._activation_checked:
             return
@@ -1439,11 +1377,11 @@ class GlowriumCoordinator:
                 break
             await asyncio.sleep(0.25)
         if self.state.get(KEY_ACTIVATED) is False:
-            await self._async_activate()
+            await self._async_activate(turn)
         if self.state.get(KEY_ACTIVATED):
             self._activation_checked = True
 
-    async def _async_sync_clock_if_needed(self) -> None:
+    async def _async_sync_clock_if_needed(self, turn: Turn) -> None:
         """Correct the device clock if what it reports has drifted.
 
         Runs on the priming path, where the clock has just been read. Silent
@@ -1468,13 +1406,13 @@ class GlowriumCoordinator:
                 reported.isoformat(sep=" "),
                 drift,
             )
-        await self._write_raw(self._clock_command())
+        await self._write_on(turn, self._clock_command())
 
     def _clock_command(self) -> dict[int, Any]:
         """Return the command that sets the lamp's clock to now, local time."""
         return protocol.clock_command(dt_util.now())
 
-    async def _async_activate(self) -> None:
+    async def _async_activate(self, turn: Turn) -> None:
         """Bring up a factory-reset device: clock + flags + enable light output.
 
         Replays the vendor app's first-pairing sequence - all local, no cloud and
@@ -1482,13 +1420,12 @@ class GlowriumCoordinator:
         light output on 0x14; a virgin (factory-reset) device reports 0x14 False
         and its front-panel LEDs blink until this runs. Idempotent when already on.
 
-        The caller must hold ``_lock`` and have a connection, as for
-        ``_write_raw``, which this is three calls of. The one caller is
-        ``_async_activate_if_needed``, on the priming path.
+        Three writes on the turn of the first exchange. The one caller is
+        ``_async_activate_if_needed``.
         """
-        await self._write_raw({KEY_ACTIVATE_MISC: ACTIVATE_MISC_VALUE})
-        await self._write_raw(self._clock_command())
-        await self._write_raw({KEY_ACTIVATED: True})
+        await self._write_on(turn, {KEY_ACTIVATE_MISC: ACTIVATE_MISC_VALUE})
+        await self._write_on(turn, self._clock_command())
+        await self._write_on(turn, {KEY_ACTIVATED: True})
         _LOGGER.info("Brought up (activated) %s", self.address)
 
     async def async_set_power(self, is_on: bool) -> None:

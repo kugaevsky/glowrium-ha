@@ -379,7 +379,7 @@ async def test_presence_callbacks_notify(hass: HomeAssistant) -> None:
 async def test_async_activate_sequence(hass: HomeAssistant) -> None:
     """Bring-up replays the app's sequence: {0x53}, {time, 0x31}, then {0x14}."""
     coordinator, client = _connected_coordinator(hass)
-    await coordinator._async_activate()
+    await coordinator._async_activate(turn_over(coordinator, coordinator._client))
     assert client.write_gatt_char.await_count == 3
     payloads = [cbor.decode(c.args[1]) for c in client.write_gatt_char.await_args_list]
     assert payloads[0] == {0x53: 300}
@@ -397,7 +397,7 @@ async def test_the_bring_up_sets_the_clock_to_local_time(hass: HomeAssistant) ->
     await hass.config.async_set_time_zone("Asia/Kolkata")  # 5 h 30 min from UTC
     coordinator, client = _connected_coordinator(hass)
 
-    await coordinator._async_activate()
+    await coordinator._async_activate(turn_over(coordinator, coordinator._client))
 
     written = cbor.decode(client.write_gatt_char.await_args_list[1].args[1])
     clock = protocol.device_time(written)
@@ -475,7 +475,7 @@ async def test_write_raises_after_two_failures(
     """A write that keeps failing is reported as a readable HA error."""
     coordinator, client = _connected_coordinator(hass)
     # Nothing will confirm this write, so do not sit out the whole grace window.
-    monkeypatch.setattr(coordinator_module, "_CONFIRM_TIMEOUT", 0.01)
+    monkeypatch.setattr(link_module, "_CONFIRM_TIMEOUT", 0.01)
     client.write_gatt_char = AsyncMock(side_effect=BleakError("down"))
     _dialling(coordinator, client)
 
@@ -584,9 +584,13 @@ async def test_activation_skipped_when_state_unreadable(hass: HomeAssistant) -> 
     coordinator._client = client
     coordinator._state_request_muted_until = monotonic() + 60
     activated = []
-    coordinator._async_activate = AsyncMock(side_effect=lambda: activated.append(1))
+    coordinator._async_activate = AsyncMock(
+        side_effect=lambda _turn: activated.append(1)
+    )
 
-    await coordinator._async_activate_if_needed()
+    await coordinator._async_activate_if_needed(
+        turn_over(coordinator, coordinator._client)
+    )
 
     assert not activated  # must not replay the vendor bring-up blind
     assert coordinator._activation_checked is True  # and must not re-wait
@@ -890,7 +894,7 @@ async def test_a_ramp_that_never_reached_the_lamp_is_not_remembered(
     """What the user was told had failed is not applied behind their back later."""
     coordinator, client = _connected_coordinator(hass)
     coordinator._ingest(cbor.encode({KEY_LIGHTING_MODE: 5}))
-    monkeypatch.setattr(coordinator_module, "_CONFIRM_TIMEOUT", 0.01)
+    monkeypatch.setattr(link_module, "_CONFIRM_TIMEOUT", 0.01)
     client.write_gatt_char.side_effect = BleakError("Not connected")
 
     with pytest.raises(HomeAssistantError):
@@ -909,8 +913,8 @@ async def test_command_gives_up_instead_of_hanging(
     """
     coordinator, _client = _connected_coordinator(hass)
     coordinator._client = None
-    monkeypatch.setattr(coordinator_module, "_COMMAND_TIMEOUT", 0.05)
-    monkeypatch.setattr(coordinator_module, "_CONFIRM_TIMEOUT", 0.01)
+    monkeypatch.setattr(link_module, "_COMMAND_TIMEOUT", 0.05)
+    monkeypatch.setattr(link_module, "_CONFIRM_TIMEOUT", 0.01)
 
     async def _never_connects(*_a: object, **_kw: object) -> None:
         await asyncio.Event().wait()
@@ -930,8 +934,8 @@ async def test_command_budget_covers_waiting_for_the_lock(
     cover the wait for the lock, not just the write itself.
     """
     coordinator, _client = _connected_coordinator(hass)
-    monkeypatch.setattr(coordinator_module, "_COMMAND_TIMEOUT", 0.05)
-    monkeypatch.setattr(coordinator_module, "_CONFIRM_TIMEOUT", 0.01)
+    monkeypatch.setattr(link_module, "_COMMAND_TIMEOUT", 0.05)
+    monkeypatch.setattr(link_module, "_CONFIRM_TIMEOUT", 0.01)
     await coordinator._lock.acquire()
     try:
         with pytest.raises(HomeAssistantError) as err:
@@ -1348,7 +1352,7 @@ async def test_a_command_that_truly_failed_still_raises(
 ) -> None:
     """Silence is not success: with no confirmation the error still surfaces."""
     coordinator, client = _connected_coordinator(hass)
-    monkeypatch.setattr(coordinator_module, "_CONFIRM_TIMEOUT", 0.05)
+    monkeypatch.setattr(link_module, "_CONFIRM_TIMEOUT", 0.05)
     client.write_gatt_char = AsyncMock(side_effect=BleakError("Not connected"))
 
     with pytest.raises(HomeAssistantError) as err:
@@ -1365,7 +1369,7 @@ async def test_confirmation_ignores_keys_the_device_never_reports(
     match would mean no mode command could ever be confirmed.
     """
     coordinator, client = _connected_coordinator(hass)
-    monkeypatch.setattr(coordinator_module, "_CONFIRM_TIMEOUT", 0.05)
+    monkeypatch.setattr(link_module, "_CONFIRM_TIMEOUT", 0.05)
     coordinator.state[KEY_LIGHTING_MODE] = 1
 
     async def _write_then_notify(_uuid: str, data: bytes, **_kw: object) -> None:
@@ -1512,7 +1516,9 @@ async def test_a_device_reporting_unactivated_is_brought_up(
     coordinator, client = _connected_coordinator(hass)
     coordinator.state[KEY_ACTIVATED] = False
 
-    await coordinator._async_activate_if_needed()
+    await coordinator._async_activate_if_needed(
+        turn_over(coordinator, coordinator._client)
+    )
 
     written = [
         cbor.decode(call.args[1]) for call in client.write_gatt_char.await_args_list
@@ -1526,7 +1532,9 @@ async def test_an_activated_device_is_left_alone(hass: HomeAssistant) -> None:
     coordinator, client = _connected_coordinator(hass)
     coordinator.state[KEY_ACTIVATED] = True
 
-    await coordinator._async_activate_if_needed()
+    await coordinator._async_activate_if_needed(
+        turn_over(coordinator, coordinator._client)
+    )
 
     client.write_gatt_char.assert_not_awaited()
 
@@ -1823,7 +1831,7 @@ async def test_a_write_with_nothing_reportable_is_never_confirmed(
     silence must not be read as success.
     """
     coordinator, client = _connected_coordinator(hass)
-    monkeypatch.setattr(coordinator_module, "_CONFIRM_TIMEOUT", 0.05)
+    monkeypatch.setattr(link_module, "_CONFIRM_TIMEOUT", 0.05)
     client.write_gatt_char = AsyncMock(side_effect=BleakError("down"))
     _dialling(coordinator, client)
 
@@ -1941,12 +1949,16 @@ async def test_the_bring_up_is_attempted_once_per_session(
     """
     coordinator, client = _connected_coordinator(hass)
     coordinator.state[KEY_ACTIVATED] = True
-    await coordinator._async_activate_if_needed()
+    await coordinator._async_activate_if_needed(
+        turn_over(coordinator, coordinator._client)
+    )
     client.write_gatt_char.assert_not_awaited()
 
     # Settled. Even a later False must not restart the bring-up.
     coordinator.state[KEY_ACTIVATED] = False
-    await coordinator._async_activate_if_needed()
+    await coordinator._async_activate_if_needed(
+        turn_over(coordinator, coordinator._client)
+    )
     client.write_gatt_char.assert_not_awaited()
 
 
@@ -2050,11 +2062,61 @@ async def test_a_write_without_a_link_is_refused_not_dropped(
     nothing reached the lamp.
     """
     coordinator, _ = _connected_coordinator(hass)
-    monkeypatch.setattr(coordinator_module, "_CONFIRM_TIMEOUT", 0.01)
+    monkeypatch.setattr(link_module, "_CONFIRM_TIMEOUT", 0.01)
     coordinator._client = None
 
     with pytest.raises(BleakError):
         await coordinator._write_raw({KEY_POWER: True})
+
+
+async def test_the_bench_takes_a_link_and_writes_with_nothing_asked_of_the_lamp(
+    hass: HomeAssistant,
+) -> None:
+    """The two names the bench still comes in by do what they did.
+
+    It measures the lamp before anything has been asked of it: it takes a
+    link without the first exchange, and writes frames no command of the
+    integration would, holding the lock itself. Both names go when the bench
+    speaks to the link through its own interface (#21, stage 3).
+    """
+    coordinator, client = _connected_coordinator(hass)
+    coordinator._client = None
+    _dialling(coordinator, client)
+
+    async with coordinator._lock:
+        await coordinator._connect_locked(prime=False)
+        await coordinator._write_raw({KEY_POWER: True})
+
+    assert coordinator._client is client
+    assert coordinator._primed_client is not client
+    client.write_gatt_char.assert_awaited_once_with(
+        WRITE_UUID, cbor.encode({KEY_POWER: True}), response=True
+    )
+
+
+async def test_a_connect_that_waited_behind_a_command_dials_nothing(
+    hass: HomeAssistant,
+) -> None:
+    """A background connect that gets the lock after a command took a link stops.
+
+    Both take the same lock, and the connect looked before it began to wait.
+    Dialling on what it saw then would put a second client in place of the
+    first, which nothing would ever hang up - on a lamp with one slot.
+    """
+    coordinator, client = _connected_coordinator(hass)
+    coordinator._client = None
+    dial = _dialling(coordinator, _fresh_client())
+
+    await coordinator._lock.acquire()  # a command has it, and is dialling
+    waiting = asyncio.create_task(coordinator._async_ensure_connected())
+    for _ in range(3):  # the connect has looked, and waits for the lock
+        await asyncio.sleep(0)
+    coordinator._client = client  # the link the command made
+    coordinator._lock.release()
+    await waiting
+
+    dial.assert_not_awaited()
+    assert coordinator._client is client
 
 
 def _info_lines(caplog: pytest.LogCaptureFixture) -> list[str]:
@@ -2154,7 +2216,7 @@ async def test_a_command_that_fails_says_the_link_is_gone(
     coordinator, client = _connected_coordinator(hass)
     client.write_gatt_char = AsyncMock(side_effect=BleakError("Not connected"))
     coordinator._present = False
-    monkeypatch.setattr(coordinator_module, "_CONFIRM_TIMEOUT", 0.01)
+    monkeypatch.setattr(link_module, "_CONFIRM_TIMEOUT", 0.01)
     told: list[bool] = []
     coordinator.async_add_listener(lambda: told.append(coordinator.available))
     assert coordinator.available
@@ -2209,7 +2271,7 @@ async def test_a_stopped_coordinator_does_not_say_where_the_lamp_is(
     """
     coordinator, _client = _connected_coordinator(hass)
     coordinator._present = False  # held by its link alone
-    monkeypatch.setattr(coordinator_module, "_CONFIRM_TIMEOUT", 0.01)
+    monkeypatch.setattr(link_module, "_CONFIRM_TIMEOUT", 0.01)
 
     with caplog.at_level(logging.INFO, logger=coordinator_module.__name__):
         if stopped_by == "an unload":
@@ -2394,7 +2456,7 @@ async def test_a_stale_mirror_does_not_vouch_for_a_failed_write(
     it is unreachable.
     """
     coordinator, client = _connected_coordinator(hass)
-    monkeypatch.setattr(coordinator_module, "_CONFIRM_TIMEOUT", 0.05)
+    monkeypatch.setattr(link_module, "_CONFIRM_TIMEOUT", 0.05)
     coordinator.state[KEY_POWER] = False  # what the lamp said, some time ago
     client.write_gatt_char = AsyncMock(side_effect=BleakError("Not connected"))
     _dialling(coordinator, client)
@@ -2405,6 +2467,69 @@ async def test_a_stale_mirror_does_not_vouch_for_a_failed_write(
     assert {call.args[0] for call in client.write_gatt_char.await_args_list} == {
         WRITE_UUID
     }
+
+
+async def test_a_report_from_before_the_command_does_not_vouch_for_it(
+    hass: HomeAssistant, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """What the lamp said before the command was taken up is not about it.
+
+    The same stale mirror, filled the way it is in life: by the lamp, which
+    reported "off" some time ago. That report is the only one there is of
+    what the command sets, and it is older than the command.
+    """
+    coordinator, client = _connected_coordinator(hass)
+    monkeypatch.setattr(link_module, "_CONFIRM_TIMEOUT", 0.05)
+    coordinator._ingest(cbor.encode({KEY_POWER: False}))  # some time ago
+    client.write_gatt_char = AsyncMock(side_effect=BleakError("Not connected"))
+    _dialling(coordinator, client)
+
+    with pytest.raises(HomeAssistantError):
+        await coordinator.async_set_power(False)
+
+
+async def test_a_command_that_failed_is_not_echoed_into_the_mirror(
+    hass: HomeAssistant, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The mirror hears of a write once the lamp has acknowledged it.
+
+    The echo is optimistic about one thing: that a write the lamp took was
+    acted on. A write that failed is echoed nowhere - the entities would
+    show a lamp switched on that never heard the command, under an error
+    saying it could not be reached.
+    """
+    coordinator, client = _connected_coordinator(hass)
+    monkeypatch.setattr(link_module, "_CONFIRM_TIMEOUT", 0.01)
+    coordinator._ingest(cbor.encode({KEY_POWER: False}))
+    client.write_gatt_char = AsyncMock(side_effect=BleakError("down"))
+    _dialling(coordinator, client)
+
+    with pytest.raises(HomeAssistantError):
+        await coordinator.async_set_power(True)
+
+    assert coordinator.state[KEY_POWER] is False
+
+
+async def test_a_write_is_counted_whether_or_not_the_lamp_took_it(
+    hass: HomeAssistant, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The diagnostics count the writes put to the lamp, not those it took.
+
+    Beside the count of its reports, that is what tells a lamp that hears
+    nothing from one that is never spoken to. Counted before the write: a
+    command whose two tries both failed was put to the lamp twice.
+    """
+    coordinator, client = _connected_coordinator(hass)
+    monkeypatch.setattr(link_module, "_CONFIRM_TIMEOUT", 0.01)
+
+    await coordinator.async_set_power(True)
+    assert coordinator.diagnostics()["link"]["writes_sent"] == 1
+
+    client.write_gatt_char = AsyncMock(side_effect=BleakError("down"))
+    _dialling(coordinator, client)
+    with pytest.raises(HomeAssistantError):
+        await coordinator.async_set_power(False)
+    assert coordinator.diagnostics()["link"]["writes_sent"] == 3
 
 
 @pytest.mark.parametrize(
@@ -2427,7 +2552,7 @@ async def test_a_report_vouches_only_for_what_it_carries(
     delivered to a lamp that never got it.
     """
     coordinator, client = _connected_coordinator(hass)
-    monkeypatch.setattr(coordinator_module, "_CONFIRM_TIMEOUT", 0.05)
+    monkeypatch.setattr(link_module, "_CONFIRM_TIMEOUT", 0.05)
     coordinator.state[KEY_POWER] = False  # what the lamp said, some time ago
 
     async def _fails_and_the_lamp_says_something_else(
@@ -2461,7 +2586,7 @@ async def test_a_command_is_vouched_for_by_what_it_changed(
     was, after the write, and with the value asked for.
     """
     coordinator, client = _connected_coordinator(hass)
-    monkeypatch.setattr(coordinator_module, "_CONFIRM_TIMEOUT", 0.05)
+    monkeypatch.setattr(link_module, "_CONFIRM_TIMEOUT", 0.05)
     coordinator._ingest(
         cbor.encode({KEY_LIGHTING_MODE: 1, KEY_RAMP: bytes.fromhex("0e10")})
     )
@@ -2490,7 +2615,7 @@ async def test_a_command_that_never_reached_the_wire_fails_at_once(
     coordinator, _ = _connected_coordinator(hass)
     coordinator._client = None
     coordinator.state[KEY_POWER] = True  # and the mirror happens to agree
-    monkeypatch.setattr(coordinator_module, "_CONFIRM_TIMEOUT", 30.0)
+    monkeypatch.setattr(link_module, "_CONFIRM_TIMEOUT", 30.0)
     dial = _dialling(coordinator)
     dial.side_effect = BleakError("AA:BB:CC:DD:EE:FF is not in range")
 
@@ -2643,7 +2768,7 @@ def test_no_path_holds_the_lock_longer_than_a_command_will_wait() -> None:
     """
     connect = link_module._CONNECT_TIMEOUT
     ask = link_module._ASK_TIMEOUT
-    command = coordinator_module._COMMAND_TIMEOUT
+    command = link_module._COMMAND_TIMEOUT
     hang_up = link_module._HANG_UP_TIMEOUT
     poll = coordinator_module._RECONNECT_INTERVAL.total_seconds()
 
@@ -3111,7 +3236,9 @@ async def test_a_stale_device_clock_is_corrected(hass: HomeAssistant) -> None:
     stale = bytes.fromhex("07ea02010f0e2c")  # 2026-02-01 15:14:44
     coordinator.state[KEY_TIME] = stale
 
-    await coordinator._async_sync_clock_if_needed()
+    await coordinator._async_sync_clock_if_needed(
+        turn_over(coordinator, coordinator._client)
+    )
 
     written = cbor.decode(client.write_gatt_char.await_args.args[1])
     assert written[KEY_TIME] != stale
@@ -3134,7 +3261,9 @@ async def test_a_clock_that_is_near_enough_is_left_alone(
     coordinator, client = _connected_coordinator(hass)
     coordinator.state[KEY_TIME] = protocol.encode_device_time(dt_util.now())
 
-    await coordinator._async_sync_clock_if_needed()
+    await coordinator._async_sync_clock_if_needed(
+        turn_over(coordinator, coordinator._client)
+    )
 
     client.write_gatt_char.assert_not_awaited()
 
@@ -3146,7 +3275,9 @@ async def test_an_unreadable_clock_is_not_corrected_blind(
     coordinator, client = _connected_coordinator(hass)
     assert KEY_TIME not in coordinator.state
 
-    await coordinator._async_sync_clock_if_needed()
+    await coordinator._async_sync_clock_if_needed(
+        turn_over(coordinator, coordinator._client)
+    )
 
     client.write_gatt_char.assert_not_awaited()
 
@@ -3158,7 +3289,9 @@ async def test_a_clock_that_is_no_date_is_corrected(
     coordinator, client = _connected_coordinator(hass)
     coordinator.state[KEY_TIME] = bytes.fromhex("07ea0d12151823")
 
-    await coordinator._async_sync_clock_if_needed()
+    await coordinator._async_sync_clock_if_needed(
+        turn_over(coordinator, coordinator._client)
+    )
 
     client.write_gatt_char.assert_awaited_once()
     written = cbor.decode(client.write_gatt_char.await_args.args[1])
@@ -3177,7 +3310,7 @@ async def test_both_priming_paths_check_the_clock(hass: HomeAssistant) -> None:
         coordinator, client = _connected_coordinator(hass)
         checked = 0
 
-        async def _note() -> None:
+        async def _note(_turn: object) -> None:
             nonlocal checked
             checked += 1
 
@@ -3463,8 +3596,8 @@ async def test_a_hang_up_outlives_the_deadline_of_whoever_asked_for_it(
     again, by another route.
     """
     coordinator, first = _connected_coordinator(hass)
-    monkeypatch.setattr(coordinator_module, "_COMMAND_TIMEOUT", 0.05)
-    monkeypatch.setattr(coordinator_module, "_CONFIRM_TIMEOUT", 0.01)
+    monkeypatch.setattr(link_module, "_COMMAND_TIMEOUT", 0.05)
+    monkeypatch.setattr(link_module, "_CONFIRM_TIMEOUT", 0.01)
     first.write_gatt_char = AsyncMock(side_effect=BleakError("dropped"))
     released = asyncio.Event()
     finished: list[int] = []
@@ -3999,7 +4132,7 @@ async def test_hanging_up_a_client_we_gave_up_on_leaves_the_one_we_hold(
     third = _fresh_client()
     third.write_gatt_char = AsyncMock()  # the next command's link works
     _dialling(coordinator, second, third)
-    monkeypatch.setattr(coordinator_module, "_CONFIRM_TIMEOUT", 0.2)
+    monkeypatch.setattr(link_module, "_CONFIRM_TIMEOUT", 0.2)
 
     failing = asyncio.create_task(coordinator.async_set_power(True))
     await asyncio.sleep(0)  # it has failed twice and now waits for a report
@@ -4249,7 +4382,7 @@ async def test_a_command_that_keeps_meeting_a_closed_bus_fails_readably(
     second = _fresh_client()
     second.write_gatt_char = AsyncMock(side_effect=failure)
     _dialling(coordinator, second)
-    monkeypatch.setattr(coordinator_module, "_CONFIRM_TIMEOUT", 0.01)
+    monkeypatch.setattr(link_module, "_CONFIRM_TIMEOUT", 0.01)
 
     with pytest.raises(HomeAssistantError):
         await coordinator.async_set_power(True)
@@ -4332,7 +4465,7 @@ async def test_stopping_lets_go_of_a_link_made_while_it_was_stopping(
     first.write_gatt_char = AsyncMock(side_effect=BleakError("dropped"))
     second = _fresh_client()
     second.write_gatt_char = AsyncMock()
-    monkeypatch.setattr(coordinator_module, "_CONFIRM_TIMEOUT", 0.01)
+    monkeypatch.setattr(link_module, "_CONFIRM_TIMEOUT", 0.01)
     answered = asyncio.Event()
 
     async def _dial_slowly(*_a: object, **_kw: object) -> MagicMock:
@@ -4394,7 +4527,7 @@ async def test_a_stopped_coordinator_does_not_dial(
     """
     coordinator, _ = _connected_coordinator(hass)
     dial = _dialling(coordinator, _fresh_client(), _fresh_client())
-    monkeypatch.setattr(coordinator_module, "_CONFIRM_TIMEOUT", 0.01)
+    monkeypatch.setattr(link_module, "_CONFIRM_TIMEOUT", 0.01)
 
     await coordinator.async_stop()
     assert not coordinator._lock.locked()
@@ -4420,7 +4553,7 @@ async def test_a_command_refused_because_it_has_stopped_says_so(
     """
     coordinator, _ = _connected_coordinator(hass)
     dial = _dialling(coordinator, _fresh_client(), _fresh_client())
-    monkeypatch.setattr(coordinator_module, "_CONFIRM_TIMEOUT", 0.01)
+    monkeypatch.setattr(link_module, "_CONFIRM_TIMEOUT", 0.01)
     asked = _counting_connects(coordinator)
     if stopped_by == "an unload":
         await coordinator.async_stop()
@@ -4456,7 +4589,7 @@ async def test_a_command_overtaken_by_a_stop_says_so_too(
 
     client.start_notify = AsyncMock(side_effect=_subscribe_slowly)
     dial = _dialling(coordinator, client, _fresh_client())
-    monkeypatch.setattr(coordinator_module, "_CONFIRM_TIMEOUT", 0.01)
+    monkeypatch.setattr(link_module, "_CONFIRM_TIMEOUT", 0.01)
     asked = _counting_connects(coordinator)
 
     command = asyncio.create_task(coordinator.async_set_power(True))
@@ -4488,7 +4621,7 @@ async def test_a_lamp_the_scanner_has_lost_is_still_said_to_be_out_of_range(
     """
     coordinator, _ = _connected_coordinator(hass)
     coordinator._client = None  # nothing held, and the lamp is not in the list
-    monkeypatch.setattr(coordinator_module, "_CONFIRM_TIMEOUT", 0.01)
+    monkeypatch.setattr(link_module, "_CONFIRM_TIMEOUT", 0.01)
     asked = _counting_connects(coordinator)
 
     with pytest.raises(HomeAssistantError) as err:
@@ -4511,8 +4644,8 @@ async def test_a_command_that_runs_out_of_time_inside_a_write_lets_go_of_the_lin
     next command dials.
     """
     coordinator, client = _connected_coordinator(hass)
-    monkeypatch.setattr(coordinator_module, "_COMMAND_TIMEOUT", 0.05)
-    monkeypatch.setattr(coordinator_module, "_CONFIRM_TIMEOUT", 0.01)
+    monkeypatch.setattr(link_module, "_COMMAND_TIMEOUT", 0.05)
+    monkeypatch.setattr(link_module, "_CONFIRM_TIMEOUT", 0.01)
     never = asyncio.Event()
 
     async def _never_comes_back(*_a: object, **_kw: object) -> None:
@@ -4539,8 +4672,8 @@ async def test_a_link_reported_lost_while_a_write_waits_is_hung_up_once(
     client that is no longer the coordinator's.
     """
     coordinator, client = _connected_coordinator(hass)
-    monkeypatch.setattr(coordinator_module, "_COMMAND_TIMEOUT", 0.05)
-    monkeypatch.setattr(coordinator_module, "_CONFIRM_TIMEOUT", 0.01)
+    monkeypatch.setattr(link_module, "_COMMAND_TIMEOUT", 0.05)
+    monkeypatch.setattr(link_module, "_CONFIRM_TIMEOUT", 0.01)
     never = asyncio.Event()
 
     async def _dropped_and_never_back(*_a: object, **_kw: object) -> None:
@@ -4605,7 +4738,7 @@ async def test_shutting_down_stops_watching_and_takes_no_new_link(
     coordinator._cancel_unavailable = cancels["unavailable"]
     coordinator._cancel_poll = cancels["poll"]
     dial = _dialling(coordinator, _fresh_client(), _fresh_client())
-    monkeypatch.setattr(coordinator_module, "_CONFIRM_TIMEOUT", 0.01)
+    monkeypatch.setattr(link_module, "_CONFIRM_TIMEOUT", 0.01)
 
     coordinator.async_shutdown()
     await hass.async_block_till_done()

@@ -217,8 +217,8 @@ async def test_a_wedged_bluez_does_not_cost_a_connection_per_command(
 ) -> None:
     """The same by the other door: a user pressing the button again and again."""
     coordinator, host = _wedged(hass, monkeypatch)
-    monkeypatch.setattr(coordinator_module, "_COMMAND_TIMEOUT", 0.2)
-    monkeypatch.setattr(coordinator_module, "_CONFIRM_TIMEOUT", 0.01)
+    monkeypatch.setattr(link_module, "_COMMAND_TIMEOUT", 0.2)
+    monkeypatch.setattr(link_module, "_CONFIRM_TIMEOUT", 0.01)
 
     for _ in range(10):
         with pytest.raises(Exception):  # noqa: B017, PT011 - any refusal will do
@@ -347,8 +347,8 @@ async def test_a_command_does_not_dial_over_a_client_that_will_not_close(
 ) -> None:
     """The bound is on every door. A button pressed ten times opens nothing."""
     coordinator, host = _wedged(hass, monkeypatch, behind=_MovedBackend)
-    monkeypatch.setattr(coordinator_module, "_COMMAND_TIMEOUT", 0.2)
-    monkeypatch.setattr(coordinator_module, "_CONFIRM_TIMEOUT", 0.01)
+    monkeypatch.setattr(link_module, "_COMMAND_TIMEOUT", 0.2)
+    monkeypatch.setattr(link_module, "_CONFIRM_TIMEOUT", 0.01)
     await _polls(coordinator, hass, 1)
     assert len(host.clients) == 1
 
@@ -369,8 +369,8 @@ async def test_a_command_refused_over_a_client_that_will_not_close_says_so(
     proxy" is the wrong thing to say, and a proxy the wrong thing to buy.
     """
     coordinator, host = _wedged(hass, monkeypatch, behind=_MovedBackend)
-    monkeypatch.setattr(coordinator_module, "_COMMAND_TIMEOUT", 0.2)
-    monkeypatch.setattr(coordinator_module, "_CONFIRM_TIMEOUT", 0.01)
+    monkeypatch.setattr(link_module, "_COMMAND_TIMEOUT", 0.2)
+    monkeypatch.setattr(link_module, "_CONFIRM_TIMEOUT", 0.01)
     await _polls(coordinator, hass, 1)
     assert coordinator._unreleased
 
@@ -399,8 +399,8 @@ async def test_what_would_not_close_is_not_dialled_over_by_the_next_coordinator(
     lamp.dials_through(host.dial)
     monkeypatch.setattr(link_module, "_HANG_UP_TIMEOUT", 0.01)
     monkeypatch.setattr(link_module, "_STACK_FAULT_AFTER", 10**6)
-    monkeypatch.setattr(coordinator_module, "_COMMAND_TIMEOUT", 0.2)
-    monkeypatch.setattr(coordinator_module, "_CONFIRM_TIMEOUT", 0.01)
+    monkeypatch.setattr(link_module, "_COMMAND_TIMEOUT", 0.2)
+    monkeypatch.setattr(link_module, "_CONFIRM_TIMEOUT", 0.01)
     first = lamp.coordinator(hass, unclosed=held)
     await _polls(first, hass, 1)
     assert held.clients
@@ -482,8 +482,8 @@ async def test_no_dial_gets_in_before_a_client_that_will_not_close_is_kept(
     lamp.dials_through(host.dial)
     monkeypatch.setattr(link_module, "_HANG_UP_TIMEOUT", 0.2)
     monkeypatch.setattr(link_module, "_STACK_FAULT_AFTER", 10**6)
-    monkeypatch.setattr(coordinator_module, "_COMMAND_TIMEOUT", 2.0)
-    monkeypatch.setattr(coordinator_module, "_CONFIRM_TIMEOUT", 0.01)
+    monkeypatch.setattr(link_module, "_COMMAND_TIMEOUT", 2.0)
+    monkeypatch.setattr(link_module, "_CONFIRM_TIMEOUT", 0.01)
     coordinator = lamp.coordinator(hass)
     coordinator._async_poll_reconnect(None)
     await asyncio.sleep(0.05)  # dialled, found to answer nothing, being hung up
@@ -518,8 +518,8 @@ async def test_no_dial_gets_in_across_a_reload_either(
     monkeypatch.setattr(link_module, "_HANG_UP_TIMEOUT", 0.2)
     monkeypatch.setattr(link_module, "_STOP_TIMEOUT", 0.02)
     monkeypatch.setattr(link_module, "_STACK_FAULT_AFTER", 10**6)
-    monkeypatch.setattr(coordinator_module, "_COMMAND_TIMEOUT", 2.0)
-    monkeypatch.setattr(coordinator_module, "_CONFIRM_TIMEOUT", 0.01)
+    monkeypatch.setattr(link_module, "_COMMAND_TIMEOUT", 2.0)
+    monkeypatch.setattr(link_module, "_CONFIRM_TIMEOUT", 0.01)
     first = lamp.coordinator(hass, unclosed=held)
     first._client = await host.dial()  # a link it holds when the reload comes
 
@@ -1868,8 +1868,8 @@ async def test_a_command_is_not_held_back_by_the_backoff(
 ) -> None:
     """The backoff is for the poll. Somebody pressing a button gets a dial."""
     coordinator, _host, clock, dialled = _on_a_clock(hass, monkeypatch)
-    monkeypatch.setattr(coordinator_module, "_COMMAND_TIMEOUT", 0.2)
-    monkeypatch.setattr(coordinator_module, "_CONFIRM_TIMEOUT", 0.01)
+    monkeypatch.setattr(link_module, "_COMMAND_TIMEOUT", 0.2)
+    monkeypatch.setattr(link_module, "_CONFIRM_TIMEOUT", 0.01)
     await _ticks(coordinator, hass, clock, 3)
     assert clock.now < coordinator._dial_not_before
     before = len(dialled)
