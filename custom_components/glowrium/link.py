@@ -10,10 +10,18 @@ is handed.
 
 What is said is the coordinator's, and it says it on a ``Turn``: in the
 first exchange and to a silent link, which are two callables it hands in,
-and in a command, which it hands to ``Link.send``. Some of the link's state
-is still public: the coordinator keeps the names it always had for it, for
-the tests and the bench that have not moved yet. What it imports from here
-by an underscored name keeps the name it had when it was the coordinator's.
+and in a command, which it hands to ``Link.send``. No client leaves this
+module, and that is the reason for its shape: three rules had each cost an
+incident - every GATT call made under its guard, a client let go of only
+through the hang-up, whoever lets go of a link telling the entities - and
+with no client outside none of them can be broken from there.
+
+Some of the link's state is public. Nothing of the integration outside this
+module reads it but through ``in_reach`` and ``diagnostics``; the tests of
+the link read it, to say what the link holds after what they did. The
+coordinator imports one underscored name from here, the interval of the
+poll: the timer that ticks is Home Assistant's, and so the coordinator's
+to set.
 """
 
 from __future__ import annotations

@@ -626,7 +626,13 @@ the **link** (`link.py`) - taking a client, holding it, deciding when the lamp
 is spoken to, letting go of it - and the **device** (`coordinator.py`), which
 knows what is said. No client leaves the link's module, and no error of the
 Bluetooth library does: a lost link is the link's own `LinkLostError` by the
-time the device half hears of it. The device half is handed a **turn**, on
+time the device half hears of it. That is the reason for the shape (ADR
+0008). Three rules had each cost an incident - every GATT call is made under
+the guard that turns a closed bus into a lost link, a client is let go of
+only through the hang-up that closes its bus, and whoever lets go of a link
+tells the entities - and with no client outside the module none of them can
+be broken from the other one, where before each was held by a test that
+read the source. The device half is handed a **turn**, on
 which it writes, reads and says that the lamp answered - inside the first
 exchange on a link (`_greet`) and the question for a silent one (`_probe`),
 which the link calls when it decides to, and inside a command, which it hands
@@ -1196,7 +1202,8 @@ Unit tests live in `tests/` and **never touch real Bluetooth**:
   fails or holds a write, a read, a subscription or a hang-up, is slow to be
   found, loses the link, and is silent once hung up - each of these only as
   far as a test asks of it. A test with a dial of its own — bleak's own
-  client over a stub bus — puts it behind the lamp's. `link_of` is the one
+  client over a stub bus — puts it behind the lamp's, or hands it to a link
+  built alone. `link_of` is the one
   door from a test to the link a coordinator holds, for what Home Assistant's
   watchers drive: the tick, an advertisement, a connect. Nothing replaces the
   library's connect, except the tests of the dial that is made of it - and
@@ -1211,8 +1218,10 @@ Unit tests live in `tests/` and **never touch real Bluetooth**:
   tests that read the source: every GATT call is the link's and made under
   its guard; nothing outside the link's module connects a client, hangs one
   up or names what the Bluetooth library raises; the coordinator names no
-  client and reaches the link for what it offers and nothing else; and
+  client and reaches the link for what it offers and nothing else;
   hanging a link up and telling the entities stand together in one method.
+  And one test reads the tests: none gives a link its client by hand - a
+  link in a test is taken as the integration takes one.
 - `test_init.py` — setup and unload of the config entry, the entities each
   platform produces and the command each control ends in, what is restored
   after a restart, what the lamp says about itself reaching the device
@@ -1234,6 +1243,28 @@ Unit tests live in `tests/` and **never touch real Bluetooth**:
   says when that is not what is installed, that the environment the tests
   are running in is such a one, and that the workflows and the dependabot
   configuration agree with it.
+
+### What the tests reach that is not public
+
+The entities cross the coordinator's public interface and nothing else. The
+tests cross it too - a command, a property an entity reads - and reach the
+link a coordinator holds through one door, `link_of`, for what Home
+Assistant's watchers drive. What they reach past that is listed here, each
+with its reason. A reach that is not on the list is a test to be moved.
+
+| Reached | Why |
+| --- | --- |
+| `_ingest`, `_mirror`, `_new_mirror` | The mirror's seam (ADR 0013). A frame is handed to the one intake, as the link hands it one; a test that needs the lamp to have said something says it through the mirror's own two ways in, never by assignment; a test that wants nothing heard is given a new mirror, built as the coordinator builds its own. |
+| `_request_state`, `_async_read_state`, `_async_read_device_info`, `_async_activate_if_needed`, `_async_activate`, `_async_sync_clock_if_needed` | The steps of the first exchange, each called on a turn over the scripted lamp's link (`turn_over`). The exchange as a whole is run by the link, through its connect; a step is run alone where the test is of that step. |
+| `_state_request_failures`, `_state_request_muted`, `_state_request_muted_until`, `_state_request_given_up` | A lamp that has refused the state request before - set down, where refusing three times over would be the test of something else. |
+| `_activation_checked` | A lamp taken for activated, so that the bring-up does not run: in tests of other things, and on the bench always. |
+| `_desired_ramp`, `_writes_sent` | What was remembered of the ramp, and how many commands were written: neither has a reader but the coordinator's next step and the diagnostics. |
+| `_entry`, `_spawn`, `_kept_tasks` | Where background work runs: on the config entry, or kept by the coordinator itself when there is no Home Assistant. |
+| `_async_notify_listeners`, `_async_write`, `_cancel_bluetooth`, `_cancel_unavailable`, `_cancel_poll` | The telling of the entities and the three watchers, where a test counts the tellings or sees that a watcher was let go of. |
+| `_link` | The door itself: `link_of` for the tests, and the bench's own - each held to that one name by a test. |
+| The ceilings and counts of the link and of the device half: `link._CONFIRM_TIMEOUT` and thirteen more | Shortened, so that the test of a deadline takes milliseconds; or read, so that a test moves the clock by exactly that much. |
+| `link._reason`, `mirror._for_the_log`, `mirror._LOGGER` | Two functions with tests of their own - what a log line says of an error that has no text, and how a frame is printed - and the name the mirror logs under. |
+| Fields of a `Link` and of the holder of what would not close: `client`, `lost`, `last_answer`, `stuck_hang_ups`, `dial_not_before`, `unclosed`, `backends`, `lock` | Read, to say what the link holds after what the test did. The lock is taken where a test stands in for a command at work, and by the one helper that takes a link bare (`taken_bare`), since `Link.open` is for a caller that holds it. Set in two tests only: that of the diagnostics' link section, which moves each field on its own, since two states that differ in everything cannot tell a field from a copy of its neighbour; and one that sets a count of unanswered hang-ups it would take days of ticks to reach. No test gives a link its client - a link is taken through a command, `connect` or `open` - and a test reads the tests to hold that. |
 
 Run the checks:
 
