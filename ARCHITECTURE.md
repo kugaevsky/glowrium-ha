@@ -997,7 +997,8 @@ Note that `BleakOutOfConnectionSlotsError` is the usual symptom of a weak
 link, *not* of exhausted slots — `habluetooth` reports it whenever no connection
 path scores well enough, which a device at RSSI −85 or worse never does.
 
-Mode-dependent entities (Lighting mode, Ramp, Schedule controls) gate their own
+Mode-dependent entities (Lighting mode, Ramp, Schedule controls) declare the
+operating mode they are for (`_only_in_mode`), and the base entity gates their
 availability further via `coordinator.mode_allows(...)`, which returns `True` when
 the operating mode matches **or is still unknown** — so they don't collapse to
 `unavailable` before the first state arrives.

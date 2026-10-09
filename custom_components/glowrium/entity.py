@@ -19,6 +19,12 @@ class GlowriumEntity(Entity):
 
     _attr_has_entity_name = True
     _attr_should_poll = False
+    # The operating mode an entity is for, if it is for one: the lighting mode
+    # and the ramp are of the circadian curve, the schedule's times, brightness
+    # and fade are of the schedule. Such an entity is unavailable while the lamp
+    # is in another mode, and available while its mode is not known yet, so
+    # that nothing collapses to unavailable before the first state arrives.
+    _only_in_mode: str | None = None
 
     def __init__(self, coordinator: GlowriumCoordinator) -> None:
         """Attach the entity to the coordinator's device."""
@@ -54,8 +60,11 @@ class GlowriumEntity(Entity):
 
     @property
     def available(self) -> bool:
-        """Return True while the device is present (advertising) or connected."""
-        return self._coordinator.available
+        """Return True while the lamp is in reach and in the entity's mode, if any."""
+        if not self._coordinator.available:
+            return False
+        mode = self._only_in_mode
+        return mode is None or self._coordinator.mode_allows(mode)
 
 
 class GlowriumSettingEntity(GlowriumEntity, RestoreEntity):

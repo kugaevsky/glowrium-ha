@@ -38,6 +38,7 @@ class GlowriumRampNumber(GlowriumSettingEntity, NumberEntity):
 
     _attr_translation_key = "ramp"
     _attr_entity_category = EntityCategory.CONFIG
+    _only_in_mode = MODE_CIRCADIAN  # the ramp is the circadian fade's
     _attr_native_min_value = 0
     _attr_native_max_value = 90
     _attr_native_step = 1
@@ -48,11 +49,6 @@ class GlowriumRampNumber(GlowriumSettingEntity, NumberEntity):
         """Initialize the ramp-time number."""
         super().__init__(coordinator)
         self._attr_unique_id = f"{coordinator.address}_ramp"
-
-    @property
-    def available(self) -> bool:
-        """The ramp only applies to the Circadian sunrise/sunset fade."""
-        return super().available and self._coordinator.mode_allows(MODE_CIRCADIAN)
 
     @property
     def native_value(self) -> float | None:
@@ -69,11 +65,7 @@ class _GlowriumTimerNumber(GlowriumSettingEntity, NumberEntity):
     """Base for schedule numbers - only used in Schedule mode."""
 
     _attr_entity_category = EntityCategory.CONFIG
-
-    @property
-    def available(self) -> bool:
-        """Schedule settings only apply in Schedule mode."""
-        return super().available and self._coordinator.mode_allows(MODE_SCHEDULE)
+    _only_in_mode = MODE_SCHEDULE  # schedule settings only apply in Schedule mode
 
 
 class GlowriumTimerGradual(_GlowriumTimerNumber):

@@ -33,11 +33,7 @@ class _GlowriumTimerTime(GlowriumSettingEntity, TimeEntity):
     """Base for the schedule start/end times - only used in Schedule mode."""
 
     _attr_entity_category = EntityCategory.CONFIG
-
-    @property
-    def available(self) -> bool:
-        """Schedule times only apply in Schedule mode."""
-        return super().available and self._coordinator.mode_allows(MODE_SCHEDULE)
+    _only_in_mode = MODE_SCHEDULE  # schedule times only apply in Schedule mode
 
 
 class GlowriumTimerStart(_GlowriumTimerTime):

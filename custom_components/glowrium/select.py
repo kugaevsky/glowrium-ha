@@ -95,6 +95,7 @@ class GlowriumLightingModeSelect(GlowriumSettingEntity, SelectEntity):
 
     _attr_translation_key = "lighting_mode"
     _attr_entity_category = EntityCategory.CONFIG
+    _only_in_mode = MODE_CIRCADIAN  # lighting modes only apply in Circadian mode
 
     def __init__(self, coordinator: GlowriumCoordinator) -> None:
         """Initialize the lighting-mode selector."""
@@ -121,11 +122,6 @@ class GlowriumLightingModeSelect(GlowriumSettingEntity, SelectEntity):
     def options(self) -> list[str]:
         """Return the presets this model has."""
         return list(self._modes)
-
-    @property
-    def available(self) -> bool:
-        """Lighting modes only apply while in Circadian mode."""
-        return super().available and self._coordinator.mode_allows(MODE_CIRCADIAN)
 
     @property
     def current_option(self) -> str | None:

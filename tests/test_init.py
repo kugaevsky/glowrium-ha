@@ -15,6 +15,7 @@ from homeassistant.const import (
     CONF_ADDRESS,
     CONF_MODEL_ID,
     EVENT_HOMEASSISTANT_STOP,
+    STATE_UNAVAILABLE,
     EntityCategory,
 )
 from homeassistant.core import (
@@ -53,14 +54,24 @@ from custom_components.glowrium.const import (
     KEY_RAMP,
     KEY_SCHEDULE,
     KEY_TIMER,
+    MODE_CIRCADIAN,
+    MODE_SCHEDULE,
+    OPERATING_MODES,
 )
 from custom_components.glowrium.coordinator import (
     GlowriumCoordinator,
     _parse_device_info as _parsed,
 )
+from custom_components.glowrium.entity import GlowriumEntity
 from custom_components.glowrium.light import GlowriumLight
 from custom_components.glowrium.models import GlowriumModel
+from custom_components.glowrium.number import (
+    GlowriumRampNumber,
+    GlowriumTimerBrightness,
+    GlowriumTimerGradual,
+)
 from custom_components.glowrium.select import GlowriumLightingModeSelect
+from custom_components.glowrium.time import GlowriumTimerEnd, GlowriumTimerStart
 
 from .lamp import ScriptedLamp, in_range, link_of, turn_over
 
@@ -426,6 +437,62 @@ async def test_a_setting_registered_before_it_was_one_becomes_one(
     await _setup_without_bluetooth(hass, entry)
 
     assert _registered(hass, domain, unique).entity_category is EntityCategory.CONFIG
+
+
+def _in_mode(mode: str) -> dict[int, bool]:
+    """Return the two mode flags as the lamp reports them in ``mode``."""
+    return {KEY_CIRCADIAN: mode == MODE_CIRCADIAN, KEY_SCHEDULE: mode == MODE_SCHEDULE}
+
+
+_OF_ONE_MODE = [
+    ("select", "lighting_mode", GlowriumLightingModeSelect, MODE_CIRCADIAN),
+    ("number", "ramp", GlowriumRampNumber, MODE_CIRCADIAN),
+    ("number", "schedule_gradual", GlowriumTimerGradual, MODE_SCHEDULE),
+    ("number", "schedule_brightness", GlowriumTimerBrightness, MODE_SCHEDULE),
+    ("time", "schedule_start", GlowriumTimerStart, MODE_SCHEDULE),
+    ("time", "schedule_end", GlowriumTimerEnd, MODE_SCHEDULE),
+]
+
+
+@pytest.mark.parametrize(
+    ("domain", "unique", "cls", "its_mode"),
+    _OF_ONE_MODE,
+    ids=[unique for _domain, unique, _cls, _mode in _OF_ONE_MODE],
+)
+async def test_an_entity_of_one_mode_is_unavailable_in_another(
+    hass: HomeAssistant,
+    domain: str,
+    unique: str,
+    cls: type[GlowriumEntity],
+    its_mode: str,
+) -> None:
+    """An entity of one operating mode hides in another, and in none while unknown.
+
+    The ramp and the lighting mode are of the circadian curve, the rest of
+    the schedule. Each is unavailable while the lamp is in another mode and
+    available while the mode is not yet known, so that a lamp not yet read
+    keeps its page whole; out of reach it is unavailable whatever the mode.
+    Which mode an entity is for is declared on it and judged in one place,
+    the base entity's: no platform writes "available, and the mode allows
+    it" out for itself, which four did, each in its own words.
+    """
+    assert cls.available is GlowriumEntity.available  # judged in the one place
+    entry = await _setup_without_bluetooth(hass)
+    coordinator = entry.runtime_data
+    entity_id = _registered(hass, domain, unique).entity_id
+
+    def _unavailable() -> bool:
+        return hass.states.get(entity_id).state == STATE_UNAVAILABLE
+
+    assert not _unavailable()  # the mode not known yet: nothing hides
+    for mode in OPERATING_MODES:
+        coordinator._ingest(cbor.encode(_in_mode(mode)))
+        await hass.async_block_till_done()
+        assert _unavailable() is (mode != its_mode), mode
+    coordinator._ingest(cbor.encode(_in_mode(its_mode)))
+    link_of(coordinator).advertising(False)  # out of reach, in its own mode
+    await hass.async_block_till_done()
+    assert _unavailable()
 
 
 async def test_the_coordinate_sensors_start_disabled(hass: HomeAssistant) -> None:
