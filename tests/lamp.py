@@ -20,7 +20,7 @@ from bleak.exc import BleakError
 from homeassistant.core import HomeAssistant
 
 from custom_components.glowrium.coordinator import GlowriumCoordinator
-from custom_components.glowrium.link import Turn, Unclosed
+from custom_components.glowrium.link import Link, Turn, Unclosed
 
 ADDRESS = "AA:BB:CC:DD:EE:FF"
 
@@ -54,6 +54,16 @@ class LampLink:
         """Take a write, and note it on the lamp."""
         self._gone_is_an_error()
         self._lamp.written.append((uuid, bytes(data)))
+
+    async def read_gatt_char(self, _uuid: str) -> bytearray:
+        """Read a characteristic: nothing, as of a lamp that cannot be read.
+
+        The first exchange on a link ends with the device-info read, and the
+        device half carries on without it when it fails - as it does on a
+        link that is gone, which is what the error says.
+        """
+        self._gone_is_an_error()
+        raise BleakError("Not connected")
 
     async def disconnect(self) -> None:
         """Hang up. The lamp says nothing more on this link."""
@@ -136,6 +146,18 @@ class ScriptedLamp:
             link.lose()
 
 
+def link_of(coordinator: GlowriumCoordinator) -> Link:
+    """Return the link ``coordinator`` speaks through: the tests' one door to it.
+
+    The link's own interface - connected, in reach, the tick, an
+    advertisement, a connect - is what Home Assistant's watchers drive. A test
+    drives it through here instead of standing up the Bluetooth manager and
+    the timer. This is the one reach into the coordinator the tests keep, and
+    this is its reason.
+    """
+    return coordinator._link
+
+
 def turn_over(coordinator: GlowriumCoordinator, client: Any) -> Turn:
     """Return a turn at the lamp on ``client``, for a test that built one by hand.
 
@@ -143,7 +165,7 @@ def turn_over(coordinator: GlowriumCoordinator, client: Any) -> Turn:
     it holds. A test that calls one of them directly on a client of its own
     making has the same made here.
     """
-    return Turn(coordinator._link, client)
+    return Turn(link_of(coordinator), client)
 
 
 def lamp_of(coordinator: GlowriumCoordinator) -> ScriptedLamp:

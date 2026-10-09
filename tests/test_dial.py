@@ -22,10 +22,15 @@ from custom_components.glowrium import (
     coordinator as coordinator_module,
     link as link_module,
 )
-from custom_components.glowrium.const import KEY_BRIGHTNESS, KEY_POWER, WRITE_UUID
+from custom_components.glowrium.const import (
+    INFO_UUID,
+    KEY_BRIGHTNESS,
+    KEY_POWER,
+    WRITE_UUID,
+)
 from custom_components.glowrium.coordinator import GlowriumCoordinator
 
-from .lamp import ADDRESS, ScriptedLamp, lamp_of
+from .lamp import ADDRESS, ScriptedLamp, lamp_of, link_of
 
 
 async def test_the_coordinator_dials_through_the_dial_it_is_handed(
@@ -153,6 +158,43 @@ async def test_a_link_that_was_hung_up_takes_no_write_either() -> None:
     with pytest.raises(BleakError, match="Not connected"):
         await link.start_notify("any", MagicMock())
     assert lamp.written == []
+
+
+async def test_a_lamp_given_nothing_to_read_fails_the_read_as_a_lost_link() -> None:
+    """A read of the scripted lamp fails as a lamp that cannot be read does.
+
+    The first exchange on a link ends with the device-info read, so a lamp
+    that is dialled and greeted is read. One given nothing to read answers
+    "Not connected" - the library's error for a link that is gone - and the
+    device half carries on without the device info, as it does on a lamp
+    whose read fails.
+    """
+    lamp = ScriptedLamp()
+    link = await lamp.dial(MagicMock())
+
+    with pytest.raises(BleakError, match="Not connected"):
+        await link.read_gatt_char(INFO_UUID)
+
+
+async def test_a_test_takes_the_coordinators_link_through_one_door(
+    hass: HomeAssistant,
+) -> None:
+    """``link_of`` is the one place a test reaches the link the coordinator holds.
+
+    The link's own interface - whether it is connected, in reach, the tick,
+    an advertisement - is what Home Assistant's watchers drive; a test drives
+    it through this door instead of standing up the Bluetooth manager and
+    the timer, and the door is the one reach into the coordinator the tests
+    keep, with this as its reason.
+    """
+    lamp = ScriptedLamp()
+    coordinator = lamp.coordinator(hass)
+    assert not link_of(coordinator).connected
+
+    await coordinator.async_set_power(True)
+
+    assert link_of(coordinator).connected
+    assert link_of(coordinator).in_reach is coordinator.available
 
 
 def test_a_helper_given_the_coordinator_alone_finds_its_lamp(
