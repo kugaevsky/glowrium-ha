@@ -199,7 +199,7 @@ class GlowriumCoordinator:
             address,
             dial or dial_by_bluetooth(self._ble_device, address, name),
             notify_uuid=NOTIFY_UUID,
-            heard=self._heard,
+            heard=self._on_notify,
             greet=self._greet,
             probe=self._probe,
             reach_changed=self._async_reach_changed,
@@ -288,11 +288,6 @@ class GlowriumCoordinator:
         return self.name.removesuffix(f" ({self.address})")
 
     # --- What the link is handed ----------------------------------------------
-
-    @callback
-    def _heard(self, characteristic: Any, data: bytearray) -> None:
-        """Take a frame the lamp sent - through the name a test may replace."""
-        self._on_notify(characteristic, data)
 
     async def _greet(self, turn: Turn) -> None:
         """Make the first exchange on a link: what the lamp is asked and told.
@@ -915,6 +910,7 @@ class GlowriumCoordinator:
 
     @callback
     def _on_notify(self, _characteristic: Any, data: bytearray) -> None:
+        """Take a frame the lamp notified: what the link is handed to call."""
         self._ingest(bytes(data))
 
     async def _write_on(self, turn: Turn, payload: dict[int, Any]) -> None:
