@@ -402,6 +402,15 @@ class Turn:
         # Whether the device half has called the lamp answering (see answered).
         self.got_an_answer = False
 
+    @property
+    def up(self) -> bool:
+        """Whether the link still holds the client this turn is on, connected.
+
+        For an exchange that waits for the lamp to say something: there is
+        nothing left to wait for on a link that has gone.
+        """
+        return self._link.client is self._client and self._client.is_connected
+
     async def write(self, uuid: str, frame: bytes) -> None:
         """Write ``frame`` and wait for the lamp to acknowledge it.
 
@@ -533,8 +542,9 @@ class Link:
         the question for one that has gone silent: each is given a turn, and
         says on it whether the lamp answered (see ``Talk``). ``reach_changed``
         is called wherever the entities have something to learn of the link:
-        it was let go of because of what it did, the first exchange was made
-        on it, the lamp began or stopped advertising. ``stack_fault`` is given
+        a client was taken, it was let go of because of what it did, the
+        first exchange was made on it, the lamp began or stopped advertising.
+        ``stack_fault`` is given
         the count of hang-ups left unanswered when a run of them is called a
         fault, and None when the lamp answers again. ``spawn`` runs the
         background work - a connect, a first exchange, a probe - for no longer
@@ -816,9 +826,12 @@ class Link:
                 # Only now. The link let go of this client when the write
                 # failed, but its notifications are the channel the vouching
                 # above listens on, so it had to stay up until the device had
-                # its chance to answer.
+                # its chance to answer. Hung up, and told like any other link
+                # that is let go of: whoever handed the command over says how
+                # it ended, but that the lamp may be out of reach now is said
+                # here, whoever that was.
                 if failed is not None:
-                    self.hang_up(failed)
+                    self._drop(failed)
 
     async def _vouched(self, vouch: Callable[[], Awaitable[bool]]) -> bool:
         """Ask whether the lamp did what a failed write told it, and not for long."""
@@ -856,11 +869,11 @@ class Link:
         if await self._greet_on(client, "%s: connected and primed"):
             self._reach_changed()
 
-    async def _greet_on(self, client: BleakClientWithServiceCache, primed: str) -> bool:
+    async def _greet_on(self, client: BleakClientWithServiceCache, line: str) -> bool:
         """Make the first exchange on ``client``; return whether the lamp answered.
 
-        What is said in it is the device half's (``greet``). ``primed`` is
-        the line for the log once the device half has called the lamp
+        What is said in it is the device half's (``greet``). ``line`` is
+        what the log says once the device half has called the lamp
         answering: from then on ``client`` is one the first exchange has been
         made on, whatever comes after - and what comes after is the read that
         the link does not outlive on BlueZ.
@@ -872,7 +885,7 @@ class Link:
 
         def _answered() -> None:
             self.primed = client
-            _LOGGER.debug(primed, self.address)
+            _LOGGER.debug(line, self.address)
 
         turn = Turn(self, client, _answered)
         await self._greet(turn)
@@ -1049,9 +1062,8 @@ class Link:
         """Hang ``client`` up, and say that the lamp's reach may have changed.
 
         For a link let go of because of what it did: lost, answering nothing,
-        silent for too long. A stop says nothing (see ``let_go`` and
-        ``shut_down``), and a command tells the entities itself, once it
-        knows how it ended.
+        silent for too long, or given up on by a command. A stop says nothing
+        (see ``let_go`` and ``shut_down``).
         """
         self.hang_up(client)
         self._reach_changed()
@@ -1072,6 +1084,29 @@ class Link:
                 "not close; not dialling over it",
                 "link_not_released",
             )
+
+    def begin(self, present: bool) -> None:
+        """Take what is known of the lamp as the watching of it begins.
+
+        Whether it is advertising at that moment. Nobody is told and nothing
+        is dialled for it: the first connect is whoever watches the lamp's
+        next step, and the entities are not there yet.
+        """
+        self.present = present
+
+    def halt(self) -> None:
+        """Take no new client from here on, and have no episode left to call over.
+
+        The first half of a stop, said before anything is let go of. A
+        command may be in flight and outlast it; from here on it is refused a
+        new link, so that what is let go of next is the last client this link
+        will ever hold. And a link that is no longer watched cannot say when
+        the stack lets go: an episode it announced is not its to call over
+        any more - the repair standing under the entry from here on is its
+        successor's.
+        """
+        self.stopped = True
+        self.fault_announced = False
 
     def shut_down(self) -> None:
         """Hang up as Home Assistant stops: at once, and without waiting.
@@ -1107,8 +1142,8 @@ class Link:
     async def let_go(self) -> None:
         """Let go of the client, if one is held: the letting-go half of a stop.
 
-        The coordinator has stopped watching the lamp before it calls this,
-        and has set ``stopped``.
+        Whoever watched the lamp has stopped watching it before this is
+        called, and has said so (``halt``).
         """
         if self.client is None:
             # Nothing is held, and from here on nothing can be: a command still

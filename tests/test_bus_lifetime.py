@@ -166,12 +166,14 @@ async def _polls(
 
 
 def _a_link(
-    dial: Any = None, unclosed: link_module.Unclosed | None = None
+    dial: Any = None,
+    unclosed: link_module.Unclosed | None = None,
+    reach_changed: Any = None,
 ) -> link_module.Link:
     """Return a link with no coordinator and no Home Assistant behind it.
 
-    What it is handed does nothing, but for a dial or a holder of what would
-    not close that a test hands it.
+    What it is handed does nothing, but for a dial, a holder of what would
+    not close or something to tell of its reach that a test hands it.
     """
 
     def _on_the_loop(coro: Any, name: str) -> asyncio.Task[None]:
@@ -187,7 +189,7 @@ def _a_link(
         heard=lambda _characteristic, _data: None,
         greet=_says_nothing,
         probe=_says_nothing,
-        reach_changed=lambda: None,
+        reach_changed=reach_changed or (lambda: None),
         stack_fault=lambda _count: None,
         spawn=_on_the_loop,
         run_lasting=_on_the_loop,
@@ -1231,6 +1233,26 @@ def test_only_the_link_connects_hangs_up_or_knows_what_the_library_raises() -> N
     assert found == []
 
 
+# What the link offers the device half. A name added here is one more thing
+# the coordinator knows of the link; the client and the lock are not on it.
+_OF_THE_LINK = frozenset(
+    {
+        "advertising",
+        "begin",
+        "diagnostics",
+        "halt",
+        "in_reach",
+        "initial_connect",
+        "let_go",
+        "log_reach",
+        "note_answer",
+        "send",
+        "shut_down",
+        "tick",
+    }
+)
+
+
 def test_the_coordinator_goes_by_none_of_the_names_it_keeps_for_the_tests() -> None:
     """What the coordinator kept of the link's is kept for the tests and the bench.
 
@@ -1274,18 +1296,39 @@ def test_the_coordinator_goes_by_none_of_the_names_it_keeps_for_the_tests() -> N
         if isinstance(node, ast.Name) and node.id == "BleakClientWithServiceCache"
     )
     reaches_for = sorted(
-        f"{node.lineno} _link.{node.attr}"
+        f"{node.lineno} {ast.unparse(node)}"
         for node in outside
         if isinstance(node, ast.Attribute)
-        and node.attr in ("client", "lock", "backends", "unclosed")
-        and isinstance(node.value, ast.Attribute)
-        and node.value.attr == "_link"
+        and (
+            # Of the link, what it offers the device half and nothing else.
+            (
+                isinstance(node.value, ast.Attribute)
+                and node.value.attr == "_link"
+                and node.attr not in _OF_THE_LINK
+            )
+            # Of a turn, nothing that is the turn's own.
+            or (
+                isinstance(node.value, ast.Name)
+                and node.value.id == "turn"
+                and node.attr.startswith("_")
+            )
+        )
     )
     assert "_client" in kept  # the marks are where they were
     assert "_lock" in kept
     assert goes_by == []
     assert names_a_client == []
     assert reaches_for == []
+    # And nothing else in the integration reaches the link at all.
+    package = Path(coordinator_module.__file__).parent
+    elsewhere = [
+        f"{source.name}:{node.lineno}"
+        for source in sorted(package.rglob("*.py"))
+        if source.name not in ("link.py", "coordinator.py")
+        for node in ast.walk(ast.parse(source.read_text(encoding="utf-8")))
+        if isinstance(node, ast.Attribute) and node.attr == "_link"
+    ]
+    assert elsewhere == []
 
 
 def test_a_link_is_hung_up_and_the_entities_told_in_one_place() -> None:
@@ -2330,6 +2373,58 @@ async def test_a_read_alone_is_not_taken_for_the_lamp_answering(
     await _tick(coordinator, hass)
 
     assert _asked(client) == 1  # silent for five minutes, read or not
+
+
+async def test_a_write_that_lost_its_link_puts_nothing_in_doubt_by_itself(
+    hass: HomeAssistant, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A link is put in doubt where the device half says so, and nowhere else.
+
+    It says so in one place, for a state request lost without a refusal; the
+    tick then lets go of a link the stack never reported dropped. Doing the
+    same for every lost write was proposed with the split (#21), and is not
+    done unless it is named there first.
+    """
+    coordinator, client, _clock = _holding(hass, monkeypatch)
+    client.write_gatt_char = AsyncMock(side_effect=BleakError("Not connected"))
+
+    with pytest.raises(link_module.LinkLostError):
+        await turn_over(coordinator, client).write(WRITE_UUID, b"\xa0")
+
+    assert coordinator._lost is None
+
+
+async def test_a_command_that_gave_up_on_its_link_is_told_of_by_the_link(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Where a command lets go of a client for good, the link tells of it.
+
+    As it does everywhere else it lets go of one. Whoever handed the command
+    over tells the entities how it ended as well; that the lamp may be out of
+    reach now is the link's to say, whoever that was.
+    """
+    monkeypatch.setattr(link_module, "_CONFIRM_TIMEOUT", 0.01)
+    client = AsyncMock()
+    client.is_connected = True
+    client._backend = None
+    client.write_gatt_char = AsyncMock(side_effect=BleakError("down"))
+    told: list[bool] = []
+    link = _a_link(
+        dial=AsyncMock(return_value=client),
+        reach_changed=lambda: told.append(link.connected),
+    )
+
+    async def _say(turn: link_module.Turn) -> None:
+        await turn.write(WRITE_UUID, b"\xa0")
+
+    async def _no() -> bool:
+        return False
+
+    with pytest.raises(link_module.LinkLostError):
+        await link.send(_say, vouch=_no)
+
+    assert told[-1] is False  # the last they heard: there is no link
+    assert link.client is None
 
 
 async def test_a_refusal_is_not_taken_for_a_link_that_is_going(

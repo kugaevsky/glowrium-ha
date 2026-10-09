@@ -20,6 +20,15 @@ All notable changes to this project are documented here. The format is based on
   dialled again: the stack letting go does - the repair says how - or a
   restart of Home Assistant
   ([#21](https://github.com/kugaevsky/glowrium-ha/issues/21)).
+- **A command that never reached the lamp is not reported as delivered.**
+  A command whose write failed is believed after all if the lamp then
+  reports what it set. That was meant for a command that had been written.
+  One that never got a connection was checked the same way whenever
+  something else had been written to the lamp while it waited - the clock,
+  on connecting - and if the lamp had just reported the state the command
+  asked for, the command was called delivered; otherwise it waited two
+  seconds more before failing. It fails at once now
+  ([#21](https://github.com/kugaevsky/glowrium-ha/issues/21)).
 
 ### Changed
 
@@ -42,8 +51,10 @@ All notable changes to this project are documented here. The format is based on
   connection the entities were told once the first exchange on it was over -
   on a weak link, seconds later - or when the command that made it had
   finished. A lamp connected while it was not heard advertising read as
-  unavailable for that long. They are told at the moment the connection is
-  made ([#21](https://github.com/kugaevsky/glowrium-ha/issues/21)).
+  unavailable for that long - a rare case: the lamp is found for a connect
+  by the same advertisements. They are told at the moment the connection is
+  made, and the log's `is back in reach` line is written then too
+  ([#21](https://github.com/kugaevsky/glowrium-ha/issues/21)).
 
 ## [0.3.1] - 2026-10-08
 

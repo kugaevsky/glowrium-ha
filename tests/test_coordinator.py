@@ -1976,6 +1976,30 @@ async def test_a_command_connect_reads_nothing(hass: HomeAssistant) -> None:
     client.write_gatt_char.assert_awaited_once()
 
 
+async def test_the_wait_for_the_activation_flag_ends_with_the_link(
+    hass: HomeAssistant,
+) -> None:
+    """A lamp that has not said whether it is activated is waited for, briefly.
+
+    For as long as there is a link to hear it on. A link that goes while the
+    exchange waits leaves nothing to wait for - and nothing is written blind
+    to a lamp whose flag was never read.
+    """
+    coordinator, client = _connected_coordinator(hass)
+    waiting = asyncio.create_task(
+        coordinator._async_activate_if_needed(turn_over(coordinator, client))
+    )
+    await asyncio.sleep(0)
+    assert not waiting.done()  # the flag has not come, and it waits
+
+    client.is_connected = False  # the link goes
+    async with asyncio.timeout(1):  # and the wait with it, at its next look
+        await waiting
+
+    assert coordinator._activation_checked is False
+    client.write_gatt_char.assert_not_awaited()
+
+
 async def test_the_bring_up_is_attempted_once_per_session(
     hass: HomeAssistant,
 ) -> None:
@@ -2553,6 +2577,58 @@ async def test_a_report_from_before_the_command_does_not_vouch_for_it(
 
     with pytest.raises(HomeAssistantError):
         await coordinator.async_set_power(False)
+
+
+async def test_a_command_the_lamp_vouches_for_does_not_wait_out_the_ceiling(
+    hass: HomeAssistant, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The wait for the lamp's word ends with the word.
+
+    The ceiling is for a lamp that says nothing. One that reported what the
+    command set before the write had even failed is believed at once - a
+    wait that always ran its full length was proposed with the split (#21),
+    and is not made unless it is named there first.
+    """
+    coordinator, client = _connected_coordinator(hass)
+    monkeypatch.setattr(link_module, "_CONFIRM_TIMEOUT", 30)
+
+    async def _acted_on_and_not_acknowledged(*_args: object, **_kw: object) -> None:
+        coordinator._ingest(cbor.encode({KEY_POWER: True}))
+        raise BleakError("Unlikely Error")
+
+    client.write_gatt_char = AsyncMock(side_effect=_acted_on_and_not_acknowledged)
+
+    async with asyncio.timeout(2):
+        await coordinator.async_set_power(True)  # must not raise, and not wait
+
+
+async def test_what_else_was_written_meanwhile_vouches_for_no_command(
+    hass: HomeAssistant, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A command that never reached the lamp has nothing to be vouched for.
+
+    While it waited for the lock, a first exchange wrote the clock, and the
+    lamp reported the very state the command asks for. Then the link was
+    lost and the command got none. It used to be asked after all the same,
+    because a write had been made since it was taken up - somebody else's -
+    and was called delivered on the strength of that report: a command the
+    lamp never received. It fails, and at once.
+    """
+    coordinator, client = _connected_coordinator(hass)
+    monkeypatch.setattr(link_module, "_CONFIRM_TIMEOUT", 30)
+    await coordinator._lock.acquire()  # a first exchange is under way
+    command = asyncio.create_task(coordinator.async_set_power(True))
+    await asyncio.sleep(0)  # taken up, and waiting for the lock
+
+    await coordinator._write_raw({KEY_INDICATOR: True})  # the exchange writes
+    coordinator._ingest(cbor.encode({KEY_POWER: True}))  # and the lamp reports
+    coordinator._client = None  # then the link is lost
+    coordinator._lock.release()
+
+    async with asyncio.timeout(2):
+        with pytest.raises(HomeAssistantError):
+            await command
+    client.write_gatt_char.assert_awaited_once()  # the exchange's, and no other
 
 
 async def test_a_command_that_failed_is_not_echoed_into_the_mirror(
@@ -4018,6 +4094,55 @@ async def test_a_deadline_that_falls_on_a_held_link_leaves_it_and_calls_it_held(
 
     assert coordinator._primed_client is client
     dial.assert_awaited_once()  # the same link, primed; nothing was redialled
+
+
+@pytest.mark.parametrize(("connect", "named"), _BACKGROUND_CONNECTS)
+@pytest.mark.parametrize(
+    "ended_by", ["the link's own no", "a write that lost its link", "a refusal"]
+)
+async def test_a_background_connect_ends_in_the_log_whatever_ended_it(
+    hass: HomeAssistant,
+    caplog: pytest.LogCaptureFixture,
+    connect: str,
+    named: str,
+    ended_by: str,
+) -> None:
+    """Nothing the link itself raises gets out of a connect made in the background.
+
+    Its errors are its own since the split (#21), no longer the Bluetooth
+    library's, and a background connect is a task nobody waits for: an error
+    that got out of it would be an ERROR in the log - "Task exception was
+    never retrieved" - for a lamp that had only gone out of reach. It ends
+    as a line of its own whichever of them ended it: the link's "no" to a
+    new client, a write of the first exchange that lost its link, or one the
+    lamp refused.
+    """
+    coordinator, _ = _connected_coordinator(hass)
+    coordinator._client = None
+    client = _fresh_client()
+    if ended_by == "the link's own no":
+        coordinator._unreleased.add(object())  # a client that would not close
+    else:
+        failure = BleakError(
+            "Not connected"
+            if ended_by == "a write that lost its link"
+            else "Insufficient authorization (8)"
+        )
+        # A lamp that reports itself not activated: the exchange has to write.
+        answer = _answers(coordinator, client, {KEY_ACTIVATED: False}).side_effect
+
+        async def _write(uuid: str, payload: bytes, **kwargs: object) -> None:
+            if uuid != NOTIFY_UUID:
+                raise failure
+            await answer(uuid, payload, **kwargs)
+
+        client.write_gatt_char = AsyncMock(side_effect=_write)
+    _dialling(coordinator, client)
+    caplog.set_level(logging.DEBUG)
+
+    await getattr(coordinator, connect)()  # and nothing is raised
+
+    assert f"{named} AA:BB:CC:DD:EE:FF failed: " in caplog.text
 
 
 async def test_a_deadline_that_falls_after_priming_says_the_link_is_primed(

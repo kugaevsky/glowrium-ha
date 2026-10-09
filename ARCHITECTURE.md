@@ -735,7 +735,7 @@ when it gives a link up. A backend with no bus of its own — a Bluetooth
 proxy's — has nothing to close.
 
 If bleak has moved what this reaches for, or the bus will not close, the
-client is **kept** (`_unreleased`): nothing is dialled over it, by the poll
+client is **kept** (`Unclosed`, held for the lamp): nothing is dialled over it, by the poll
 or by a command, and the poll tries its hang-up again. One connection is
 then held for as long as that lasts, instead of one more per poll tick.
 `tests/test_bus_lifetime.py` counts open connections rather than calls, and
@@ -886,9 +886,19 @@ at once, and so does a bus closed by hand after a hang-up that failed. A GATT
 call still waiting for its reply on that connection then ends
 in `EOFError`, or `OSError` once the socket is gone, and bleak passes both on
 untouched. They mean what a `BleakError` means there — the link is gone — so
-every handler that deals with a lost link catches the same set,
-`_LINK_ERRORS`. Caught as nothing in particular, the error went straight out of
-a command, with no retry and no readable message.
+the link takes the whole set, `_LINK_ERRORS`, for a lost link. Caught as
+nothing in particular, the error went straight out of a command, with no
+retry and no readable message.
+
+That set is known in `link.py` and nowhere else. A turn makes any of it into
+the link's own error before the device half hears of it: `LinkLostError`, or
+`RefusedError` where the lamp said no and the link stands. Neither is an error
+of the library's. So the handlers around the link's own flows — a command, a
+background connect, the first exchange on a held link, the probe — catch both
+what the library raises and what a turn has made of it by the time the device
+half's part of the flow lets it through (`_LOST`). A handler there that
+caught the library's set alone would let the link's own errors out of a task
+nobody waits for.
 
 A call that is not waiting for a reply at that moment ends differently. BlueZ
 turns a read or a write away with "in progress" while an earlier call on the
@@ -966,15 +976,17 @@ device lets bleak's own retries stack up for minutes, and the button in the UI
 looks like it has hung. A command whose deadline runs out inside the write
 itself lets go of the link it was writing to: left held, that link would be
 handed the next command, to wait as long and fail the same way, until the
-probe found it dead. Any failure — timeout or `BleakError` — is re-raised as a
-`HomeAssistantError` carrying the translated `cannot_connect` message, so the user
-sees "out of range or adapter busy; try a Bluetooth proxy" instead of a stack
-trace. Except where it was the coordinator itself that said no: it has been
-stopped, or the last client it let go of would not close and nothing is dialled
-over that (`_NoNewLinkError`). Neither is the radio's doing and a proxy mends
-neither, so each carries the key of a message of its own (`not_running`,
-`link_not_released`) and is not tried a second time - to every background path
-it is still a `BleakError`, a link that could not be had.
+probe found it dead. Any failure — a timeout, an error of the library, a
+refusal by the lamp — leaves `Link.send` as a `LinkLostError`, which the
+coordinator raises as a `HomeAssistantError` carrying the translated
+`cannot_connect` message, so the user sees "out of range or adapter busy; try a
+Bluetooth proxy" instead of a stack trace. Except where it was the link itself
+that said no: it has been stopped, or the last client it let go of would not
+close and nothing is dialled over that (`NoNewLinkError`). Neither is the
+radio's doing and a proxy mends neither, so each carries the key of a message
+of its own (`not_running`, `link_not_released`) and is not tried a second
+time - to every background path it is a lost link like any other, which is
+what it is a kind of.
 
 Note that `BleakOutOfConnectionSlotsError` is the usual symptom of a weak
 link, *not* of exhausted slots — `habluetooth` reports it whenever no connection

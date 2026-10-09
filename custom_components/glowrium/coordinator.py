@@ -743,8 +743,8 @@ class GlowriumCoordinator:
         self._cancel_unavailable = bluetooth.async_track_unavailable(
             hass, self._async_on_unavailable, self.address, connectable=True
         )
-        self._link.present = bluetooth.async_address_present(
-            hass, self.address, connectable=True
+        self._link.begin(
+            bluetooth.async_address_present(hass, self.address, connectable=True)
         )
         # Absent from the start is worth saying too.
         self._link.log_reach(self._plain_name)
@@ -787,10 +787,9 @@ class GlowriumCoordinator:
     @callback
     def _async_stop_watching(self) -> None:
         """Stop reacting to the lamp, and take no new link from here on."""
-        # A command may be in flight and outlast this; from here on it is
-        # refused a new link, so that what the caller lets go of next is the
-        # last one this coordinator will ever hold.
-        self._link.stopped = True
+        # Said to the link before anything else: a command may be in flight
+        # and outlast this, and from here on it is refused a new link.
+        self._link.halt()
         if self._cancel_bluetooth is not None:
             self._cancel_bluetooth()
             self._cancel_bluetooth = None
@@ -801,11 +800,10 @@ class GlowriumCoordinator:
             self._cancel_poll()
             self._cancel_poll = None
         # A coordinator that has stopped watching cannot say when the stack
-        # lets go, so it does not leave the claim standing that it has not -
-        # and has no episode left to call over. The repair filed under this
-        # entry from here on is its successor's.
+        # lets go, so it does not leave the claim standing that it has not.
+        # The repair filed under this entry from here on is its successor's
+        # (and the link has no episode left to call over: see Link.halt).
         self._async_clear_stack_issue()
-        self._link.fault_announced = False
 
     @callback
     def async_shutdown(self, _event: Event | None = None) -> None:
@@ -1365,7 +1363,7 @@ class GlowriumCoordinator:
             return
         # Wait (briefly) for the initial state - including 0x14 - to arrive.
         for _ in range(12):
-            if KEY_ACTIVATED in self.state or not self._link.connected:
+            if KEY_ACTIVATED in self.state or not turn.up:
                 break
             await asyncio.sleep(0.25)
         if self.state.get(KEY_ACTIVATED) is False:
