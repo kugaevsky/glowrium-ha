@@ -35,7 +35,7 @@ lamp reported the state the command asked for? Yes only when all three hold:
 - every property of the command the lamp can report (keys in `STATE_KEYS`;
   `0x2c` and `0x32` are never reported back) matches the mirror;
 - at least one of them was reported since the command was taken up
-  (`_reported_at`, a per-id count of reports, against `_reports` noted before
+  (`Mirror.reported_since`, against the mirror's report count noted before
   the wait for the lock). One, not all: the lamp reports what changed, and a
   mode command carries a ramp that is usually what it already was.
 

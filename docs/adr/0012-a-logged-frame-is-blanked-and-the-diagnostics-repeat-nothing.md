@@ -22,7 +22,7 @@ each ends. A deny-list over the mirror would be a list of what one lamp sent.
 
 ## Decision
 
-- Every frame printed in the log goes through `_for_the_log`: a coordinate
+- Every frame printed in the log goes through `mirror._for_the_log`: a coordinate
   key followed by a float, and the curve key followed by a byte string, are
   found by their bytes at every offset independently and put down as `xx`.
   The search does not skip past a match. A new line that prints a frame goes

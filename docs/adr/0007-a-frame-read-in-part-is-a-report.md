@@ -33,8 +33,9 @@ callback, inside the Bluetooth stack's own message handler - catches exactly
 - A map key is a property id: an unsigned integer and nothing else.
 - Nesting stops at `_MAX_DEPTH` (4); deeper is a malformed frame.
 - An item with no reading in the outermost map raises `UnreadableItemError`,
-  a `ValueError` carrying the pairs ahead of it (`ahead`). The coordinator
-  keeps them (`_ingest`) and counts the frame as a report - the state request
+  a `ValueError` carrying the pairs ahead of it (`ahead`). The mirror
+  keeps them (`Mirror.take`, through the coordinator's `_ingest`) and counts the
+  frame as a report - the state request
   it answers is answered - warning once per session with the frame, then at
   debug. A frame of which nothing was read is still no report.
 - Trailing bytes raise `TrailingBytesError` (a `ValueError`) on both paths and
@@ -52,7 +53,7 @@ callback, inside the Bluetooth stack's own message handler - catches exactly
 - The bound is load-bearing. A claim that an overflow is unreachable is to be
   measured over every form of nesting - keys, values, arrays - not the forms a
   reviewer happened to name; it was wrongly "corrected" once that way.
-- Every frame these warnings print goes through `_for_the_log` (ADR 0012).
+- Every frame these warnings print goes through `mirror._for_the_log` (ADR 0012).
 
 ## Evidence
 
