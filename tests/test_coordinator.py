@@ -2384,6 +2384,8 @@ async def test_a_lamp_that_is_absent_at_start_is_said_to_be(
 ) -> None:
     """Starting with the lamp unplugged is the first time it is out of reach."""
     coordinator, _ = _connected_coordinator(hass)
+    # Picked from the list: its address is in its title already.
+    coordinator.name = "Glowrium-G7_DDEEFF (AA:BB:CC:DD:EE:FF)"
     coordinator._client = None
     fake = MagicMock()
     fake.async_register_callback.return_value = lambda: None
@@ -2396,8 +2398,40 @@ async def test_a_lamp_that_is_absent_at_start_is_said_to_be(
     with caplog.at_level(logging.INFO, logger=coordinator_module.__name__):
         await coordinator.async_start(entry)
     try:
-        assert len(_info_lines(caplog)) == 1
-        assert "out of reach" in _info_lines(caplog)[0]
+        (said,) = _info_lines(caplog)
+        # By its name, and with its address once.
+        assert said.startswith("Glowrium-G7_DDEEFF (AA:BB:CC:DD:EE:FF) is out of reach")
+    finally:
+        await coordinator.async_stop()
+
+
+async def test_a_lamp_that_is_advertising_at_start_is_in_reach_from_the_start(
+    hass: HomeAssistant,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """What Home Assistant already knows of the lamp is taken as the watching begins.
+
+    The entities are built right after, and on a weak link the lamp may not
+    be heard again for seconds or connected to for minutes. Until then they
+    go by what the scanners knew at the start - and there is nothing for the
+    log to say.
+    """
+    coordinator, _ = _connected_coordinator(hass)
+    coordinator._client = None
+    fake = MagicMock()
+    fake.async_register_callback.return_value = lambda: None
+    fake.async_track_unavailable.return_value = lambda: None
+    fake.async_address_present.return_value = True
+    monkeypatch.setattr(coordinator_module, "bluetooth", fake)
+    entry = MagicMock()
+    entry.async_create_background_task = lambda _hass, coro, _name: coro.close()
+
+    with caplog.at_level(logging.INFO, logger=coordinator_module.__name__):
+        await coordinator.async_start(entry)
+    try:
+        assert coordinator.available
+        assert _info_lines(caplog) == []
     finally:
         await coordinator.async_stop()
 
