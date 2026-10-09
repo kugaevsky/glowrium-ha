@@ -26,6 +26,7 @@ from custom_components.glowrium import cbor
 from custom_components.glowrium.const import NOTIFY_UUID
 from custom_components.glowrium.coordinator import GlowriumCoordinator
 from custom_components.glowrium.link import Link, Turn, Unclosed
+from custom_components.glowrium.mirror import Mirror
 
 ADDRESS = "AA:BB:CC:DD:EE:FF"
 
@@ -409,3 +410,17 @@ def lamp_of(coordinator: GlowriumCoordinator) -> ScriptedLamp:
             "build it with ScriptedLamp().coordinator(...)"
         )
     return _LAMPS[coordinator]
+
+
+def nothing_heard(coordinator: GlowriumCoordinator) -> None:
+    """Start the coordinator's mirror afresh: nothing heard, nothing echoed.
+
+    For a test that took a link by a command and wants no trace of that
+    command in the mirror. The mirror itself forgets nothing (``Mirror``), so
+    the coordinator is handed a new one, built as it builds its own.
+    """
+    coordinator._mirror = Mirror(
+        coordinator.address,
+        described=coordinator._model_and_firmware,
+        now=coordinator._now,
+    )

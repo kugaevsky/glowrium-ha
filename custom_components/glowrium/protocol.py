@@ -16,6 +16,7 @@ judges what the lamp sent rather than using it.)
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 import datetime
 from typing import Any
 
@@ -55,7 +56,7 @@ def _be2_to_minutes(raw: bytes) -> int:
 _PERCENT = 100
 
 
-def brightness_percent(state: dict[int, Any]) -> float | None:
+def brightness_percent(state: Mapping[int, Any]) -> float | None:
     """Decode the brightness (0x08) as a level from 0 to 100, or None.
 
     None when it was never read, and when what was reported is no level: a
@@ -74,7 +75,7 @@ def brightness_percent(state: dict[int, Any]) -> float | None:
 # --- ramp (0x2f) ---
 
 
-def ramp_minutes(state: dict[int, Any]) -> int | None:
+def ramp_minutes(state: Mapping[int, Any]) -> int | None:
     """Decode the circadian ramp (0x2f) to minutes, or None if not yet known."""
     value = state.get(KEY_RAMP)
     if isinstance(value, (bytes, bytearray)) and value:
@@ -85,7 +86,7 @@ def ramp_minutes(state: dict[int, Any]) -> int | None:
 # --- schedule slot (0x11) ---
 
 
-def timer_slot(state: dict[int, Any]) -> bytes | None:
+def timer_slot(state: Mapping[int, Any]) -> bytes | None:
     """Return the raw 0x11 schedule slot if present and well-formed, else None."""
     value = state.get(KEY_TIMER)
     if isinstance(value, (bytes, bytearray)) and len(value) >= TIMER_SLOT_LENGTH:
@@ -93,7 +94,7 @@ def timer_slot(state: dict[int, Any]) -> bytes | None:
     return None
 
 
-def editable_timer_slot(state: dict[int, Any]) -> bytearray | None:
+def editable_timer_slot(state: Mapping[int, Any]) -> bytearray | None:
     """Return a mutable copy of the 0x11 slot, or None if it was never read.
 
     Deliberately no default fallback. The slot packs the enabled flag, both
@@ -106,7 +107,7 @@ def editable_timer_slot(state: dict[int, Any]) -> bytearray | None:
 
 
 def _slot_time(
-    state: dict[int, Any], hour_i: int, minute_i: int
+    state: Mapping[int, Any], hour_i: int, minute_i: int
 ) -> datetime.time | None:
     slot = timer_slot(state)
     if slot is None:
@@ -117,23 +118,23 @@ def _slot_time(
         return None
 
 
-def schedule_start(state: dict[int, Any]) -> datetime.time | None:
+def schedule_start(state: Mapping[int, Any]) -> datetime.time | None:
     """Decode the schedule start (on) time from the 0x11 slot."""
     return _slot_time(state, TIMER_START_H, TIMER_START_M)
 
 
-def schedule_end(state: dict[int, Any]) -> datetime.time | None:
+def schedule_end(state: Mapping[int, Any]) -> datetime.time | None:
     """Decode the schedule end (off) time from the 0x11 slot."""
     return _slot_time(state, TIMER_END_H, TIMER_END_M)
 
 
-def schedule_brightness(state: dict[int, Any]) -> int | None:
+def schedule_brightness(state: Mapping[int, Any]) -> int | None:
     """Decode the schedule target brightness (%) from the 0x11 slot."""
     slot = timer_slot(state)
     return slot[TIMER_BRIGHTNESS] if slot is not None else None
 
 
-def schedule_gradual_minutes(state: dict[int, Any]) -> int | None:
+def schedule_gradual_minutes(state: Mapping[int, Any]) -> int | None:
     """Decode the schedule gradual-fade duration (minutes) from the 0x11 slot."""
     slot = timer_slot(state)
     if slot is None:
@@ -141,7 +142,7 @@ def schedule_gradual_minutes(state: dict[int, Any]) -> int | None:
     return _be2_to_minutes(slot[TIMER_GRADUAL : TIMER_GRADUAL + 2])
 
 
-def _slot_with(state: dict[int, Any], at: int, field: bytes) -> bytes | None:
+def _slot_with(state: Mapping[int, Any], at: int, field: bytes) -> bytes | None:
     """Return the 0x11 slot with ``field`` written at ``at``; None if never read."""
     slot = editable_timer_slot(state)
     if slot is None:
@@ -151,7 +152,7 @@ def _slot_with(state: dict[int, Any], at: int, field: bytes) -> bytes | None:
 
 
 def _slot_with_time(
-    state: dict[int, Any], hour_i: int, minute_i: int, hour: int, minute: int
+    state: Mapping[int, Any], hour_i: int, minute_i: int, hour: int, minute: int
 ) -> bytes | None:
     """Return the 0x11 slot with a time at its two offsets; None if never read."""
     slot = editable_timer_slot(state)
@@ -161,22 +162,24 @@ def _slot_with_time(
     return bytes(slot)
 
 
-def with_schedule_start(state: dict[int, Any], hour: int, minute: int) -> bytes | None:
+def with_schedule_start(
+    state: Mapping[int, Any], hour: int, minute: int
+) -> bytes | None:
     """Return the 0x11 slot with a new start (on) time, the rest carried over."""
     return _slot_with_time(state, TIMER_START_H, TIMER_START_M, hour, minute)
 
 
-def with_schedule_end(state: dict[int, Any], hour: int, minute: int) -> bytes | None:
+def with_schedule_end(state: Mapping[int, Any], hour: int, minute: int) -> bytes | None:
     """Return the 0x11 slot with a new end (off) time, the rest carried over."""
     return _slot_with_time(state, TIMER_END_H, TIMER_END_M, hour, minute)
 
 
-def with_schedule_brightness(state: dict[int, Any], percent: int) -> bytes | None:
+def with_schedule_brightness(state: Mapping[int, Any], percent: int) -> bytes | None:
     """Return the 0x11 slot with a new target brightness, kept within 0..100."""
     return _slot_with(state, TIMER_BRIGHTNESS, bytes([max(0, min(100, percent))]))
 
 
-def with_schedule_gradual(state: dict[int, Any], minutes: int) -> bytes | None:
+def with_schedule_gradual(state: Mapping[int, Any], minutes: int) -> bytes | None:
     """Return the 0x11 slot with a new gradual-fade duration in minutes."""
     return _slot_with(state, TIMER_GRADUAL, be2_minutes_to_bytes(minutes))
 
@@ -184,7 +187,7 @@ def with_schedule_gradual(state: dict[int, Any], minutes: int) -> bytes | None:
 # --- daylight saving (0x35): a flag, then the offset to apply ---
 
 
-def dst_enabled(state: dict[int, Any]) -> bool | None:
+def dst_enabled(state: Mapping[int, Any]) -> bool | None:
     """Decode whether daylight saving is on, or None if not yet known."""
     value = state.get(KEY_DST)
     if isinstance(value, (bytes, bytearray)) and value:
@@ -192,7 +195,7 @@ def dst_enabled(state: dict[int, Any]) -> bool | None:
     return None
 
 
-def with_dst(state: dict[int, Any], enabled: bool) -> bytes:
+def with_dst(state: Mapping[int, Any], enabled: bool) -> bytes:
     """Return the 0x35 slot with daylight saving switched on or off.
 
     The flag and the offset are written together, so only the flag is ours to
@@ -237,7 +240,7 @@ def clock_command(when: datetime.datetime) -> dict[int, Any]:
     return {KEY_TIME: encode_device_time(when), KEY_TIME_SYNCED: 1}
 
 
-def device_time(state: dict[int, Any]) -> datetime.datetime | None:
+def device_time(state: Mapping[int, Any]) -> datetime.datetime | None:
     """Decode the clock the lamp reported, or None if it has reported none.
 
     Naive on purpose: the lamp keeps local wall-clock time and has no notion

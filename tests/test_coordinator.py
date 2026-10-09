@@ -5,7 +5,6 @@ from collections.abc import Callable
 import contextlib
 from datetime import timedelta
 import logging
-import random
 from time import monotonic
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
@@ -32,7 +31,6 @@ from custom_components.glowrium.const import (
     KEY_BRIGHTNESS,
     KEY_CIRCADIAN,
     KEY_DST,
-    KEY_INDICATOR,
     KEY_LATITUDE,
     KEY_LIGHTING_MODE,
     KEY_LONGITUDE,
@@ -54,11 +52,10 @@ from custom_components.glowrium.const import (
 )
 from custom_components.glowrium.coordinator import (
     GlowriumCoordinator,
-    _for_the_log,
     _parse_device_info,
 )
 
-from .lamp import LampLink, ScriptedLamp, lamp_of, link_of, turn_over
+from .lamp import LampLink, ScriptedLamp, lamp_of, link_of, nothing_heard, turn_over
 
 
 def _at_a_lamp(
@@ -89,7 +86,7 @@ async def _holding_a_link(
     await coordinator.async_set_indicator(True)
     lamp.written.clear()
     lamp.exchanges.clear()
-    del coordinator.state[KEY_INDICATOR]
+    nothing_heard(coordinator)  # the command's echo gone; a mirror forgets nothing
     return coordinator, lamp, lamp.links[-1]
 
 
@@ -195,7 +192,7 @@ async def test_set_lighting_mode_matches_capture(hass: HomeAssistant) -> None:
 async def test_set_ramp_preserves_mode(hass: HomeAssistant) -> None:
     """Ramp re-sends the current lighting mode with a new 0x2f (30 min)."""
     coordinator, lamp = _at_a_lamp(hass)
-    coordinator.state[KEY_LIGHTING_MODE] = 1
+    coordinator._mirror.echo({KEY_LIGHTING_MODE: 1})
     await coordinator.async_set_ramp(30)
     assert lamp.written == [
         (WRITE_UUID, bytes.fromhex("a4182b01182c4202d0182f420708183242001e"))
@@ -254,7 +251,7 @@ async def test_every_operating_mode_sets_both_flags(
 async def test_circadian_reapplies_ramp(hass: HomeAssistant) -> None:
     """Entering Circadian re-applies the user's ramp (the device resets it)."""
     coordinator, lamp = _at_a_lamp(hass)
-    coordinator.state[KEY_LIGHTING_MODE] = 1
+    coordinator._mirror.echo({KEY_LIGHTING_MODE: 1})
     await coordinator.async_set_ramp(90)  # 90 min = 5400 s = 0x1518
     lamp.written.clear()
     await coordinator.async_set_operating_mode("circadian")
@@ -268,13 +265,13 @@ async def test_operating_mode_property(hass: HomeAssistant) -> None:
     """operating_mode is None until read, then reflects circadian/schedule keys."""
     coordinator, _ = _at_a_lamp(hass)
     assert coordinator.operating_mode is None  # state not read yet -> unknown
-    coordinator.state[KEY_CIRCADIAN] = False
-    coordinator.state[KEY_SCHEDULE] = False
+    coordinator._mirror.echo({KEY_CIRCADIAN: False})
+    coordinator._mirror.echo({KEY_SCHEDULE: False})
     assert coordinator.operating_mode == "manual"  # both flags read as off
-    coordinator.state[KEY_CIRCADIAN] = True
+    coordinator._mirror.echo({KEY_CIRCADIAN: True})
     assert coordinator.operating_mode == "circadian"
-    coordinator.state[KEY_CIRCADIAN] = False
-    coordinator.state[KEY_SCHEDULE] = True
+    coordinator._mirror.echo({KEY_CIRCADIAN: False})
+    coordinator._mirror.echo({KEY_SCHEDULE: True})
     assert coordinator.operating_mode == "schedule"
 
 
@@ -285,8 +282,8 @@ async def test_mode_allows_when_mode_unknown(hass: HomeAssistant) -> None:
     assert coordinator.mode_allows("circadian") is True
     assert coordinator.mode_allows("schedule") is True
     # Once known, only the matching mode is allowed.
-    coordinator.state[KEY_CIRCADIAN] = True
-    coordinator.state[KEY_SCHEDULE] = False
+    coordinator._mirror.echo({KEY_CIRCADIAN: True})
+    coordinator._mirror.echo({KEY_SCHEDULE: False})
     assert coordinator.mode_allows("circadian") is True
     assert coordinator.mode_allows("schedule") is False
 
@@ -324,7 +321,7 @@ async def test_the_dst_offset_the_lamp_reports_is_preserved(
     if reported is None:
         assert KEY_DST not in coordinator.state
     else:
-        coordinator.state[KEY_DST] = reported
+        coordinator._mirror.echo({KEY_DST: reported})
 
     await coordinator.async_set_dst(True)
 
@@ -450,7 +447,7 @@ async def test_schedule_setters_work_once_slot_is_known(
     """
     coordinator, lamp = _at_a_lamp(hass)
     slot = bytes.fromhex("000300fe091111115a0102")
-    coordinator.state[KEY_TIMER] = slot
+    coordinator._mirror.echo({KEY_TIMER: slot})
 
     await getattr(coordinator, setter)(*args)
 
@@ -503,7 +500,7 @@ async def test_a_device_reporting_unactivated_is_brought_up(
     """
     await hass.config.async_set_time_zone("Asia/Kolkata")  # 5 h 30 min from UTC
     coordinator, lamp, link = await _holding_a_link(hass)
-    coordinator.state[KEY_ACTIVATED] = False
+    coordinator._mirror.echo({KEY_ACTIVATED: False})
 
     await coordinator._async_activate_if_needed(turn_over(coordinator, link))
 
@@ -525,9 +522,9 @@ async def test_activated_property(hass: HomeAssistant) -> None:
     """Activated reflects the device's 0x14 flag."""
     coordinator, _ = _at_a_lamp(hass)
     assert coordinator.activated is None
-    coordinator.state[0x14] = False
+    coordinator._mirror.echo({0x14: False})
     assert coordinator.activated is False
-    coordinator.state[0x14] = True
+    coordinator._mirror.echo({0x14: True})
     assert coordinator.activated is True
 
 
@@ -916,6 +913,29 @@ async def test_a_partial_answer_is_not_topped_up_by_a_read(
     assert lamp.read == []
 
 
+async def test_the_intake_notes_the_answer_and_tells_of_a_report_only(
+    hass: HomeAssistant, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A frame is the lamp answering, whatever it says; the entities hear of a report.
+
+    The two things the coordinator does with a frame that the mirror does
+    not: note that the lamp answered - a garbage frame is still the lamp
+    speaking - and tell the entities, for a report only. A frame that was
+    no report wakes nobody.
+    """
+    coordinator, _lamp = _at_a_lamp(hass)
+    told: list[int] = []
+    coordinator.async_add_listener(lambda: told.append(1))
+    monkeypatch.setattr(link_module, "monotonic", lambda: 1000.0)
+    assert coordinator._ingest(b"\xc0\x00") == frozenset()  # undecodable: no report
+    assert link_of(coordinator).last_answer == 1000.0  # and still the lamp speaking
+    assert told == []
+    monkeypatch.setattr(link_module, "monotonic", lambda: 1001.0)
+    assert coordinator._ingest(cbor.encode({KEY_POWER: True})) == frozenset({KEY_POWER})
+    assert link_of(coordinator).last_answer == 1001.0
+    assert told == [1]
+
+
 async def test_split_notification_updates_state(hass: HomeAssistant) -> None:
     """A notification carrying a split map still updates the entities."""
     coordinator = GlowriumCoordinator(hass, "AA:BB:CC:DD:EE:FF", "Glowrium-G8")
@@ -1026,174 +1046,10 @@ async def test_command_gives_up_instead_of_hanging(
     assert err.value.translation_key == "cannot_connect"
 
 
-async def test_trailing_bytes_are_reported_as_themselves(
-    hass: HomeAssistant, caplog: pytest.LogCaptureFixture
-) -> None:
-    """A frame with trailing bytes is warned about once, not buried in debug.
-
-    Rejecting these is what #5 changed, so on a model whose frames were always
-    fully consumed this is the regression that change risks - it has to be
-    visible as itself rather than as a generic undecodable frame.
-    """
-    coordinator = GlowriumCoordinator(hass, "AA:BB:CC:DD:EE:FF", "Glowrium-G7")
-    frame = bytes.fromhex("a106f5deadbeef")  # {6: True} plus 4 stray bytes
-
-    with caplog.at_level(logging.DEBUG, logger=coordinator_module.__name__):
-        coordinator._ingest(frame)
-        assert not coordinator.state  # the frame is still rejected wholesale
-
-        warnings = [r for r in caplog.records if r.levelno == logging.WARNING]
-        assert len(warnings) == 1
-        assert "4 trailing bytes" in warnings[0].getMessage()
-        assert frame.hex() in warnings[0].getMessage()
-        # It asks for the frame to be posted, and a frame can hold the home's
-        # coordinates: the request has to say so where it is made.
-        assert "coordinates" in warnings[0].getMessage()
-        assert "Undecodable frame" not in caplog.text
-
-        # A second such frame must not warn again - notifications are constant.
-        caplog.clear()
-        coordinator._ingest(frame)
-        assert not [r for r in caplog.records if r.levelno == logging.WARNING]
-        assert "trailing bytes" in caplog.text  # still recorded, at debug
-
-
 _WHERE = {KEY_LATITUDE: 12.3456, KEY_LONGITUDE: 65.4321}
 _LATITUDE_HEX = cbor.encode(12.3456).hex()[2:]  # the eight bytes after fb
 _LONGITUDE_HEX = cbor.encode(65.4321).hex()[2:]
 _CURVE = bytes(range(0x40, 0x5C))  # 28 bytes of sunrise and sunset times
-
-
-@pytest.mark.parametrize(
-    ("frame", "shown"),
-    [
-        pytest.param(
-            cbor.encode({KEY_POWER: True} | _WHERE | {KEY_BRIGHTNESS: 70}).hex(),
-            "a406f5" + "0afb" + "xx" * 8 + "0bfb" + "xx" * 8 + "081846",
-            id="both coordinates, among other things",
-        ),
-        pytest.param(
-            "a2" + "1834581c" + _CURVE.hex() + "06f5",
-            "a2" + "1834581c" + "xx" * 28 + "06f5",
-            id="the times worked out from them",
-        ),
-        pytest.param(
-            "a1" + "18344c" + _CURVE[:12].hex(),
-            "a1" + "18344c" + "xx" * 12,
-            id="those times, on a lamp that keeps fewer",
-        ),
-        pytest.param(
-            "a2" + "0afa" + "41458794" + "06f5",
-            "a2" + "0afa" + "xx" * 4 + "06f5",
-            id="a coordinate kept as a shorter float",
-        ),
-        pytest.param(
-            "a2" + "0bf9" + "5c17" + "06f5",
-            "a2" + "0bf9" + "xx" * 2 + "06f5",
-            id="a coordinate kept as the shortest float there is",
-        ),
-        pytest.param(
-            "a2" + "1834590100" + "5a" * 256 + "06f5",
-            "a2" + "1834590100" + "xx" * 256 + "06f5",
-            id="times that take two bytes to say how long they are",
-        ),
-        pytest.param(
-            "a206f5" + "0bfb" + _LONGITUDE_HEX[:6],
-            "a206f5" + "0bfb" + "xx" * 3,
-            id="a coordinate the frame ends inside",
-        ),
-        pytest.param(
-            "a2" + "1834581c" + _CURVE[:5].hex(),
-            "a2" + "1834581c" + "xx" * 5,
-            id="times the frame ends inside",
-        ),
-        pytest.param(
-            "c0" + "0afb" + _LATITUDE_HEX + "ff",
-            "c0" + "0afb" + "xx" * 8 + "ff",
-            id="behind something that cannot be read",
-        ),
-        pytest.param(
-            # 18 34 41 reads as the times, one byte long - and that byte is the
-            # id of the latitude that follows.
-            "183441" + "0afb" + _LATITUDE_HEX,
-            "183441" + "xx" + "fb" + "xx" * 8,
-            id="an id swallowed by something that only looked private",
-        ),
-        pytest.param(
-            # 0a fb, and six bytes later the real longitude: taking eight bytes
-            # for a latitude takes the longitude's id with them.
-            "0afb" + "00" * 6 + "0bfb" + _LONGITUDE_HEX,
-            "0afb" + "xx" * 8 + "xx" * 8,
-            id="an id inside what was taken for another value",
-        ),
-        pytest.param(
-            "1834" + "57" + "00" * 13 + "0afb" + _LATITUDE_HEX,
-            "1834" + "57" + "xx" * 23,
-            id="a coordinate inside what was taken for the times",
-        ),
-        pytest.param("a206f5081846", "a206f5081846", id="nothing of the kind"),
-        pytest.param("", "", id="nothing at all"),
-    ],
-)
-def test_a_frame_goes_into_the_log_without_what_says_where_the_lamp_is(
-    frame: str, shown: str
-) -> None:
-    """A frame is logged so that it can be posted, and a frame can say where.
-
-    The lamp stores the coordinates it was given and works the times of
-    sunrise and sunset out from them; either gives the place away. A frame
-    that is being logged is one that could not be read to its end, so they
-    are found by their bytes wherever they stand - an id and the head of its
-    value - and the value is put down as xx. Everything else stays, byte for
-    byte, at the length it had: that is what makes the dump worth posting.
-
-    Every offset is looked at, whatever was found before it. A search that
-    skipped past each value it found would skip the id of the next one
-    whenever a find was a false one - and print that value whole.
-    """
-    assert _for_the_log(bytes.fromhex(frame)) == shown
-    assert len(shown) == len(frame)
-
-
-def test_wherever_it_stands_in_whatever_noise_a_coordinate_is_blanked() -> None:
-    """No bytes around a coordinate, or ahead of it, keep it from being found.
-
-    The bytes that surround it are noise leaning towards the ones the search
-    looks for, so that false finds come up all the time - before the
-    coordinate, across its id, inside it. What stays in the dump is the
-    frame's own bytes, in place.
-    """
-    rng = random.Random(20261005)
-    lures = bytes.fromhex("0a0bfbfaf9183440414c575859")
-    private = [
-        bytes.fromhex("0afb" + _LATITUDE_HEX),
-        bytes.fromhex("0bfb" + _LONGITUDE_HEX),
-        bytes.fromhex("1834581c") + _CURVE,
-    ]
-
-    def noise(most: int) -> bytes:
-        return bytes(
-            rng.choice(lures) if rng.random() < 0.6 else rng.randrange(256)
-            for _ in range(rng.randrange(most))
-        )
-
-    for _ in range(3000):
-        value = rng.choice(private)
-        head = 4 if value[0] == 0x18 else 2
-        before = noise(40)
-        frame = before + value + noise(40)
-
-        shown = _for_the_log(frame)
-
-        assert len(shown) == 2 * len(frame)
-        start = 2 * (len(before) + head)
-        assert shown[start : 2 * (len(before) + len(value))] == "xx" * (
-            len(value) - head
-        ), frame.hex()
-        assert all(
-            shown[2 * i : 2 * i + 2] in ("xx", f"{byte:02x}")
-            for i, byte in enumerate(frame)
-        )
 
 
 @pytest.mark.parametrize(
@@ -1240,117 +1096,8 @@ async def test_no_line_in_the_log_carries_the_coordinates(
     assert _LONGITUDE_HEX not in caplog.text
 
 
-async def test_malformed_frame_is_not_reported_as_trailing_bytes(
-    hass: HomeAssistant, caplog: pytest.LogCaptureFixture
-) -> None:
-    """A truncated frame keeps the generic message and raises no warning."""
-    coordinator = GlowriumCoordinator(hass, "AA:BB:CC:DD:EE:FF", "Glowrium-G7")
-    with caplog.at_level(logging.DEBUG, logger=coordinator_module.__name__):
-        coordinator._ingest(bytes.fromhex("81"))
-    assert "Undecodable frame" in caplog.text
-    assert not [r for r in caplog.records if r.levelno == logging.WARNING]
-
-
-@pytest.mark.parametrize(
-    ("frame", "said"),
-    [
-        pytest.param("a18000", "cannot read", id="keyed by an array"),
-        pytest.param("ada200", "cannot read", id="keyed by a map that ran out"),
-        pytest.param(
-            "a1" * 499, "cannot read", id="maps as keys, as deep as a frame allows"
-        ),
-        pytest.param("c000", "Undecodable frame", id="not a map at all"),
-        pytest.param("", "Undecodable frame", id="empty"),
-    ],
-)
-async def test_a_frame_the_decoder_refuses_is_dropped_and_nothing_is_raised(
-    hass: HomeAssistant, caplog: pytest.LogCaptureFixture, frame: str, said: str
-) -> None:
-    """No frame can end the notification callback in an exception.
-
-    The callback runs inside the Bluetooth stack's own message handler. A map
-    keyed by an array used to leave it as a TypeError, and five hundred maps
-    each the key of the next as a RecursionError - a traceback per frame on a
-    local adapter, and on the path that reads the state, an exception that
-    took the whole connect with it. Nothing of these frames could be read,
-    so nothing is merged; each is named in the log.
-    """
-    coordinator = GlowriumCoordinator(hass, "AA:BB:CC:DD:EE:FF", "Glowrium-G7")
-    with caplog.at_level(logging.DEBUG, logger=coordinator_module.__name__):
-        assert coordinator._ingest(bytes.fromhex(frame)) == frozenset()
-    assert not coordinator.state
-    assert coordinator._reports == 0
-    assert said in caplog.text
-    assert "nothing that can be used" not in caplog.text  # said once is enough
-
-
-@pytest.mark.parametrize(
-    "frame",
-    [
-        pytest.param("80", id="an empty array"),
-        pytest.param("8206f5", id="an array"),
-        pytest.param("a0", id="a map with nothing in it"),
-        pytest.param("05", id="a number"),
-        pytest.param("f6", id="null"),
-    ],
-)
-async def test_a_frame_that_decodes_to_nothing_usable_is_named_as_well(
-    hass: HomeAssistant, caplog: pytest.LogCaptureFixture, frame: str
-) -> None:
-    """A frame can decode without a fault and still be of no use.
-
-    The decoder reads CBOR; what the lamp reports is a map of properties. A
-    frame that is anything else, or a map with nothing in it, was dropped
-    without a line - while the documents tell whoever reports a problem that
-    every frame the integration could not use is in the debug log.
-    """
-    coordinator = GlowriumCoordinator(hass, "AA:BB:CC:DD:EE:FF", "Glowrium-G7")
-    with caplog.at_level(logging.DEBUG, logger=coordinator_module.__name__):
-        assert coordinator._ingest(bytes.fromhex(frame)) == frozenset()
-    assert not coordinator.state
-    assert coordinator._reports == 0
-    assert f"frame {frame} decodes to nothing that can be used" in caplog.text
-    assert not [r for r in caplog.records if r.levelno == logging.WARNING]
-
-
 # {power: on, brightness: 70, 0x09: <a tag, which nothing here can read> ...
 _PARTLY_READABLE = bytes.fromhex("a406f508184609c0000d00")
-
-
-async def test_what_was_read_ahead_of_an_unreadable_item_is_kept_and_said_loudly(
-    hass: HomeAssistant, caplog: pytest.LogCaptureFixture
-) -> None:
-    """One item the integration cannot read does not cost the frame around it.
-
-    The properties ahead of it were read as from any other frame, and they
-    are kept. That the rest was not is said once at a level somebody sees,
-    with the bytes it takes to add the missing reading and the caution that
-    goes with posting bytes - and at debug from then on, since a lamp that
-    sends one such frame sends them all day.
-    """
-    coordinator = GlowriumCoordinator(hass, "AA:BB:CC:DD:EE:FF", "Glowrium-G7")
-
-    with caplog.at_level(logging.DEBUG, logger=coordinator_module.__name__):
-        carried = coordinator._ingest(_PARTLY_READABLE)
-
-        assert carried == frozenset({KEY_POWER, KEY_BRIGHTNESS})
-        assert coordinator.state == {KEY_POWER: True, KEY_BRIGHTNESS: 70}
-        assert coordinator._reports == 1
-        warnings = [r for r in caplog.records if r.levelno == logging.WARNING]
-        assert len(warnings) == 1
-        said = warnings[0].getMessage()
-        assert "cannot read" in said
-        assert "unsupported CBOR major type 6" in said
-        assert "2 properties ahead of it were kept" in said
-        assert _PARTLY_READABLE.hex() in said
-        assert "coordinates" in said
-        assert "Undecodable frame" not in caplog.text
-        assert "split across frames" not in caplog.text  # it was not: it is whole
-
-        caplog.clear()
-        coordinator._ingest(_PARTLY_READABLE)
-        assert not [r for r in caplog.records if r.levelno == logging.WARNING]
-        assert "cannot be read" in caplog.text  # still recorded, at debug
 
 
 async def test_a_report_read_only_in_part_is_still_the_answer_to_the_request(
@@ -1916,13 +1663,13 @@ async def test_the_bring_up_is_attempted_once_per_session(
     re-interrogated.
     """
     coordinator, lamp, link = await _holding_a_link(hass)
-    coordinator.state[KEY_ACTIVATED] = True
+    coordinator._mirror.echo({KEY_ACTIVATED: True})
     await coordinator._async_activate_if_needed(turn_over(coordinator, link))
     assert lamp.written == []  # not put through the bring-up
     assert coordinator._activation_checked is True
 
     # Settled. Even a later False must not restart the bring-up.
-    coordinator.state[KEY_ACTIVATED] = False
+    coordinator._mirror.echo({KEY_ACTIVATED: False})
     await coordinator._async_activate_if_needed(turn_over(coordinator, link))
     assert lamp.written == []
 
@@ -2329,7 +2076,7 @@ async def test_the_remembered_ramp_survives_the_device_reporting(
     exactly the value the memory exists to override.
     """
     coordinator, lamp = _at_a_lamp(hass)
-    coordinator.state[KEY_LIGHTING_MODE] = 1
+    coordinator._mirror.echo({KEY_LIGHTING_MODE: 1})
     await coordinator.async_set_ramp(90)  # 5400 s = 0x1518
     assert coordinator._desired_ramp == bytes.fromhex("1518")
 
@@ -2362,7 +2109,8 @@ async def test_a_stale_mirror_does_not_vouch_for_a_failed_write(
     coordinator, lamp = _at_a_lamp(hass)
     monkeypatch.setattr(link_module, "_CONFIRM_TIMEOUT", 0.05)
     if filled == "by hand":
-        coordinator.state[KEY_POWER] = False  # what the lamp said, some time ago
+        # what the lamp said, some time ago
+        coordinator._mirror.echo({KEY_POWER: False})
     else:
         coordinator._ingest(cbor.encode({KEY_POWER: False}))  # some time ago
     lamp.fails_writes(BleakError("Not connected"))
@@ -2475,7 +2223,7 @@ async def test_a_report_vouches_only_for_what_it_carries(
     """
     coordinator, lamp = _at_a_lamp(hass)
     monkeypatch.setattr(link_module, "_CONFIRM_TIMEOUT", 0.05)
-    coordinator.state[KEY_POWER] = False  # what the lamp said, some time ago
+    coordinator._mirror.echo({KEY_POWER: False})  # what the lamp said, some time ago
     # The write fails, and the lamp says something else.
     lamp.fails_writes(
         BleakError("Not connected"), saying=lambda _frame: bytes.fromhex(frame)
@@ -2504,7 +2252,7 @@ async def test_a_command_that_never_reached_the_wire_fails_at_once(
     """
     coordinator, lamp = _at_a_lamp(hass)
     lamp.out_of_range()  # nothing held, and the lamp is not in the list
-    coordinator.state[KEY_POWER] = True  # and the mirror happens to agree
+    coordinator._mirror.echo({KEY_POWER: True})  # and the mirror happens to agree
     monkeypatch.setattr(link_module, "_CONFIRM_TIMEOUT", 30.0)
 
     async with asyncio.timeout(1):  # nowhere near the grace window
@@ -3051,7 +2799,7 @@ async def test_a_stale_device_clock_is_corrected(
     """
     await hass.config.async_set_time_zone("Asia/Kolkata")  # 5 h 30 min from UTC
     coordinator, lamp, link = await _holding_a_link(hass)
-    coordinator.state[KEY_TIME] = stale
+    coordinator._mirror.echo({KEY_TIME: stale})
 
     await coordinator._async_sync_clock_if_needed(turn_over(coordinator, link))
 
@@ -3080,7 +2828,7 @@ async def test_a_clock_that_is_right_or_unread_is_left_alone(
     """
     coordinator, lamp, link = await _holding_a_link(hass)
     if clock == "near enough":
-        coordinator.state[KEY_TIME] = protocol.encode_device_time(dt_util.now())
+        coordinator._mirror.echo({KEY_TIME: protocol.encode_device_time(dt_util.now())})
     else:
         assert KEY_TIME not in coordinator.state
 

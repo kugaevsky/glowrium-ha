@@ -19,6 +19,7 @@ from pytest_homeassistant_custom_component.common import MockConfigEntry
 from custom_components.glowrium import (
     cbor,
     coordinator as coordinator_module,
+    diagnostics,
     link as link_module,
 )
 from custom_components.glowrium.const import (
@@ -40,7 +41,7 @@ from custom_components.glowrium.const import (
 from custom_components.glowrium.coordinator import _parse_device_info
 from custom_components.glowrium.diagnostics import async_get_config_entry_diagnostics
 
-from .lamp import ScriptedLamp, in_range, link_of, turn_over
+from .lamp import ScriptedLamp, in_range, link_of, nothing_heard, turn_over
 
 ADDRESS = "AA:BB:CC:DD:EE:FF"
 TITLE = "Glowrium-G7_DDEEFF"
@@ -240,7 +241,7 @@ async def test_a_clock_the_integration_set_is_judged_from_when_it_set_it(
     """
     entry = await _a_lamp_that_has_reported(hass)
     coordinator = entry.runtime_data
-    coordinator.state[KEY_TIME] = bytes.fromhex("07e80101000000")  # far off
+    coordinator._mirror.echo({KEY_TIME: bytes.fromhex("07e80101000000")})  # far off
     link = await ScriptedLamp().dial(MagicMock())  # a link to write the clock on
     with patch(
         "custom_components.glowrium.coordinator.dt_util.now",
@@ -256,16 +257,13 @@ async def test_a_clock_the_integration_set_is_judged_from_when_it_set_it(
     }
 
 
-async def test_a_clock_with_no_record_of_when_it_came_is_not_guessed_at(
-    hass: HomeAssistant,
-) -> None:
-    """Without the moment it was read at, a clock is neither right nor wrong."""
-    entry = await _a_lamp_that_has_reported(hass)
-    entry.runtime_data._clock_heard_at = None
+def test_a_clock_with_no_record_of_when_it_came_is_not_guessed_at() -> None:
+    """Without the moment it was read at, a clock is neither right nor wrong.
 
-    data = await _downloaded(hass, entry)
-
-    assert data["state"]["0x05 clock"] == {
+    No path of the integration makes one: the mirror dates every clock it
+    takes or echoes. The reader is held to it all the same, on its own.
+    """
+    assert diagnostics._clock(CLOCK, None) == {
         "ahead_of_this_host_by_seconds": None,
         "as_of_seconds_ago": None,
     }
@@ -323,7 +321,7 @@ async def test_what_the_integration_cannot_name_is_only_counted(
     """
     entry = await _a_lamp_that_has_reported(hass)
     before = (await _downloaded(hass, entry))["state"]
-    entry.runtime_data.state.update(
+    entry.runtime_data._mirror.echo(
         {
             0x34: CURVE,
             0x77: UNKNOWN_TEXT,
@@ -406,7 +404,10 @@ async def test_a_known_property_is_read_out_only_when_it_is_what_its_name_means(
     not what was expected, and nothing of it is repeated.
     """
     entry = await _a_lamp_that_has_reported(hass)
-    entry.runtime_data.state[key] = value
+    with patch(
+        "custom_components.glowrium.coordinator.dt_util.now", return_value=HEARD_AT
+    ):
+        entry.runtime_data._mirror.echo({key: value})  # dated as the report was
 
     data = await _downloaded(hass, entry)
 
@@ -494,7 +495,10 @@ async def test_what_checks_out_is_read_out(
     and neither is anything else that merely happened to be the right length.
     """
     entry = await _a_lamp_that_has_reported(hass)
-    entry.runtime_data.state[key] = value
+    with patch(
+        "custom_components.glowrium.coordinator.dt_util.now", return_value=HEARD_AT
+    ):
+        entry.runtime_data._mirror.echo({key: value})  # dated as the report was
 
     data = await _downloaded(hass, entry)
 
@@ -606,7 +610,7 @@ async def test_a_lamp_that_has_reported_nothing_makes_a_file_all_the_same(
 ) -> None:
     """The file is asked for when things do not work, which is often before."""
     entry = await _a_lamp_that_has_reported(hass)
-    entry.runtime_data.state.clear()
+    nothing_heard(entry.runtime_data)
     entry.runtime_data.device_info = {}
 
     data = await _downloaded(hass, entry)

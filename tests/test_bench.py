@@ -45,7 +45,7 @@ def bench() -> ModuleType:
 def _a_lamp() -> GlowriumCoordinator:
     """Return a coordinator that has heard everything a lamp says."""
     coordinator = GlowriumCoordinator(None, _ADDRESS, "bench")
-    coordinator.state.update(
+    coordinator._mirror.echo(
         {
             KEY_POWER: True,
             KEY_BRIGHTNESS: 70,

@@ -117,7 +117,7 @@ def _clock(value: Any, heard_at: datetime | None) -> dict[str, Any]:
     raw = _octets(value, 7)
     # Naive, like the clock itself: the lamp keeps local wall-clock time.
     shown = datetime(int.from_bytes(raw[:2], "big"), *raw[2:])  # noqa: DTZ001
-    if heard_at is None:  # there, and nothing says since when
+    if heard_at is None:  # the mirror dates every clock it takes: a guard
         return {"ahead_of_this_host_by_seconds": None, "as_of_seconds_ago": None}
     ahead = shown - heard_at.replace(tzinfo=None)
     return {

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Callable, Coroutine
+from collections.abc import Callable, Coroutine, Mapping
 from datetime import datetime, time
 from enum import Enum, auto
 import logging
@@ -38,7 +38,6 @@ from .const import (
     KEY_POWER,
     KEY_RAMP,
     KEY_SCHEDULE,
-    KEY_TIME,
     KEY_TIMER,
     MODE_CIRCADIAN,
     MODE_MANUAL,
@@ -61,6 +60,7 @@ from .link import (
     Unclosed,
     dial_by_bluetooth,
 )
+from .mirror import Mirror
 from .models import GlowriumModel, resolve_model
 
 _LOGGER = logging.getLogger(__name__)
@@ -228,11 +228,15 @@ class GlowriumCoordinator:
         self.hass = hass
         self.address = address
         self.name = name
-        self.state: dict[int, Any] = {}
-        # The host's clock at the moment the lamp's (0x05) last came into the
-        # mirror. A clock is right or wrong only against the moment it was
-        # read at, and the mirror can hold one for hours (see _mirror).
-        self._clock_heard_at: datetime | None = None
+        # What the lamp has said and what was written to it (mirror.py); the
+        # entities read it as ``state``. It describes the lamp through
+        # _model_and_firmware when it warns - the lamp describes itself only
+        # after its first frames - and dates the lamp's clock by the host's.
+        self._mirror = Mirror(
+            address,
+            described=self._model_and_firmware,
+            now=self._now,
+        )
         # What the lamp said about itself in this session; empty until read.
         self.device_info: dict[str, str] = {}
         self._remembered_model_id = model_id
@@ -272,8 +276,6 @@ class GlowriumCoordinator:
             run_lasting=self._run_lasting,
             unclosed=unclosed,
         )
-        # The keys the lamp has reported since it was last asked for its state.
-        self._carried: set[int] = set()
         self._activation_checked = False
         # The batched state request is muted until this time after a run of
         # failures, rather than for the session - see _request_state.
@@ -282,23 +284,9 @@ class GlowriumCoordinator:
         # Set once a cooldown has already been served and the model refused
         # again: that is a refusal rather than a run of bad luck.
         self._state_request_given_up = False
-        # Set once a frame has been rejected for trailing bytes, so the warning
-        # is raised once per session instead of on every notification.
-        self._trailing_warned = False
-        # The same for a frame that was read only in part.
-        self._unreadable_warned = False
-        # Set whenever the device reports state, so a command awaiting
-        # confirmation wakes on the report instead of polling for it.
-        self._state_reported = asyncio.Event()
-        # Monotonic counters, not values: confirmation needs to know that a
-        # report is NEWER than the write it is vouching for, and that a write
-        # actually reached the characteristic. Comparing the mirror alone
-        # cannot tell a fresh report from an hours-old one.
-        self._reports = 0
+        # How many writes reached the characteristic: a count, not a value,
+        # so that a write that raised still counts (see _write_on).
         self._writes_sent = 0
-        # What _reports stood at when the lamp last reported each id. A report
-        # vouches for what it carried, not for everything in the mirror.
-        self._reported_at: dict[int, int] = {}
 
     @property
     def _state_request_muted(self) -> bool:
@@ -307,6 +295,15 @@ class GlowriumCoordinator:
             self._state_request_given_up
             or monotonic() < self._state_request_muted_until
         )
+
+    @property
+    def state(self) -> Mapping[int, Any]:
+        """What the lamp has said, by property id, and what was written to it.
+
+        Read-only: a value gets in through a frame the lamp sent or the echo
+        of a write it acknowledged (``Mirror``), and nothing is taken out.
+        """
+        return self._mirror
 
     @property
     def activated(self) -> bool | None:
@@ -513,7 +510,7 @@ class GlowriumCoordinator:
                 "connected": link["connected"],
                 "primed": link["primed"],
                 "client": link["client"],
-                "reports": self._reports,
+                "reports": self._mirror.reports,
                 "writes_sent": self._writes_sent,
                 "seconds_since_last_answer": link["seconds_since_last_answer"],
                 "state_request_refusals": self._state_request_failures,
@@ -523,7 +520,7 @@ class GlowriumCoordinator:
                 "clients_that_would_not_close": link["clients_that_would_not_close"],
             },
             "state": dict(self.state),
-            "clock_heard_at": self._clock_heard_at,
+            "clock_heard_at": self._mirror.clock_heard_at,
         }
 
     @callback
@@ -902,8 +899,7 @@ class GlowriumCoordinator:
 
     async def _async_ask_state(self, turn: Turn) -> _Asked:
         """Write the state request and wait for the lamp to report."""
-        self._carried.clear()
-        before = self._reports
+        before = self._mirror.reports
         try:
             await turn.write(NOTIFY_UUID, bytes(STATE_KEYS))
         except RefusedError as err:
@@ -945,136 +941,33 @@ class GlowriumCoordinator:
             return _Asked.LOST
         self._state_request_failures = 0  # and the write was acknowledged
         try:
+            asked = frozenset(STATE_KEYS)
             async with asyncio.timeout(_REPORT_TIMEOUT):
-                while True:
-                    # Cleared before checking, as in _async_device_confirms.
-                    self._state_reported.clear()
-                    if self._reports > before and self._carried.issuperset(STATE_KEYS):
-                        return _Asked.REPORTED
-                    await self._state_reported.wait()
+                while not self._mirror.reported_since(before) >= asked:
+                    await self._mirror.next_report()
+                return _Asked.REPORTED
         except TimeoutError:
-            if self._reports > before:
+            if self._mirror.reports > before:
                 return _Asked.REPORTED  # in part; a read would add nothing asked for
         _LOGGER.debug(
             "%s acknowledged the state request and reported nothing", self.address
         )
         return _Asked.SILENT
 
-    def _log_trailing_bytes(self, data: bytes, count: int) -> None:
-        """Report a frame rejected for trailing bytes: once loudly, then quietly.
-
-        Notifications arrive continuously, so an unconditional warning would
-        flood the log; one per session is enough to surface the problem while
-        the hex dump below gives whoever reports it everything needed to decode
-        the frame by hand.
-        """
-        if self._trailing_warned:
-            _LOGGER.debug(
-                "%s: frame %s again carries %d trailing bytes",
-                self.address,
-                _for_the_log(data),
-                count,
-            )
-            return
-        self._trailing_warned = True
-        _LOGGER.warning(
-            "%s (%s) sent a frame with %d trailing bytes "
-            "and it was dropped: %s. The frame declared less than it carried, "
-            "so accepting the remainder could mean acting on a corrupt state. "
-            "Please report this frame - it is exactly the hex dump needed. %s",
-            self.address,
-            self._model_and_firmware(),
-            count,
-            _for_the_log(data),
-            _BLANKED,
-        )
-
-    def _log_unreadable_item(self, data: bytes, err: cbor.UnreadableItemError) -> None:
-        """Report a frame that was read only in part: once loudly, then quietly.
-
-        As with trailing bytes: a lamp that sends one such frame sends them
-        all day, and the first is the one that has to be seen - with the bytes
-        it takes to give the item a reading.
-        """
-        if self._unreadable_warned:
-            _LOGGER.debug(
-                "%s: frame %s again carries an item that cannot be read (%s); "
-                "kept the %d properties ahead of it",
-                self.address,
-                _for_the_log(data),
-                err,
-                len(err.ahead),
-            )
-            return
-        self._unreadable_warned = True
-        _LOGGER.warning(
-            "%s (%s) sent a frame with an item this "
-            "integration cannot read (%s): %s. The %d properties ahead of it "
-            "were kept; whatever follows it could not be found. Please report "
-            "this frame - it is exactly the hex dump needed. %s",
-            self.address,
-            self._model_and_firmware(),
-            err,
-            _for_the_log(data),
-            len(err.ahead),
-            _BLANKED,
-        )
-
     def _ingest(self, data: bytes) -> frozenset[int]:
-        """Merge a CBOR property map from the device into the state mirror.
+        """Take a frame from the lamp into the mirror; return the ids it carried.
 
-        Returns the keys this frame carried. The connect path needs that to
-        judge whether the read covered everything, which it cannot do from the
-        state mirror: the mirror accumulates across a session, so once a key has
-        been seen it looks covered for ever.
-
-        Shared by the notify callback and the read of the state, so that both
-        handle a split map, the remembered ramp and the listeners identically.
+        The one intake, for the notify callback and for the read of the state
+        alike. Two things are the coordinator's and not the mirror's: that the
+        lamp answered is noted first, whatever the frame says - a garbage
+        frame is still the lamp speaking - and the entities are told after,
+        for a report only. What a frame is and what it carried is the
+        mirror's (``Mirror.take``).
         """
         self._link.note_answer()  # whatever it says, the lamp said it
-        short = said = False
-        try:
-            decoded, short = cbor.decode_frame(data)
-        except cbor.UnreadableItemError as err:
-            # Kept, as far as it was read. Dropping the frame would cost more
-            # than its properties: a state request answered only by this would
-            # count as unanswered, the connect would fall back on reading, and
-            # on BlueZ a read ends the link (see _request_state). A frame of
-            # which nothing was read is still no report, and takes that way.
-            self._log_unreadable_item(data, err)
-            decoded, said = err.ahead, True
-        except cbor.TrailingBytesError as err:
-            # Reported apart from a merely malformed frame, and loudly the first
-            # time: rejecting these is what changed in #5, and on a model whose
-            # frames were always fully consumed before, this is the regression
-            # that change risks. Buried in "Undecodable frame" at debug level it
-            # would never be noticed.
-            self._log_trailing_bytes(data, err.count)
-            return frozenset()
-        except ValueError as err:  # the decoder raises nothing else
-            _LOGGER.debug("Undecodable frame %s: %s", _for_the_log(data), err)
-            return frozenset()
-        if not isinstance(decoded, dict) or not decoded:
-            if not said:
-                # Decoded without a fault, and still of no use: every frame
-                # that is dropped is named, or nobody can ask what it was.
-                _LOGGER.debug(
-                    "%s: frame %s decodes to nothing that can be used: it is "
-                    "not a map of properties, or is one with nothing in it",
-                    self.address,
-                    _for_the_log(data),
-                )
-            return frozenset()
-        if short:
-            _LOGGER.debug(
-                "%s: property map split across frames; kept %d of them",
-                self.address,
-                len(decoded),
-            )
-        self._mirror(decoded)
-        self._reports += 1
-        self._reported_at.update(dict.fromkeys(decoded, self._reports))
-        self._state_reported.set()
+        carried = self._mirror.take(data)
+        if not carried:
+            return carried
         # Seed the remembered ramp from the device the first time we see it, so
         # it survives an HA restart (the device persists its own ramp). Guard on
         # truthiness, not "is not None": an empty ramp would otherwise latch and
@@ -1084,23 +977,11 @@ class GlowriumCoordinator:
             if ramp and isinstance(ramp, (bytes, bytearray)):
                 self._desired_ramp = bytes(ramp)
         self._async_notify_listeners()
-        return frozenset(decoded)
+        return carried
 
     @callback
     def _on_notify(self, _characteristic: Any, data: bytearray) -> None:
-        self._carried |= self._ingest(bytes(data))
-
-    def _mirror(self, values: dict[int, Any]) -> None:
-        """Take ``values`` into the state mirror.
-
-        And note the moment, if the lamp's clock is among them - whether the
-        lamp reported it or it is the echo of a clock written to the lamp.
-        The mirror is not emptied when a link drops, so the clock in it can
-        be hours old by the time somebody asks how far off it is.
-        """
-        self.state.update(values)
-        if KEY_TIME in values:
-            self._clock_heard_at = dt_util.now()
+        self._ingest(bytes(data))
 
     async def _write_on(self, turn: Turn, payload: dict[int, Any]) -> None:
         """Write one command frame on the turn that is given.
@@ -1112,7 +993,7 @@ class GlowriumCoordinator:
         self._writes_sent += 1  # counted before, so a raising write still counts
         await turn.write(WRITE_UUID, cbor.encode(payload))
         # Optimistic local echo; the device also notifies its new state.
-        self._mirror(payload)
+        self._mirror.echo(payload)
 
     async def _async_write(self, payload: dict[int, Any]) -> None:
         """Send a command, and tell the listeners how things stand after it.
@@ -1140,7 +1021,7 @@ class GlowriumCoordinator:
         """
         # Noted before the wait for the lock: a report that comes while the
         # command waits is as fresh as one that comes after it.
-        reports_before = self._reports
+        reports_before = self._mirror.reports
         try:
             await self._link.send(
                 lambda turn: self._write_on(turn, payload),
@@ -1207,17 +1088,11 @@ class GlowriumCoordinator:
         if not tracked:
             return False
         while True:
-            # Clear before checking. Nothing can interleave between the two
-            # here - both are synchronous and the reports come from this same
-            # event loop - so the order is not load-bearing today; it is the
-            # order that stays correct if a report ever arrives from anywhere
-            # else.
-            self._state_reported.clear()
-            if all(self.state.get(k) == v for k, v in tracked.items()) and any(
-                self._reported_at.get(k, 0) > reports_before for k in tracked
+            if all(self.state.get(k) == v for k, v in tracked.items()) and (
+                tracked.keys() & self._mirror.reported_since(reports_before)
             ):
                 return True
-            await self._state_reported.wait()
+            await self._mirror.next_report()
 
     async def _async_activate_if_needed(self, turn: Turn) -> None:
         """Bring the device up once if it reports as not yet activated (0x14).
@@ -1276,6 +1151,15 @@ class GlowriumCoordinator:
     def _clock_command(self) -> dict[int, Any]:
         """Return the command that sets the lamp's clock to now, local time."""
         return protocol.clock_command(dt_util.now())
+
+    @staticmethod
+    def _now() -> datetime:
+        """Return the host's clock, looked up when asked.
+
+        Handed to the mirror for dating the lamp's clock: looked up at the
+        call and not bound at start, since the tests patch ``dt_util.now``.
+        """
+        return dt_util.now()
 
     async def _async_activate(self, turn: Turn) -> None:
         """Bring up a factory-reset device: clock + flags + enable light output.

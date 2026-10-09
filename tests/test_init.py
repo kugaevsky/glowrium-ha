@@ -1463,7 +1463,7 @@ def test_a_report_of_nothing_is_a_report_and_the_remembered_mode_steps_back() ->
     select._restored = "balance"
     assert select.current_option == "balance"
 
-    select._coordinator.state[KEY_LIGHTING_MODE] = None
+    select._coordinator._mirror.echo({KEY_LIGHTING_MODE: None})
     assert select.current_option is None
 
 
