@@ -207,24 +207,6 @@ def _gatt_call(client: BleakClientWithServiceCache) -> Iterator[None]:
         ) from err
 
 
-class _NoNewLinkError(BleakError):
-    """The link's own "no" to a new client: nothing the radio did.
-
-    It has been stopped, or the last client it let go of could not be closed
-    and nothing is dialled over that. Still a ``BleakError``, so that every
-    background path goes on treating it as a link that could not be had. A
-    command asks which of the two it was (``translation_key``) and says so,
-    instead of telling its user that the lamp may be out of range and a
-    Bluetooth proxy would help - and it does not try a second time, because
-    neither changes within a retry.
-    """
-
-    def __init__(self, message: str, translation_key: str) -> None:
-        """Keep the key of the message a command shows for this."""
-        super().__init__(message)
-        self.translation_key = translation_key
-
-
 class _Bus(Enum):
     """What was behind a client that had been told to disconnect."""
 
@@ -355,24 +337,47 @@ def _looks_like_a_refusal(err: Exception) -> bool:
     return any(marker in text for marker in _REFUSAL_MARKERS)
 
 
-class LinkLostError(BleakError):
-    """What a turn raises when the link under it is gone, or was never there.
+class LinkLostError(Exception):
+    """What the device half is told when a link is gone, or could not be had.
 
     It says what the Bluetooth library said, or what that was where it said
-    nothing (see ``_reason``). Still a ``BleakError`` for as long as the
-    coordinator's own flows catch ``_LINK_ERRORS``; that ends with the split
-    (#21), and with it the coordinator's last word about the library.
+    nothing (see ``_reason``) - as words. The error itself is the link's:
+    which of the library's a lost link can raise (``_LINK_ERRORS``) is known
+    here and nowhere else.
     """
 
 
-class RefusedError(BleakError):
+class NoNewLinkError(LinkLostError):
+    """The link's own "no" to a new client: nothing the radio did.
+
+    It has been stopped, or the last client it let go of could not be closed
+    and nothing is dialled over that. A lost link like any other to every
+    background path, which goes on treating it as a link that could not be
+    had. A command asks which of the two it was (``translation_key``) and
+    says so, instead of telling its user that the lamp may be out of range
+    and a Bluetooth proxy would help - and it does not try a second time,
+    because neither changes within a retry.
+    """
+
+    def __init__(self, message: str, translation_key: str) -> None:
+        """Keep the key of the message a command shows for this."""
+        super().__init__(message)
+        self.translation_key = translation_key
+
+
+class RefusedError(Exception):
     """What a write raises when the lamp said no, and the link stands.
 
     An ATT refusal: a G8 answers the state request with ``Insufficient
     authorization``. Told from a lost link by ``_looks_like_a_refusal``, once
-    and here. A ``BleakError`` for the same reason, and for as long, as
-    ``LinkLostError`` is.
+    and here.
     """
+
+
+# What ends one of the link's own flows as "this link is gone": what the
+# library raises, and what a turn has made of that by the time the device
+# half's part of the flow lets it through.
+_LOST = (*_LINK_ERRORS, LinkLostError, RefusedError)
 
 
 class Turn:
@@ -663,7 +668,7 @@ class Link:
                 # Stopped while this connect was on its way. Keeping the
                 # link would hand it to a coordinator nobody will stop
                 # again, and the lamp has one slot.
-                raise _NoNewLinkError(  # noqa: TRY301
+                raise NoNewLinkError(  # noqa: TRY301
                     f"{self.address}: stopped while connecting", "not_running"
                 )
         except BaseException as err:
@@ -696,7 +701,7 @@ class Link:
         background connect may be holding - is capped by
         ``_COMMAND_TIMEOUT``. A command that could not be delivered ends as
         a ``LinkLostError``, or as the link's own "no" where it would not
-        dial (``_NoNewLinkError``): one thing for the caller to tell the
+        dial (``NoNewLinkError``): one thing for the caller to tell the
         user, rather than a stack trace after a long hang.
 
         ``vouch`` is asked once, when the command was put to a link and the
@@ -735,11 +740,11 @@ class Link:
                         await say(Turn(self, writing_to))
                         writing_to = None
                         break
-                    except _LINK_ERRORS as err:
+                    except _LOST as err:
                         writing_to = None
                         client, self.client = self.client, None
                         if attempt == _WRITE_ATTEMPTS or isinstance(
-                            err, _NoNewLinkError
+                            err, NoNewLinkError
                         ):
                             # The last attempt - or the link's own "no",
                             # which a second attempt would only be given
@@ -758,7 +763,7 @@ class Link:
                             # link being closed. Shielded, so the command's
                             # deadline ends the wait and not the hang-up.
                             await asyncio.shield(self.hang_up(client))
-        except _LINK_ERRORS as err:
+        except _LOST as err:
             if writing_to is not None and writing_to is self.client:
                 # The deadline ran out inside the write. The handler above
                 # never saw it - a deadline arrives as a cancellation - so the
@@ -778,7 +783,7 @@ class Link:
                     _LOGGER.debug(
                         "Command to %s failed: %s", self.address, _reason(err)
                     )
-                    if isinstance(err, (_NoNewLinkError, LinkLostError)):
+                    if isinstance(err, (NoNewLinkError, LinkLostError)):
                         # Already what this ends as: the link's own "no",
                         # which says which of its reasons it was - the caller
                         # has words for each - or a turn that lost its link.
@@ -873,7 +878,7 @@ class Link:
                     # Told where it was let go of: this return skips the else
                     # at the end.
                     return
-        except _LINK_ERRORS as err:
+        except _LOST as err:
             _LOGGER.debug("Priming state of %s failed: %s", self.address, _reason(err))
         else:
             self._reach_changed()
@@ -898,7 +903,7 @@ class Link:
                 turn = Turn(self, client)
                 await self._probe(turn)
                 alive = turn.got_an_answer
-        except _LINK_ERRORS as err:
+        except _LOST as err:
             _LOGGER.debug(
                 "Probing the link to %s failed: %s", self.address, _reason(err)
             )
@@ -915,14 +920,14 @@ class Link:
         """Connect once at start-up, off the setup path."""
         try:
             await self.connect()
-        except _LINK_ERRORS as err:
+        except _LOST as err:
             self._log_connect_ended("Initial connect", err)
 
     async def reconnect(self) -> None:
         """Connect in the background: what an advertisement or a tick set off."""
         try:
             await self.connect()
-        except _LINK_ERRORS as err:
+        except _LOST as err:
             self._log_connect_ended("Reconnect", err)
         finally:
             self.reconnecting = False
@@ -1033,13 +1038,13 @@ class Link:
         if self.stopped:
             # Only a command gets here: one already in flight when the entry
             # was unloaded, or one sent after Home Assistant began to stop.
-            raise _NoNewLinkError(
+            raise NoNewLinkError(
                 f"{self.address}: stopped, taking no new link", "not_running"
             )
         if self.unclosed:
             # Every dial opens a connection to the system bus, and the last
             # one could be neither hung up nor closed (see _async_disconnect).
-            raise _NoNewLinkError(
+            raise NoNewLinkError(
                 f"{self.address}: the previous link is still open and will "
                 "not close; not dialling over it",
                 "link_not_released",

@@ -11,7 +11,6 @@ from time import monotonic
 from typing import Any
 
 from bleak.backends.device import BLEDevice
-from bleak.exc import BleakError
 from bleak_retry_connector import BleakClientWithServiceCache
 from homeassistant.components import bluetooth
 from homeassistant.config_entries import ConfigEntry
@@ -53,16 +52,14 @@ from .const import (
     WRITE_UUID,
 )
 from .link import (
-    _LINK_ERRORS,
     _RECONNECT_INTERVAL,
     Dial,
     Link,
     LinkLostError,
+    NoNewLinkError,
     RefusedError,
     Turn,
     Unclosed,
-    _NoNewLinkError,
-    _reason,
     dial_by_bluetooth,
 )
 from .models import GlowriumModel, resolve_model
@@ -102,8 +99,8 @@ _REPORT_TIMEOUT = 3.0
 _CLOCK_TOLERANCE = 60.0
 
 # The batched state request is muted after this many consecutive refusals. One
-# failure means nothing on a weak link - a dropped connection surfaces as the
-# same BleakError as an outright refusal - and giving up after one leaves a
+# failure means nothing on a weak link - a dropped connection can surface as
+# the same error as an outright refusal - and giving up after one leaves a
 # lamp that has to be read without every property a read does not carry.
 _STATE_REQUEST_ATTEMPTS = 3
 # ...and muted only for this long, not for the session. A model that genuinely
@@ -486,7 +483,7 @@ class GlowriumCoordinator:
         # For a caller that holds _lock itself and has seen to a link: the
         # bench, when it writes what no command of the integration would.
         if self._client is None:
-            raise BleakError("write attempted while disconnected")
+            raise LinkLostError("write attempted while disconnected")
         await self._write_on(Turn(self._link, self._client), payload)
 
     # --- What the link is handed ----------------------------------------------
@@ -932,10 +929,8 @@ class GlowriumCoordinator:
             return
         try:
             raw = await turn.read(INFO_UUID)
-        except _LINK_ERRORS as err:
-            _LOGGER.debug(
-                "Device-info read from %s failed: %s", self.address, _reason(err)
-            )
+        except LinkLostError as err:
+            _LOGGER.debug("Device-info read from %s failed: %s", self.address, err)
             return
         self.device_info = _parse_device_info(raw)
         _LOGGER.debug(
@@ -1028,8 +1023,8 @@ class GlowriumCoordinator:
         """Read the state map; return whether it answered and what it carried."""
         try:
             raw = await turn.read(NOTIFY_UUID)
-        except _LINK_ERRORS as err:
-            _LOGGER.debug("%s state read failed: %s", self.address, _reason(err))
+        except LinkLostError as err:
+            _LOGGER.debug("%s state read failed: %s", self.address, err)
             return False, frozenset()
         return True, self._ingest(raw)
 
@@ -1068,11 +1063,9 @@ class GlowriumCoordinator:
                 else f"Pausing it for {int(_STATE_REQUEST_COOLDOWN // 60)} minutes.",
             )
             return _Asked.REFUSED
-        except _LINK_ERRORS as err:
+        except LinkLostError as err:
             _LOGGER.debug(
-                "%s state request failed, but not by refusing: %s",
-                self.address,
-                _reason(err),
+                "%s state request failed, but not by refusing: %s", self.address, err
             )
             # The link is going, and BlueZ normally says so within seconds.
             # Noted in case it never does (the link's _LOST_GRACE).
@@ -1281,7 +1274,7 @@ class GlowriumCoordinator:
                 lambda turn: self._write_on(turn, payload),
                 vouch=lambda: self._async_device_confirms(payload, reports_before),
             )
-        except _NoNewLinkError as err:
+        except NoNewLinkError as err:
             # What stopped it, when it was the link itself: "out of range,
             # try a proxy" is advice for the radio.
             raise HomeAssistantError(

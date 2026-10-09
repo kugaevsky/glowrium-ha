@@ -482,7 +482,11 @@ async def test_write_raises_after_two_failures(
     with pytest.raises(HomeAssistantError) as err:
         await coordinator.async_set_power(True)
     assert err.value.translation_key == "cannot_connect"
-    assert isinstance(err.value.__cause__, BleakError)  # the BLE error is kept
+    # The BLE error is kept: as what the link made of it, and under that as
+    # the library raised it.
+    assert isinstance(err.value.__cause__, link_module.LinkLostError)
+    assert str(err.value.__cause__) == "down"
+    assert isinstance(err.value.__cause__.__cause__, BleakError)
     assert client.write_gatt_char.await_count == 2  # tried twice, then gave up
 
 
@@ -2065,7 +2069,7 @@ async def test_a_write_without_a_link_is_refused_not_dropped(
     monkeypatch.setattr(link_module, "_CONFIRM_TIMEOUT", 0.01)
     coordinator._client = None
 
-    with pytest.raises(BleakError):
+    with pytest.raises(link_module.LinkLostError):
         await coordinator._write_raw({KEY_POWER: True})
 
 
@@ -4086,7 +4090,7 @@ def test_an_error_goes_into_the_log_by_what_it_says_or_else_by_what_it_is(
     error: Exception, said: str
 ) -> None:
     """The two errors with nothing to say are the two commonest on a weak link."""
-    assert coordinator_module._reason(error) == said
+    assert link_module._reason(error) == said
 
 
 async def test_an_exchange_that_fails_without_a_word_is_called_by_its_name(
@@ -4888,7 +4892,7 @@ async def test_a_link_subscribed_while_the_coordinator_stopped_is_not_kept(
     await coordinator.async_stop()  # nothing held: over at once
     subscribed.set()
 
-    with pytest.raises(BleakError):
+    with pytest.raises(link_module.NoNewLinkError):
         await connecting
     await hass.async_block_till_done()
 
