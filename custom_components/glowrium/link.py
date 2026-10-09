@@ -580,7 +580,7 @@ class Link:
         self.dial_not_before = 0.0
         # Whether this link has announced such a run - in the log and as a
         # repair - and so has an episode to call over (see note_answer).
-        self.fault_announced = False
+        self._fault_announced = False
         # The client whose link BlueZ called "not connected" without reporting
         # it dropped, and when (_LOST_GRACE).
         self.lost: tuple[BleakClientWithServiceCache, float] | None = None
@@ -588,19 +588,19 @@ class Link:
         self.last_answer = monotonic()
         # Whether a background connect is on its way: one at a time, however
         # often the lamp advertises and the tick comes round.
-        self.reconnecting = False
+        self._reconnecting = False
         # The client the first exchange has been made on. A command takes a
         # link without one (see send), so this is how the tick notices a link
         # whose lamp was never asked for its state.
         self.primed: BleakClientWithServiceCache | None = None
-        self.present = False
+        self._present = False
         # What the log last said about the lamp being in reach (see
         # log_reach). Starts as "in reach", so a lamp that is absent from the
         # first moment is said to be.
         self._logged_in_reach = True
         # Set when the coordinator stops and never cleared: a stopped link
         # takes no new client (see open). Nothing would ever let go of it.
-        self.stopped = False
+        self._stopped = False
         # Set when Home Assistant itself is stopping (see shut_down).
         self._shutting_down = False
 
@@ -616,7 +616,7 @@ class Link:
         What the entities' availability goes by (the coordinator's ``available``
         says why it is not the link alone).
         """
-        return self.connected or self.present
+        return self.connected or self._present
 
     def diagnostics(self) -> dict[str, Any]:
         """Describe where the link stands, for a diagnostics download.
@@ -628,7 +628,7 @@ class Link:
         client = self.client
         backend = self.backends.get(client) if client is not None else None
         return {
-            "advertising": self.present,
+            "advertising": self._present,
             "connected": self.connected,
             "primed": client is not None and client is self.primed,
             "client": type(backend).__name__ if backend is not None else None,
@@ -648,7 +648,7 @@ class Link:
         is everywhere either of the two changes while the lamp is watched: a
         coordinator that is stopping lets go of its link and says nothing.
         """
-        if self.stopped:
+        if self._stopped:
             # It let go of its link because it was told to and no longer hears
             # advertisements: where the lamp is, it cannot say. A command that
             # still arrives tells the listeners, and comes through here.
@@ -694,7 +694,7 @@ class Link:
         try:
             with _gatt_call(client):
                 await client.start_notify(self._notify_uuid, self._heard)
-            if self.stopped:
+            if self._stopped:
                 # Stopped while this connect was on its way. Keeping the
                 # link would hand it to a coordinator nobody will stop
                 # again, and the lamp has one slot.
@@ -966,7 +966,7 @@ class Link:
         except _LOST as err:
             self._log_connect_ended("Reconnect", err)
         finally:
-            self.reconnecting = False
+            self._reconnecting = False
 
     def _log_connect_ended(self, what: str, err: Exception) -> None:
         """Say how a background connect ended, when it did not end as meant.
@@ -1000,19 +1000,19 @@ class Link:
         """
         if not present:
             # The device stopped advertising (powered off / out of range).
-            self.present = False
+            self._present = False
             self._reach_changed()
             return
-        was_present = self.present
-        self.present = True
+        was_present = self._present
+        self._present = True
         # Reconnect when the device reappears, but only one attempt at a time
         # (advertisements arrive ~every second; don't spawn a connect storm).
         if (
             not self.connected
-            and not self.reconnecting
+            and not self._reconnecting
             and monotonic() >= self.dial_not_before
         ):
-            self.reconnecting = True
+            self._reconnecting = True
             self._spawn(self.reconnect(), "reconnect")
         if not was_present:
             self._reach_changed()
@@ -1033,8 +1033,8 @@ class Link:
             self.hang_up(client)
         if not self.connected:
             # Held back only while BlueZ will not hang up (note_stuck_hang_up).
-            if not self.reconnecting and monotonic() >= self.dial_not_before:
-                self.reconnecting = True
+            if not self._reconnecting and monotonic() >= self.dial_not_before:
+                self._reconnecting = True
                 self._spawn(self.reconnect(), "reconnect")
             return
         lost, self.lost = self.lost, None
@@ -1070,7 +1070,7 @@ class Link:
 
     def _refuse_what_must_not_be_dialled(self) -> None:
         """Raise the link's own "no" where a dial is known to be wrong."""
-        if self.stopped:
+        if self._stopped:
             # Only a command gets here: one already in flight when the entry
             # was unloaded, or one sent after Home Assistant began to stop.
             raise NoNewLinkError(
@@ -1092,7 +1092,7 @@ class Link:
         is dialled for it: the first connect is whoever watches the lamp's
         next step, and the entities are not there yet.
         """
-        self.present = present
+        self._present = present
 
     def halt(self) -> None:
         """Take no new client from here on, and have no episode left to call over.
@@ -1105,8 +1105,8 @@ class Link:
         any more - the repair standing under the entry from here on is its
         successor's.
         """
-        self.stopped = True
-        self.fault_announced = False
+        self._stopped = True
+        self._fault_announced = False
 
     def shut_down(self) -> None:
         """Hang up as Home Assistant stops: at once, and without waiting.
@@ -1287,7 +1287,7 @@ class Link:
         """
         self.stuck_hang_ups += 1
         over = self.stuck_hang_ups - _STACK_FAULT_AFTER
-        if over < 0 or self.stopped:
+        if over < 0 or self._stopped:
             # A hang-up is given longer than an unload waits for it, so the
             # one that makes it a run can come in after the watching stopped.
             # Nothing dials any more, and an episode announced now is one
@@ -1299,7 +1299,7 @@ class Link:
         gap = _RECONNECT_INTERVAL.total_seconds() * 2 ** min(over + 1, 16)
         self.dial_not_before = monotonic() + min(gap, _STACK_FAULT_BACKOFF_MAX)
         if over == 0:
-            self.fault_announced = True
+            self._fault_announced = True
             self._stack_fault(self.stuck_hang_ups)
             _LOGGER.warning(
                 "%s: BlueZ has left %d requests in a row to disconnect the lamp "
@@ -1315,8 +1315,8 @@ class Link:
     def note_answer(self) -> None:
         """Record that the lamp answered: the link is alive, the stack with it."""
         self.last_answer = monotonic()
-        if self.fault_announced:
-            self.fault_announced = False
+        if self._fault_announced:
+            self._fault_announced = False
             # At the level the episode was announced at, or whoever read
             # that warning never learns it is over. Only an episode this
             # link announced: a count can reach the mark after it has

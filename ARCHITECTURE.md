@@ -548,14 +548,14 @@ Since the device advertises continuously, presence is a far better availability
 signal.
 
 ```python
-available = link.connected or link.present  # Link.in_reach
+available = connected or advertising  # Link.in_reach
 ```
 
-- `Link.present` is maintained from the Bluetooth stack: seeded with
-  `bluetooth.async_address_present`, set `True` by the advertisement callback, and
-  set `False` by `bluetooth.async_track_unavailable` (device powered off / out of
-  range). The callbacks are the coordinator's; they hand what they see to
-  `Link.advertising`.
+- Whether the lamp is advertising is what the Bluetooth stack tells the link:
+  seeded with `bluetooth.async_address_present` as the watching begins
+  (`Link.begin`), set by the advertisement callback, and cleared by
+  `bluetooth.async_track_unavailable` (device powered off / out of range). The
+  callbacks are the coordinator's; they hand what they see to `Link.advertising`.
 - Reconnects happen **silently underneath** an entity that stays `available`.
 - When `available` changes, the log says so at INFO, once each way: `is out of
   reach`, `is back in reach` (`Link.log_reach`). It is judged by the same
@@ -598,13 +598,15 @@ underscore: `Link.open()` is the first half of what `_connect_locked` was (the
 refusals, the dial, subscribe-then-keep), `Link.hang_up()` is `_hang_up`,
 `Link.connect()` is `_async_ensure_connected`, `Link.prime_held()` and
 `Link.probe_held()` are `_async_prime` and `_async_probe`, `Link.tick()` is
-what the poll decided, `Link.send()` is the delivery of a command. Until the
-tests and the bench have crossed over, the coordinator still keeps the old
-names as ways through to the link; nothing of its own goes by them, and a
-test reads the source to hold that.
+what the poll decided, `Link.send()` is the delivery of a command. The tests
+have crossed over: they stand a scripted lamp at the dial (`tests/lamp.py`)
+and reach the link a coordinator holds through one door, `link_of`. The
+bench has not yet, and the six names it still comes in by are kept for it
+alone; nothing of the coordinator's own goes by them, and a test reads the
+source to hold that.
 
 Two independent triggers, both funnelling into a single guarded reconnect task
-(`Link.reconnecting` prevents a connect storm from the ~1 Hz advertisements):
+(one at a time, so that the ~1 Hz advertisements do not start a connect storm):
 
 1. **Advertisement callback** — when the lamp reappears and there is no live
    connection, kick off a reconnect.
@@ -852,7 +854,8 @@ coordinator stops watching. A coordinator that has stopped watching announces
 no episode at all: a hang-up is given longer than an unload waits for it, so
 the third unanswered one can come in afterwards, and a repair raised then
 would have nobody left to take it down. Nor does it end one: an episode is
-called over by the coordinator that announced it (`Link.fault_announced`), since
+called over by the coordinator that announced it (the link remembers whether
+it did), since
 the repair standing under the entry's id after a reload is the next
 coordinator's. It is not persistent - the next start finds out for itself.
 The lamp's name goes into it through `identity.as_text`: a repair is rendered
@@ -1140,23 +1143,27 @@ Unit tests live in `tests/` and **never touch real Bluetooth**:
 - `test_dial.py` — the dial the coordinator is handed, and the one it uses when
   handed none. A link is made through a callable that is given the callback
   for a link that is lost and returns a connected client. In the tests that is
-  a scripted lamp's (`tests/lamp.py`): it hands out a link, says a frame, loses
-  the link, and is silent once hung up. A test with a dial of its own — a
-  client built by hand, a stack that will not hang up — puts it behind the
-  lamp's. Nothing replaces the library's connect, except the tests of the
-  dial that is made of it - and two tests of setup in `test_init.py`, which
-  the integration hands no dial: there the lamp is one whose connect never
-  returns.
+  a scripted lamp's (`tests/lamp.py`): it hands out a link, says a frame,
+  answers the state request as a G7 does, can be given something to read,
+  fails or holds a write, a read, a subscription or a hang-up, is slow to be
+  found, loses the link, and is silent once hung up - each of these only as
+  far as a test asks of it. A test with a dial of its own — bleak's own
+  client over a stub bus — puts it behind the lamp's. `link_of` is the one
+  door from a test to the link a coordinator holds, for what Home Assistant's
+  watchers drive: the tick, an advertisement, a connect. Nothing replaces the
+  library's connect, except the tests of the dial that is made of it - and
+  `in_range`, for a coordinator the integration's own setup made and handed
+  no dial: there the lamp stands where that dial finds it.
 - `test_bus_lifetime.py` — what is left behind when a link is let go of. It
   counts open bus connections rather than calls to `disconnect()`, and runs
   the same against bleak's own BlueZ client with a stub bus, so a bleak
   release that renames what `_close_bus` reaches for fails here. The backoff
   from a stack that will not hang up, and the checks on a held link, are
-  tested here too. So is the seam between the link and the device half, by
+  tested here too, on a `Link` built alone. So is the seam between the link and the device half, by
   tests that read the source: every GATT call is the link's and made under
   its guard; nothing outside the link's module connects a client, hangs one
   up or names what the Bluetooth library raises; the coordinator goes by
-  none of the names it still keeps for the tests; and hanging a link up and
+  none of the names it still keeps for the bench; and hanging a link up and
   telling the entities stand together in one method.
 - `test_init.py` — setup and unload of the config entry, the entities each
   platform produces and the command each control ends in, what is restored
