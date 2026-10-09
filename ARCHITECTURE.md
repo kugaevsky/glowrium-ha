@@ -25,8 +25,10 @@ stateless views over that coordinator.
   ble"*). Commands are **CBOR** maps written to one characteristic; state arrives
   as CBOR notifications on another.
 - **State model:** the device is a bag of integer-keyed properties (`0x06` =
-  power, `0x08` = brightness, …). The coordinator keeps the last-known value of
-  each in `state: dict[int, Any]` and updates it from notifications.
+  power, `0x08` = brightness, …). The last-known value of each is kept in the
+  state mirror (`mirror.py`), a read-only mapping the coordinator exposes as
+  `state`, filled from the lamp's notifications and from the echo of what was
+  written to it.
 - **Entities:** `light`, `select`, `number`, `switch`, `button`, `time`,
   `sensor`, `binary_sensor` — each reads from `coordinator.state` and calls a
   `coordinator.async_set_*` method to write.
@@ -42,7 +44,8 @@ stateless views over that coordinator.
 | --- | --- |
 | `__init__.py` | `async_setup_entry` / `async_unload_entry`; builds the coordinator, stores it in `entry.runtime_data`, forwards platforms, has the coordinator hang up when Home Assistant stops, and keeps for each lamp what could not be closed |
 | `config_flow.py` | Bluetooth auto-discovery + manual picker for `Glowrium-*` devices |
-| `coordinator.py` | The device: the state mirror, all command methods, the clock, activation, the telling of the entities - and what is said to the lamp: the first exchange on a link, the question for a silent one, each command. Home Assistant's watchers stand here and tell the link what they see |
+| `coordinator.py` | The device: the intake of frames into the mirror, all command methods, the clock, activation, the telling of the entities - and what is said to the lamp: the first exchange on a link, the question for a silent one, each command. Home Assistant's watchers stand here and tell the link what they see |
+| `mirror.py` | The state mirror: what the lamp has said, frame by frame, and what was written to it, as a read-only mapping. Takes a frame - never raises; the decoder's outcomes, their log lines and the blanking of a printed frame are its - counts the reports and what each carried, dates the lamp's clock |
 | `link.py` | The link: the client and the lock around it, the dial, the hang-up and the closing of the client's bus, the stack that will not hang up, whether the lamp is in reach - and when the lamp is spoken to: the background connect, the first exchange, the question for a silent link, the delivery of a command with its one retry, and every deadline. No client leaves it. No Home Assistant in it and no protocol |
 | `cbor.py` | Minimal CBOR encoder/decoder (only the subset the device uses) — the *wire* format |
 | `protocol.py` | Semantic codec — byte layouts (`0x11` slot, `0x2f` ramp, `0x35` daylight saving, `0x05` clock) ↔ values, read and written; the coordinator's typed accessors and setters delegate here |
@@ -62,7 +65,8 @@ stateless views over that coordinator.
 flowchart TD
     CF["config_flow.py<br/>discovers Glowrium-*<br/>creates ConfigEntry {address}"]
     INIT["__init__.py · async_setup_entry<br/>builds GlowriumCoordinator<br/>entry.runtime_data = coordinator<br/>forwards PLATFORMS"]
-    COORD["coordinator.py · GlowriumCoordinator<br/>what is said to the lamp + state: dict int→value"]
+    COORD["coordinator.py · GlowriumCoordinator<br/>what is said to the lamp; the intake of frames"]
+    MIRROR["mirror.py · Mirror<br/>what the lamp said: take · echo · reports"]
     LINK["link.py · Link<br/>the client, the lock, every deadline:<br/>dial, exchanges, commands, hang-up"]
     CBOR["cbor.py<br/>encode / decode"]
     PLAT["platforms<br/>light · select · number · switch<br/>button · time · sensor · binary_sensor"]
@@ -77,8 +81,9 @@ flowchart TD
     PLAT --> ENT
     COORD -->|"encode {key: value}"| CBOR
     CBOR -->|"bytes → facebd01 (write)"| DEV
-    DEV -->|"facebd02 notify → bytes"| CBOR
-    CBOR -->|"decode → state dict"| COORD
+    DEV -->|"facebd02 notify → bytes"| COORD
+    COORD -->|"take(frame) · echo(write)"| MIRROR
+    MIRROR -->|"decode"| CBOR
     COORD -->|"listeners → async_write_ha_state"| ENT
 ```
 
@@ -316,9 +321,8 @@ as it went and nothing said that the rest of it had not been understood.
 
 An item with no reading has no length either, so nothing behind it can be
 found. What was ahead of it was read as from any whole frame, and the error
-carries those pairs (`ahead`). The coordinator keeps them (`_ingest`), and
-says so - once per session as a warning that carries the frame, then at debug
-(`_log_unreadable_item`). Dropping the frame instead would cost more than its
+carries those pairs (`ahead`). The mirror keeps them (`Mirror.take`), and
+says so - once per session as a warning that carries the frame, then at debug. Dropping the frame instead would cost more than its
 properties. A state request answered only by such a frame would count as
 unanswered; the connect would fall back on reading the state; and on BlueZ a
 read ends the link two seconds later. A model whose report carries a single
@@ -328,7 +332,7 @@ could be read is still no report, and that lamp is read, as a silent one is.
 
 Wherever a frame is printed - this warning, the one for trailing bytes, the
 debug line for a frame that could not be decoded at all - it is printed
-without what says where the lamp is (`_for_the_log`). The coordinates and the
+without what says where the lamp is (`mirror._for_the_log`). The coordinates and the
 times the lamp works out from them are found by their bytes and not by
 decoding, since these are the frames that could not be decoded to their end,
 and are put down as `xx`. The lines ask for the frame to be posted; they
@@ -347,10 +351,31 @@ Trailing bytes are an error on both paths, raised as `cbor.TrailingBytesError`
 (a `ValueError` subclass carrying the byte count). Accepting the remainder would
 let a corrupt frame decode to a short but plausible map — `{0x14: false}` among
 them, the one value that triggers the bring-up sequence. Because rejecting them
-is new as of the split-frame fix, `_ingest` reports the first such frame per
+is new as of the split-frame fix, the mirror reports the first such frame per
 session as a warning carrying the model and the frame hex, so a regression on a
 model that never produced them shows up as itself rather than as generic
 undecodable garbage.
+
+### The state mirror
+
+What the lamp has said, frame by frame, and what was written to it, is a
+`Mirror` (`mirror.py`): a read-only mapping of property id to value that the
+coordinator exposes as `state`. A value gets in through `take` - a frame from
+the lamp; it returns the ids the frame carried, empty when the frame was no
+report, and never raises, since it runs inside the Bluetooth stack's notify
+handler - or through `echo`, the payload of a write the lamp acknowledged,
+which is no report: it moves no number and wakes nobody. Nothing is ever
+taken out, so what the mirror holds can be hours old; the lamp's clock is
+dated by the host's whenever it comes in, either way.
+
+Reports are numbered. `reports` is how many there have been and
+`reported_since(n)` the ids the reports numbered above `n` carried: priming
+asks whether that covers `STATE_KEYS`, vouching for a failed write whether it
+meets what the write set (ADR 0005). `next_report()` returns on the first
+report after the call - never on an echo. The coordinator's one intake,
+`_ingest`, does the two things that are not the mirror's: it notes that the
+lamp answered, whatever the frame says, and tells the entities when the
+frame was a report (ADR 0013).
 
 ### Property-key table
 
@@ -966,7 +991,7 @@ check only runs when a write actually reached the characteristic. It must also
 be **about the command**: the lamp reports of its own accord all day, and a
 fresh report of its brightness says nothing about a power flag the mirror got
 wrong hours ago. At least one property the command set has to have been
-reported since the command was taken up (`_reported_at`) — one, not all,
+reported since the command was taken up (`Mirror.reported_since`) — one, not all,
 because the lamp reports what changed and a mode command carries a ramp that
 is usually what it already was. Only keys in `STATE_KEYS` are compared — a
 mode command also carries fixed parameters (`0x2c`, `0x32`) the device never

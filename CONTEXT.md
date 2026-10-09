@@ -25,7 +25,7 @@ and so on; a frame is a map of them (`const.py`).
 **Report**:
 A frame from the lamp that decoded to at least one property, taken into the
 mirror and counted. A report, however partial, is the lamp answering
-(`coordinator._ingest`).
+(`Mirror.take`, through `coordinator._ingest`).
 
 **State request**:
 The write of `STATE_KEYS` - the ids the vendor app asks for, plus the clock -
@@ -196,9 +196,24 @@ command set, newer than the write? A command vouched for is delivered
 ### The Home Assistant side
 
 **State mirror**:
-The last value the lamp gave for each property, never emptied when a link
-drops, and the moment its clock came in (`coordinator.state`,
-`coordinator._mirror`).
+The last value the lamp gave for each property and the last value written to
+it, never emptied when a link drops, and the moment its clock came in: a
+read-only mapping with two ways in, a frame taken and a write echoed
+(`mirror.py`, `Mirror`; `coordinator.state`).
+
+**Echo**:
+A command's payload reflected into the mirror after the lamp acknowledged the
+write. Our word, not the lamp's: no report, no count, no wake-up, no vouching
+(`Mirror.echo`).
+
+**Carried**:
+The ids one frame put into the mirror; what `Mirror.take` returns. Empty: the
+frame was no report.
+
+**Reported since**:
+The ids some report numbered above a mark carried. What priming compares with
+the keys it asked for, and vouching with what a failed write set
+(`Mirror.reported_since`, `Mirror.reports`).
 
 **Entity listeners**:
 The entities, each told on its own when the mirror or the reach changed; one
