@@ -322,7 +322,7 @@ as it went and nothing said that the rest of it had not been understood.
 An item with no reading has no length either, so nothing behind it can be
 found. What was ahead of it was read as from any whole frame, and the error
 carries those pairs (`ahead`). The mirror keeps them (`Mirror.take`), and
-says so - once per session as a warning that carries the frame, then at debug. Dropping the frame instead would cost more than its
+says so - once per session as a warning, with the frame in the debug log. Dropping the frame instead would cost more than its
 properties. A state request answered only by such a frame would count as
 unanswered; the connect would fall back on reading the state; and on BlueZ a
 read ends the link two seconds later. A model whose report carries a single
@@ -330,13 +330,18 @@ item nobody has given a reading would lose its link on every connect - which
 is what 0.2.0 and 0.2.1 did to every lamp. A frame of which nothing at all
 could be read is still no report, and that lamp is read, as a silent one is.
 
-Wherever a frame is printed - this warning, the one for trailing bytes, the
-debug line for a frame that could not be decoded at all - it is printed
-without what says where the lamp is (`mirror._for_the_log`). The coordinates and the
-times the lamp works out from them are found by their bytes and not by
-decoding, since these are the frames that could not be decoded to their end,
-and are put down as `xx`. The lines ask for the frame to be posted; they
-cannot rest on whoever posts it blanking hex by hand.
+A frame is printed in the debug log and nowhere else. This warning and the
+one for trailing bytes say what was wrong and where the frame is, and carry
+none of it: its bytes are the lamp's to choose, and the log a warning stands
+in is posted for reasons that have nothing to do with this integration.
+Wherever a frame is printed, it is printed without what says where the lamp
+is (`mirror._for_the_log`). The coordinates and the times the lamp works out
+from them are found by their bytes and not by decoding, since these are the
+frames that could not be decoded to their end, and are put down as `xx`: an
+id by its last byte, so under every width it can be written in; behind any
+tags; the times under every head a byte string can have. A value in a form
+nobody has met, or one that stands without its id, is not found by looking
+for it - the lines say to look the frame over, and cannot rest on that alone.
 
 The same warnings name the lamp's model and firmware, and so does the one for
 a refused state request. Both come out of the device-info string with the
@@ -352,7 +357,7 @@ Trailing bytes are an error on both paths, raised as `cbor.TrailingBytesError`
 let a corrupt frame decode to a short but plausible map — `{0x14: false}` among
 them, the one value that triggers the bring-up sequence. Because rejecting them
 is new as of the split-frame fix, the mirror reports the first such frame per
-session as a warning carrying the model and the frame hex, so a regression on a
+session as a warning carrying the model, with the frame in the debug log, so a regression on a
 model that never produced them shows up as itself rather than as generic
 undecodable garbage.
 
@@ -376,6 +381,14 @@ report after the call - never on an echo. The coordinator's one intake,
 `_ingest`, does the two things that are not the mirror's: it notes that the
 lamp answered, whatever the frame says, and tells the entities when the
 frame was a report (ADR 0013).
+
+The mirror is bounded. The device chooses the ids it reports, and whatever
+answers at the lamp's address is taken for the lamp, so the mirror is told
+which ids the integration knows (`const.KNOWN_KEYS`) and always keeps those,
+and every echo; of the ids nobody named it keeps the first 64 a session
+brings. A property beyond that is counted and not stored - the log says so
+once, and the diagnostics give the number - and a frame of which nothing was
+kept is no report.
 
 ### Property-key table
 

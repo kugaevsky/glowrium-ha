@@ -1,19 +1,31 @@
 # A frame printed in the log is blanked of what places the lamp; the diagnostics repeat nothing after the lamp
 
 - **Status:** accepted
-- **Date:** 2026-10-05
+- **Date:** 2026-10-05; 2026-10-09 (no frame above debug; the place found under
+  more of its spellings)
 
 ## Context
 
-Three log lines ask for a frame to be posted to an issue: the warning for a
-frame with trailing bytes, the warning for a frame with an item the decoder
-cannot read, and the debug line for a frame that could not be decoded at all.
+A frame the integration could not read in full is printed, so that it can be
+posted to an issue: one with trailing bytes, one with an item the decoder
+cannot read, one that could not be decoded at all, one that decodes to
+nothing of use. Until 2026-10-09 the first two were printed in a warning -
+visible without debug logging, in a log that is posted for reasons that have
+nothing to do with this integration.
 A frame can hold the lamp's coordinates (`0x0a`, `0x0b`, float64 degrees) and
 the sunrise and sunset times it works out from them (`0x34`), which give the
 place away as well. These are exactly the frames that could not be decoded to
 their end, so what to blank cannot be found by decoding. The first version
 skipped past each match; a false match swallowed the real key and a coordinate
 was printed whole (caught in review, 2026-10-05).
+
+The search knows the shapes seen so far, and a frame that gets printed is one
+the decoder could not finish. Measured on 2026-10-09: the decoder takes the
+times' id under `19 00 34`, and the search looked for `18 34`; a coordinate
+behind a tag, the times behind a tag and the times as a string of indefinite
+length were printed whole, each in a warning it caused itself; and a frame
+that begins inside the times - the second half of a split map - is taken for
+trailing bytes and was printed in that warning with every time readable.
 
 The diagnostics download exists to be attached to a public issue, and nearly
 everything that could go into it is chosen by the lamp: which ids it reports
@@ -22,11 +34,17 @@ each ends. A deny-list over the mirror would be a list of what one lamp sent.
 
 ## Decision
 
-- Every frame printed in the log goes through `mirror._for_the_log`: a coordinate
-  key followed by a float, and the curve key followed by a byte string, are
-  found by their bytes at every offset independently and put down as `xx`.
-  The search does not skip past a match. A new line that prints a frame goes
-  through the same function.
+- No log record above debug holds bytes of a frame. The two warnings a frame
+  can cause say what was wrong and that the frame is in the debug log; the
+  frame is printed at debug, the first one too. What the lamp chose is not
+  repeated where nobody asked for it: the log follows the diagnostics.
+- Every frame that is printed goes through `mirror._for_the_log`: the
+  coordinates, each a float, and the curve, a byte string, are found by their
+  bytes at every offset independently and put down as `xx` - an id by its
+  last byte, so under every width it can be written in; behind any tags; the
+  curve under every head a byte string can have, an indefinite length among
+  them. The search does not skip past a match. A new line that prints a frame
+  goes through the same function, and is a debug line.
 - The diagnostics file is rebuilt from what the integration can read, never
   copied from the mirror: a known property is read the way the integration
   reads it and written out from that reading (a schedule as its times, a ramp
@@ -48,6 +66,11 @@ each ends. A deny-list over the mirror would be a list of what one lamp sent.
 
 - No deny-list, no raw bytes, no skipping past a match when blanking. A
   logged frame still gets one look: the search is by bytes.
+- What no search finds stays readable in the debug log: a value in a form
+  nobody has met, a value under an id nobody named, and a value without its
+  id - a frame that begins inside one. The lines that say where the frame is
+  say to look it over.
+- Whoever sends a frame enables debug logging first; the README says how.
 - The `link` block is the link's own eight fields in a fixed order; a test
   holds the exact list, so a new field fails it until it has been looked at.
 - Home Assistant wraps the file in a header of its own (version, time zone,
@@ -57,7 +80,9 @@ each ends. A deny-list over the mirror would be a list of what one lamp sent.
 
 - ARCHITECTURE.md, "Frames with an item that cannot be read" (last
   paragraphs) and "Diagnostics".
-- `tests/test_coordinator.py::test_no_line_in_the_log_carries_the_coordinates`,
+- `tests/test_coordinator.py::test_no_line_in_the_log_carries_the_coordinates`;
+  `tests/test_mirror.py::test_no_bytes_of_a_frame_are_logged_above_debug`,
+  `::test_a_frame_goes_into_the_log_without_what_says_where_the_lamp_is`,
   `::test_wherever_it_stands_in_whatever_noise_a_coordinate_is_blanked`;
   `tests/test_diagnostics.py::test_the_download_does_not_say_where_the_lamp_is_or_which_one_it_is`,
   `::test_what_the_integration_cannot_name_is_only_counted`,

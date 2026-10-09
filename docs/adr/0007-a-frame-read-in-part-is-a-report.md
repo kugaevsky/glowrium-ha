@@ -36,8 +36,8 @@ callback, inside the Bluetooth stack's own message handler - catches exactly
   a `ValueError` carrying the pairs ahead of it (`ahead`). The mirror
   keeps them (`Mirror.take`, through the coordinator's `_ingest`) and counts the
   frame as a report - the state request
-  it answers is answered - warning once per session with the frame, then at
-  debug. A frame of which nothing was read is still no report.
+  it answers is answered - warning once per session, with the frame in the
+  debug log (ADR 0012). A frame of which nothing was read is still no report.
 - Trailing bytes raise `TrailingBytesError` (a `ValueError`) on both paths and
   the frame is dropped: the remainder could decode to a short, plausible map,
   `{0x14: false}` among them - the value that triggers the bring-up.
@@ -53,7 +53,8 @@ callback, inside the Bluetooth stack's own message handler - catches exactly
 - The bound is load-bearing. A claim that an overflow is unreachable is to be
   measured over every form of nesting - keys, values, arrays - not the forms a
   reviewer happened to name; it was wrongly "corrected" once that way.
-- Every frame these warnings print goes through `mirror._for_the_log` (ADR 0012).
+- Neither warning prints the frame; the debug lines that do go through
+  `mirror._for_the_log` (ADR 0012).
 
 ## Evidence
 

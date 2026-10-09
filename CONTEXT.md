@@ -198,8 +198,15 @@ command set, newer than the write? A command vouched for is delivered
 **State mirror**:
 The last value the lamp gave for each property and the last value written to
 it, never emptied when a link drops, and the moment its clock came in: a
-read-only mapping with two ways in, a frame taken and a write echoed
+read-only mapping with two ways in, a frame taken and a write echoed. It
+keeps every known property and every echo, and a bounded number of the rest
 (`mirror.py`, `Mirror`; `coordinator.state`).
+
+**Known property**:
+A property the integration has a name for: what it asks the lamp for, what
+only its commands write, and the curve. The mirror always keeps these; of
+the properties nobody named it keeps the first sixty-four a session brings
+and counts the rest (`const.KNOWN_KEYS`, `Mirror.not_kept`).
 
 **Echo**:
 A command's payload reflected into the mirror after the lamp acknowledged the
@@ -208,7 +215,7 @@ write. Our word, not the lamp's: no report, no count, no wake-up, no vouching
 
 **Carried**:
 The ids one frame put into the mirror; what `Mirror.take` returns. Empty: the
-frame was no report.
+frame was no report. An id there was no room for was not carried.
 
 **Reported since**:
 The ids some report numbered above a mark carried. What priming compares with
