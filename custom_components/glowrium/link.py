@@ -688,6 +688,9 @@ class Link:
         # Committed only once notifications are live: a client without them
         # reports as connected forever while no state ever arrives again.
         self.client = client
+        # Taken, and so told: a link is half of what the lamp's reach goes by,
+        # and what is done on it next can take seconds, or never end.
+        self._reach_changed()
         return client
 
     async def send(self, say: Talk, *, vouch: Callable[[], Awaitable[bool]]) -> None:

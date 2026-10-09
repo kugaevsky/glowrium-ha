@@ -2,6 +2,7 @@
 
 import asyncio
 from collections.abc import Callable
+import contextlib
 import logging
 import random
 from time import monotonic
@@ -1477,7 +1478,7 @@ async def test_what_the_first_exchange_wrote_is_told_to_the_entities(
         await coordinator._async_reconnect()
 
     assert coordinator.activated is True
-    assert shown[0] is False  # the lamp's own report, before anything was written
+    assert False in shown  # the lamp's own report, before anything was written
     assert shown[-1] is True  # and told again once it was
 
 
@@ -2096,6 +2097,36 @@ async def test_the_bench_takes_a_link_and_writes_with_nothing_asked_of_the_lamp(
     client.write_gatt_char.assert_awaited_once_with(
         WRITE_UUID, cbor.encode({KEY_POWER: True}), response=True
     )
+
+
+async def test_the_entities_are_told_when_a_link_is_taken(hass: HomeAssistant) -> None:
+    """A link is half of what the entities' reach goes by, and they hear of it.
+
+    Availability is "advertising, or a link". A lamp that is linked while it
+    is not heard advertising is in reach from the moment the link is held -
+    not from the end of the first exchange seconds later, and not from
+    whenever the lamp next has something to report.
+    """
+    coordinator, client = _connected_coordinator(hass)
+    coordinator._client = None
+    _dialling(coordinator, client)
+
+    async def _never(*_args: object, **_kwargs: object) -> None:
+        await asyncio.Event().wait()
+
+    client.write_gatt_char = AsyncMock(side_effect=_never)  # asked, never answered
+    seen: list[bool] = []
+    coordinator.async_add_listener(lambda: seen.append(coordinator.available))
+
+    connecting = asyncio.create_task(coordinator._async_ensure_connected())
+    try:
+        for _ in range(5):  # dialled, subscribed, waiting on its first question
+            await asyncio.sleep(0)
+        assert seen == [True]
+    finally:
+        connecting.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await connecting
 
 
 async def test_a_connect_that_waited_behind_a_command_dials_nothing(

@@ -37,6 +37,13 @@ All notable changes to this project are documented here. The format is based on
   repair for a stuck stack comes some twenty seconds later; once a client is
   kept, a command is told at once that the link was not released, as before
   ([#21](https://github.com/kugaevsky/glowrium-ha/issues/21)).
+- **The entities learn of a connection when it is made.** A lamp is
+  available while it advertises or while there is a connection to it. Of a
+  connection the entities were told once the first exchange on it was over -
+  on a weak link, seconds later - or when the command that made it had
+  finished. A lamp connected while it was not heard advertising read as
+  unavailable for that long. They are told at the moment the connection is
+  made ([#21](https://github.com/kugaevsky/glowrium-ha/issues/21)).
 
 ## [0.3.1] - 2026-10-08
 
