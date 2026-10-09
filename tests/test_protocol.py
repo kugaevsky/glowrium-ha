@@ -14,8 +14,11 @@ from custom_components.glowrium.const import (
     KEY_TIME,
     KEY_TIME_SYNCED,
     KEY_TIMER,
-    TIMER_DEFAULT,
+    TIMER_SLOT_LENGTH,
 )
+
+# A schedule slot: enabled, 06:00 to 18:00, 100 %, no fade.
+_A_SLOT = bytes.fromhex("0100000006001200640000")
 
 
 def test_be2_minutes_roundtrip() -> None:
@@ -37,25 +40,28 @@ def test_timer_slot_guards() -> None:
     """timer_slot returns bytes only for a present, long-enough slot."""
     assert protocol.timer_slot({}) is None
     assert protocol.timer_slot({KEY_TIMER: b"\x00\x00"}) is None  # too short
-    assert protocol.timer_slot({KEY_TIMER: TIMER_DEFAULT}) == TIMER_DEFAULT
+    assert len(_A_SLOT) == TIMER_SLOT_LENGTH
+    assert protocol.timer_slot({KEY_TIMER: _A_SLOT[:-1]}) is None  # a byte short
+    assert protocol.timer_slot({KEY_TIMER: _A_SLOT}) == _A_SLOT
 
 
 def test_editable_timer_slot_is_an_independent_copy() -> None:
     """editable_timer_slot yields a mutable copy, or None when never read.
 
-    It deliberately does not fall back to TIMER_DEFAULT: the slot is written as
+    It deliberately does not fall back to a default: the slot is written as
     one unit, so defaulting to change a single field overwrites the rest.
     """
     assert protocol.editable_timer_slot({}) is None
-    slot = protocol.editable_timer_slot({KEY_TIMER: bytes(TIMER_DEFAULT)})
-    assert slot == bytearray(TIMER_DEFAULT)
-    slot[4] = 7  # mutating the copy must not touch the module default
-    assert TIMER_DEFAULT[4] != 7
+    state = {KEY_TIMER: bytearray(_A_SLOT)}
+    slot = protocol.editable_timer_slot(state)
+    assert slot == bytearray(_A_SLOT)
+    slot[4] = 7  # mutating the copy must not touch what the lamp reported
+    assert state[KEY_TIMER] == _A_SLOT
 
 
 def test_schedule_fields_decode() -> None:
     """Start/end/brightness/gradual decode from their 0x11 slot offsets."""
-    slot = bytearray(TIMER_DEFAULT)
+    slot = bytearray(_A_SLOT)
     slot[4], slot[5] = 7, 30  # start 07:30
     slot[6], slot[7] = 19, 45  # end 19:45
     slot[8] = 80  # brightness
@@ -77,14 +83,14 @@ def test_schedule_fields_none_when_absent() -> None:
 
 def test_schedule_time_tolerates_a_malformed_slot() -> None:
     """A malformed hour/minute reads as None rather than raising."""
-    slot = bytearray(TIMER_DEFAULT)
+    slot = bytearray(_A_SLOT)
     slot[4] = 25  # invalid hour
     assert protocol.schedule_start({KEY_TIMER: bytes(slot)}) is None
 
 
-# A slot unlike TIMER_DEFAULT in every byte a setter could touch or spare: a
-# setter that rebuilt the slot from the default, or wrote one field too many,
-# shows in it.
+# A slot unlike _A_SLOT in every byte a setter could touch or spare: a setter
+# that rebuilt the slot from a fixed one, or wrote one field too many, shows
+# in it.
 _SLOT = bytes.fromhex("01aabbcc0615122d40012c")
 
 

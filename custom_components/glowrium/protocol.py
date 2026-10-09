@@ -29,10 +29,10 @@ from .const import (
     KEY_TIME_SYNCED,
     KEY_TIMER,
     TIMER_BRIGHTNESS,
-    TIMER_DEFAULT,
     TIMER_END_H,
     TIMER_END_M,
     TIMER_GRADUAL,
+    TIMER_SLOT_LENGTH,
     TIMER_START_H,
     TIMER_START_M,
 )
@@ -88,7 +88,7 @@ def ramp_minutes(state: dict[int, Any]) -> int | None:
 def timer_slot(state: dict[int, Any]) -> bytes | None:
     """Return the raw 0x11 schedule slot if present and well-formed, else None."""
     value = state.get(KEY_TIMER)
-    if isinstance(value, (bytes, bytearray)) and len(value) >= len(TIMER_DEFAULT):
+    if isinstance(value, (bytes, bytearray)) and len(value) >= TIMER_SLOT_LENGTH:
         return bytes(value)
     return None
 

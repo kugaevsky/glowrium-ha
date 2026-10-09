@@ -432,8 +432,9 @@ encoders, which return the whole slot with one field changed).
 | `8` | brightness | `0..100` |
 | `9`–`10` | gradual | fade duration, seconds, **big-endian** |
 
-Default (`TIMER_DEFAULT`): `01 00 00 00 06 00 12 00 64 00 00` → enabled, 06:00 →
-18:00, 100 %, no fade.
+For example, `01 00 00 00 06 00 12 00 64 00 00` → enabled, 06:00 → 18:00,
+100 %, no fade. A value under `0x11` shorter than the 11 bytes
+(`TIMER_SLOT_LENGTH`) is not read as a slot.
 
 ### Lighting-mode command
 

@@ -45,7 +45,6 @@ from custom_components.glowrium.const import (
     NOTIFY_UUID,
     STATE_KEYS,
     TIMER_BRIGHTNESS,
-    TIMER_DEFAULT,
     TIMER_END_H,
     TIMER_START_H,
     TIMER_START_M,
@@ -58,6 +57,9 @@ from custom_components.glowrium.coordinator import (
 )
 
 from .lamp import LampLink, ScriptedLamp, lamp_of, link_of, turn_over
+
+# A schedule slot: enabled, 06:00 to 18:00, 100 %, no fade.
+_A_SLOT = bytes.fromhex("0100000006001200640000")
 
 
 def _at_a_lamp(
@@ -299,9 +301,9 @@ async def test_sync_location_writes_nothing_without_home_assistant() -> None:
 async def test_set_timer_start(hass: HomeAssistant) -> None:
     """Setting the schedule start edits only the start bytes of the 0x11 slot."""
     coordinator, lamp = _at_a_lamp(hass)
-    coordinator.state[KEY_TIMER] = bytes(TIMER_DEFAULT)  # slot must be read first
+    coordinator.state[KEY_TIMER] = _A_SLOT  # slot must be read first
     await coordinator.async_set_timer_start(7, 15)
-    expected = bytearray(TIMER_DEFAULT)
+    expected = bytearray(_A_SLOT)
     expected[4], expected[5] = 7, 15
     assert lamp.written == [(WRITE_UUID, cbor.encode({KEY_TIMER: bytes(expected)}))]
 
@@ -309,9 +311,9 @@ async def test_set_timer_start(hass: HomeAssistant) -> None:
 async def test_set_timer_gradual(hass: HomeAssistant) -> None:
     """Gradual is stored as 2-byte big-endian seconds (5 min -> 300 = 0x012c)."""
     coordinator, lamp = _at_a_lamp(hass)
-    coordinator.state[KEY_TIMER] = bytes(TIMER_DEFAULT)  # slot must be read first
+    coordinator.state[KEY_TIMER] = _A_SLOT  # slot must be read first
     await coordinator.async_set_timer_gradual(5)
-    expected = bytearray(TIMER_DEFAULT)
+    expected = bytearray(_A_SLOT)
     expected[9:11] = (300).to_bytes(2, "big")
     assert lamp.written == [(WRITE_UUID, cbor.encode({KEY_TIMER: bytes(expected)}))]
 
@@ -739,14 +741,13 @@ async def test_schedule_setters_refuse_when_slot_unread(hass: HomeAssistant) -> 
 async def test_schedule_setters_work_once_slot_is_known(hass: HomeAssistant) -> None:
     """With the slot read, a setter changes only its own field.
 
-    The slot below is deliberately unlike TIMER_DEFAULT in every byte a setter
-    could clobber: a fixture that shares the enabled flag or the brightness with
-    the default cannot tell "preserved the user's value" from "substituted the
-    default", which is the regression this exists to catch.
+    The slot below shares no byte a setter could clobber with the one the
+    other schedule tests read: a fixture that did could not tell "preserved
+    the user's value" from "wrote a slot of its own", which is the regression
+    this exists to catch.
     """
     coordinator, lamp = _at_a_lamp(hass)
     slot = bytes.fromhex("000300fe091111115a0102")
-    assert slot != TIMER_DEFAULT
     coordinator.state[KEY_TIMER] = slot
     await coordinator.async_set_timer_start(7, 30)
     written = cbor.decode(lamp.written[-1][1])[KEY_TIMER]
