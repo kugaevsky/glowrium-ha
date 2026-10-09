@@ -1950,18 +1950,16 @@ async def test_a_failed_reconnect_does_not_wedge_reconnection(
     flag set, the lamp would never be reconnected again for the rest of the
     session - on this hardware failures are the normal case, not the rare one.
     """
-    coordinator, _ = _connected_coordinator(hass)
-    coordinator._client = None
-    dial = _dialling(coordinator)
-    dial.side_effect = BleakError("not in range")
+    coordinator, lamp = _at_a_lamp(hass)
+    lamp.out_of_range()
 
-    coordinator._async_poll_reconnect(None)
+    link_of(coordinator).tick()
     await hass.async_block_till_done()
-    assert dial.await_count == 1
+    assert lamp.dials == 1
 
-    coordinator._async_poll_reconnect(None)
+    link_of(coordinator).tick()
     await hass.async_block_till_done()
-    assert dial.await_count == 2  # and again, and again
+    assert lamp.dials == 2  # and again, and again
 
 
 async def test_advertisements_do_not_start_a_connect_storm(
@@ -1972,22 +1970,20 @@ async def test_advertisements_do_not_start_a_connect_storm(
     Advertisements arrive about once a second; starting a connect for each
     would pile them onto a device that allows exactly one connection.
     """
-    coordinator, _ = _connected_coordinator(hass)
-    coordinator._client = None
+    coordinator, lamp = _at_a_lamp(hass)
     release = asyncio.Event()
 
     async def _hangs(*_a: object, **_kw: object) -> None:
         await release.wait()
         raise BleakError("gone again")
 
-    dial = _dialling(coordinator)
-    dial.side_effect = _hangs
+    lamp.dials_through(_hangs)
 
     for _ in range(5):
-        coordinator._async_on_advertisement(None, None)
-    coordinator._async_poll_reconnect(None)  # the poll must not add one either
+        link_of(coordinator).advertising(True)
+    link_of(coordinator).tick()  # the poll must not add one either
     await asyncio.sleep(0)
-    assert dial.await_count == 1
+    assert lamp.dials == 1
 
     release.set()
     await hass.async_block_till_done()
@@ -2080,18 +2076,12 @@ async def test_the_entities_are_told_when_a_link_is_taken(hass: HomeAssistant) -
     not from the end of the first exchange seconds later, and not from
     whenever the lamp next has something to report.
     """
-    coordinator, client = _connected_coordinator(hass)
-    coordinator._client = None
-    _dialling(coordinator, client)
-
-    async def _never(*_args: object, **_kwargs: object) -> None:
-        await asyncio.Event().wait()
-
-    client.write_gatt_char = AsyncMock(side_effect=_never)  # asked, never answered
+    coordinator, lamp = _at_a_lamp(hass)
+    lamp.never_acknowledges_a_write()  # asked, never answered
     seen: list[bool] = []
     coordinator.async_add_listener(lambda: seen.append(coordinator.available))
 
-    connecting = asyncio.create_task(coordinator._async_ensure_connected())
+    connecting = asyncio.create_task(link_of(coordinator).connect())
     try:
         for _ in range(5):  # dialled, subscribed, waiting on its first question
             await asyncio.sleep(0)
@@ -2111,20 +2101,22 @@ async def test_a_connect_that_waited_behind_a_command_dials_nothing(
     Dialling on what it saw then would put a second client in place of the
     first, which nothing would ever hang up - on a lamp with one slot.
     """
-    coordinator, client = _connected_coordinator(hass)
-    coordinator._client = None
-    dial = _dialling(coordinator, _fresh_client())
+    coordinator, lamp = _at_a_lamp(hass)
+    found = asyncio.Event()
+    lamp.dials_when(found)
 
-    await coordinator._lock.acquire()  # a command has it, and is dialling
-    waiting = asyncio.create_task(coordinator._async_ensure_connected())
+    command = asyncio.create_task(coordinator.async_set_power(True))
+    for _ in range(3):  # the command has the lock, and is dialling
+        await asyncio.sleep(0)
+    waiting = asyncio.create_task(link_of(coordinator).connect())
     for _ in range(3):  # the connect has looked, and waits for the lock
         await asyncio.sleep(0)
-    coordinator._client = client  # the link the command made
-    coordinator._lock.release()
+    found.set()  # the link the command made
+    await command
     await waiting
 
-    dial.assert_not_awaited()
-    assert coordinator._client is client
+    assert lamp.dials == 1  # the connect dialled nothing
+    assert link_of(coordinator).client is lamp.links[0]
 
 
 def _info_lines(caplog: pytest.LogCaptureFixture) -> list[str]:
@@ -2144,40 +2136,40 @@ async def test_going_out_of_reach_and_coming_back_are_each_said_once(
     Its entities go unavailable and nothing said why or since when. Once
     each way, however many times the same thing is observed in between.
     """
-    coordinator, _ = _connected_coordinator(hass)
-    coordinator._client = None
-    coordinator._present = True
-    coordinator._reconnecting = True  # this is about the log, not about dialling
+    coordinator, lamp = _at_a_lamp(hass)
+    lamp.out_of_range()  # this is about the log, not about dialling
+    link_of(coordinator).begin(present=True)
 
     with caplog.at_level(logging.INFO, logger=coordinator_module.__name__):
-        coordinator._async_on_unavailable(None)
-        coordinator._async_on_unavailable(None)
+        link_of(coordinator).advertising(False)
+        link_of(coordinator).advertising(False)
         coordinator._async_notify_listeners()
         assert len(_info_lines(caplog)) == 1
         assert "out of reach" in _info_lines(caplog)[0]
         assert "Glowrium-G7" in _info_lines(caplog)[0]
 
         caplog.clear()
-        coordinator._async_on_advertisement(None, None)
-        coordinator._async_on_advertisement(None, None)
+        link_of(coordinator).advertising(True)
+        link_of(coordinator).advertising(True)
         coordinator._async_notify_listeners()
         assert len(_info_lines(caplog)) == 1
         assert "back in reach" in _info_lines(caplog)[0]
+    await hass.async_block_till_done()  # the dials the advertisements set off
 
 
 async def test_a_lamp_set_up_from_the_list_is_not_named_with_its_address_twice(
     hass: HomeAssistant, caplog: pytest.LogCaptureFixture
 ) -> None:
     """A lamp picked from the list has its address in its title already."""
-    coordinator, _ = _connected_coordinator(hass)
+    coordinator, lamp = _at_a_lamp(hass)
     coordinator.name = "Glowrium-G7_DDEEFF (AA:BB:CC:DD:EE:FF)"
-    coordinator._client = None
-    coordinator._present = True
-    coordinator._reconnecting = True  # this is about the log, not about dialling
+    lamp.out_of_range()  # this is about the log, not about dialling
+    link_of(coordinator).begin(present=True)
 
     with caplog.at_level(logging.INFO, logger=coordinator_module.__name__):
-        coordinator._async_on_unavailable(None)
-        coordinator._async_on_advertisement(None, None)
+        link_of(coordinator).advertising(False)
+        link_of(coordinator).advertising(True)
+    await hass.async_block_till_done()  # the dial the advertisement set off
 
     gone, back = _info_lines(caplog)
     assert gone.startswith("Glowrium-G7_DDEEFF (AA:BB:CC:DD:EE:FF) is out of reach")
@@ -2193,15 +2185,15 @@ async def test_a_lamp_with_a_link_is_not_out_of_reach_for_being_quiet(
     available then, and the log must not say otherwise - until the link goes
     as well, which is the moment it really is out of reach.
     """
-    coordinator, client = _connected_coordinator(hass)
-    coordinator._present = True
+    coordinator, _lamp, link = await _holding_a_link(hass)
+    link_of(coordinator).begin(present=True)
 
     with caplog.at_level(logging.INFO, logger=coordinator_module.__name__):
-        coordinator._async_on_unavailable(None)
+        link_of(coordinator).advertising(False)
         assert coordinator.available
         assert _info_lines(caplog) == []
 
-        coordinator._async_on_disconnect(client)
+        link.lose()
         assert not coordinator.available
         assert len(_info_lines(caplog)) == 1
         assert "out of reach" in _info_lines(caplog)[0]
@@ -2221,9 +2213,8 @@ async def test_a_command_that_fails_says_the_link_is_gone(
     handed to the caller used to be all that was said: the entities stayed
     available until something else happened to tell them.
     """
-    coordinator, client = _connected_coordinator(hass)
-    client.write_gatt_char = AsyncMock(side_effect=BleakError("Not connected"))
-    coordinator._present = False
+    coordinator, lamp, _link = await _holding_a_link(hass)  # and not advertising
+    lamp.fails_writes(BleakError("Not connected"))
     monkeypatch.setattr(link_module, "_CONFIRM_TIMEOUT", 0.01)
     told: list[bool] = []
     coordinator.async_add_listener(lambda: told.append(coordinator.available))
@@ -2245,18 +2236,16 @@ async def test_a_link_dropped_while_it_is_primed_is_said_to_be_gone(
     hass: HomeAssistant, caplog: pytest.LogCaptureFixture
 ) -> None:
     """The poll's priming can be what finds a link dead, and drops it."""
-    coordinator, client = _connected_coordinator(hass)
-    client.read_gatt_char = AsyncMock(side_effect=BleakError("Not connected"))
-    client.write_gatt_char = AsyncMock(side_effect=BleakError("Not connected"))
-    coordinator._present = False
+    coordinator, lamp, link = await _holding_a_link(hass)  # and not advertising
+    lamp.fails_writes(BleakError("Not connected"))
     told: list[bool] = []
     coordinator.async_add_listener(lambda: told.append(coordinator.available))
 
     with caplog.at_level(logging.INFO, logger=coordinator_module.__name__):
-        await coordinator._async_prime()
+        await link_of(coordinator).prime_held()
         await hass.async_block_till_done()
 
-    assert coordinator._client is None
+    assert link.hung_up
     assert told == [False]
     assert len(_info_lines(caplog)) == 1
     assert "out of reach" in _info_lines(caplog)[0]
@@ -2277,8 +2266,7 @@ async def test_a_stopped_coordinator_does_not_say_where_the_lamp_is(
     must not turn into a line saying that the lamp is out of reach until it
     is heard again. Nobody is listening for it.
     """
-    coordinator, _client = _connected_coordinator(hass)
-    coordinator._present = False  # held by its link alone
+    coordinator, _lamp, _link = await _holding_a_link(hass)  # held by its link alone
     monkeypatch.setattr(link_module, "_CONFIRM_TIMEOUT", 0.01)
 
     with caplog.at_level(logging.INFO, logger=coordinator_module.__name__):
@@ -2300,10 +2288,9 @@ async def test_a_lamp_that_is_absent_at_start_is_said_to_be(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
     """Starting with the lamp unplugged is the first time it is out of reach."""
-    coordinator, _ = _connected_coordinator(hass)
+    coordinator, _lamp = _at_a_lamp(hass)
     # Picked from the list: its address is in its title already.
     coordinator.name = "Glowrium-G7_DDEEFF (AA:BB:CC:DD:EE:FF)"
-    coordinator._client = None
     fake = MagicMock()
     fake.async_register_callback.return_value = lambda: None
     fake.async_track_unavailable.return_value = lambda: None
@@ -2334,8 +2321,7 @@ async def test_a_lamp_that_is_advertising_at_start_is_in_reach_from_the_start(
     go by what the scanners knew at the start - and there is nothing for the
     log to say.
     """
-    coordinator, _ = _connected_coordinator(hass)
-    coordinator._client = None
+    coordinator, _lamp = _at_a_lamp(hass)
     fake = MagicMock()
     fake.async_register_callback.return_value = lambda: None
     fake.async_track_unavailable.return_value = lambda: None
@@ -2362,7 +2348,7 @@ async def test_starting_watches_for_the_device(
     without the unavailable tracker its entities never go unavailable when it
     is unplugged.
     """
-    coordinator, _ = _connected_coordinator(hass)
+    coordinator, _lamp = _at_a_lamp(hass)  # this is about the watchers, not the link
     calls: list[str] = []
     fake = MagicMock()
     fake.async_register_callback.side_effect = lambda *a, **k: (
@@ -2375,7 +2361,6 @@ async def test_starting_watches_for_the_device(
     fake.BluetoothCallbackMatcher = MagicMock()
     fake.BluetoothScanningMode = MagicMock()
     monkeypatch.setattr(coordinator_module, "bluetooth", fake)
-    coordinator._client = None  # this is about the watchers, not the link
 
     handed_over: list[str] = []
 
@@ -2778,8 +2763,7 @@ async def test_background_work_is_tied_to_the_entry(hass: HomeAssistant) -> None
     outlives its coordinator, finishes connecting, and claims the lamp's only
     slot for a coordinator nobody owns - while the replacement cannot connect.
     """
-    coordinator, _ = _connected_coordinator(hass)
-    coordinator._client = None
+    coordinator, _lamp = _at_a_lamp(hass)
     spawned: list[str] = []
 
     def _background(_hass: object, coro: object, name: str) -> object:
@@ -2791,11 +2775,11 @@ async def test_background_work_is_tied_to_the_entry(hass: HomeAssistant) -> None
     entry.async_create_background_task = _background
     coordinator._entry = entry
 
-    coordinator._async_poll_reconnect(None)
+    link_of(coordinator).tick()
     assert len(spawned) == 1  # the reconnect went to the entry, not to hass
 
-    coordinator._client = MagicMock(is_connected=True)
-    coordinator._async_poll_reconnect(None)
+    await coordinator.async_set_power(True)  # a link a command made, not primed
+    link_of(coordinator).tick()
     assert len(spawned) == 2  # and so does the priming
 
 
@@ -2807,8 +2791,7 @@ async def test_one_background_connect_at_a_time(hass: HomeAssistant) -> None:
     Each of those starting a connect of its own would queue them up behind
     the lock, every one with its own deadline and its own line in the log.
     """
-    coordinator, _ = _connected_coordinator(hass)
-    coordinator._client = None
+    coordinator, _lamp = _at_a_lamp(hass)
     spawned: list[str] = []
 
     def _background(_hass: object, coro: object, name: str) -> object:
@@ -2820,9 +2803,9 @@ async def test_one_background_connect_at_a_time(hass: HomeAssistant) -> None:
     entry.async_create_background_task = _background
     coordinator._entry = entry
 
-    coordinator._async_poll_reconnect(None)
-    coordinator._async_poll_reconnect(None)
-    coordinator._async_on_advertisement(MagicMock(), MagicMock())
+    link_of(coordinator).tick()
+    link_of(coordinator).tick()
+    link_of(coordinator).advertising(True)
 
     assert len(spawned) == 1
 
@@ -4405,8 +4388,8 @@ async def test_a_reconnect_started_while_starting_belongs_to_the_entry(
     On a lamp whose link holds, a connect that outlives its coordinator keeps
     the single slot for nobody.
     """
-    coordinator, _ = _connected_coordinator(hass)
-    coordinator._client = None  # and its lamp is out of range
+    coordinator, lamp = _at_a_lamp(hass)
+    lamp.out_of_range()
 
     def _register(_hass: object, callback: object, *_a: object) -> object:
         callback(MagicMock(), MagicMock())  # the replayed advertisement
@@ -4711,10 +4694,9 @@ async def test_a_lamp_the_scanner_has_lost_is_still_said_to_be_out_of_range(
     round for its second attempt as it always did - the lamp may be heard
     again by then.
     """
-    coordinator, _ = _connected_coordinator(hass)
-    coordinator._client = None  # nothing held, and the lamp is not in the list
+    coordinator, lamp = _at_a_lamp(hass)
+    lamp.out_of_range()  # nothing held, and the lamp is not in the list
     monkeypatch.setattr(link_module, "_CONFIRM_TIMEOUT", 0.01)
-    asked = _counting_connects(coordinator)
 
     with pytest.raises(HomeAssistantError) as err:
         await coordinator.async_set_power(True)
@@ -4722,7 +4704,7 @@ async def test_a_lamp_the_scanner_has_lost_is_still_said_to_be_out_of_range(
 
     assert err.value.translation_key == "cannot_connect"
     assert err.value.translation_placeholders == {"name": "Glowrium-G7"}
-    assert len(asked) == 2
+    assert lamp.dials == 2
 
 
 async def test_a_command_that_runs_out_of_time_inside_a_write_lets_go_of_the_link(

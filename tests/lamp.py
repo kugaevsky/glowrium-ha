@@ -106,6 +106,7 @@ class ScriptedLamp:
         self.read: list[str] = []
         self.exchanges: list[tuple[str, str]] = []
         self._in_range = True
+        self._found: asyncio.Event | None = None
         self._through: Callable[..., Awaitable[Any]] | None = None
         self._readable: dict[str, bytes] = {}
         # How the lamp answers the state request, once told to (see answers).
@@ -204,6 +205,8 @@ class ScriptedLamp:
     async def dial(self, lost: Callable[[Any], None]) -> Any:
         """Hand out a link, as the coordinator's dial: this is what it is given."""
         self.dials += 1
+        if self._found is not None:
+            await self._found.wait()
         if self._through is not None:
             return await self._through(lost)
         if not self._in_range:
@@ -211,6 +214,10 @@ class ScriptedLamp:
         link = LampLink(self, lost)
         self.links.append(link)
         return link
+
+    def dials_when(self, found: asyncio.Event) -> None:
+        """Hold every dial until ``found`` is set: a lamp that is slow to connect."""
+        self._found = found
 
     def coordinator(
         self,

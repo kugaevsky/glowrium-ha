@@ -317,6 +317,23 @@ async def test_a_lamp_that_never_acknowledges_keeps_a_write_waiting() -> None:
     writing.cancel()
 
 
+async def test_a_lamp_may_be_slow_to_be_found() -> None:
+    """``dials_when`` holds every dial until the event is set: a slow connect."""
+    lamp = ScriptedLamp()
+    found = asyncio.Event()
+    lamp.dials_when(found)
+
+    dialling = asyncio.create_task(lamp.dial(MagicMock()))
+    await asyncio.sleep(0.01)
+    assert not dialling.done()
+    assert lamp.dials == 1  # asked for, and not yet given
+
+    found.set()
+    link = await dialling
+
+    assert lamp.links == [link]
+
+
 def test_a_helper_given_the_coordinator_alone_finds_its_lamp(
     hass: HomeAssistant,
 ) -> None:
