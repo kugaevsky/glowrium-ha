@@ -33,6 +33,10 @@ KEY_INDICATOR: Final = 0x17  # bool - status indicator LED
 KEY_LIGHTING_MODE: Final = 0x2B  # int - circadian lighting-mode index
 KEY_RAMP: Final = 0x2F  # bytes(2) big-endian seconds; 0 = Sun Sync auto ramp
 KEY_DST: Final = 0x35  # bytes: [enabled, offset_be_4] (offset 0x0e10 = 3600s = 1h)
+# The times of the circadian curve, which the lamp works out from the
+# coordinates: seconds from midnight, four bytes each. Nothing reads them; the
+# id has a name because the times give the place away as the coordinates do.
+KEY_CURVE: Final = 0x34
 
 # Bring-up ("pairing") the vendor app performs on a factory-reset device so that
 # its light output is enabled - decoded from a fresh-pairing btsnoop, and purely
@@ -65,6 +69,14 @@ STATE_KEYS: Final = (
     KEY_LIGHTING_MODE,
     KEY_RAMP,
     KEY_DST,
+)
+# Every property id the integration has a name for: what it asks the lamp for,
+# what only its commands write, and the curve. The state mirror keeps these
+# whatever else a lamp sends, and of the ids nobody named only a bounded number
+# (mirror.py). 0x2c and 0x32 are the two fixed parameters of the lighting-mode
+# command, which have values here (MODE_PARAM_*) and no names.
+KNOWN_KEYS: Final = frozenset(
+    {*STATE_KEYS, KEY_ACTIVATE_MISC, KEY_TIME_SYNCED, KEY_CURVE, 0x2C, 0x32}
 )
 
 # 0x11 timer slot: [enabled, 00,00,00, start_h, start_m, end_h, end_m,

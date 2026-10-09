@@ -19,7 +19,9 @@ from pytest_homeassistant_custom_component.common import async_fire_time_changed
 
 from custom_components.glowrium import (
     cbor,
+    const,
     coordinator as coordinator_module,
+    diagnostics,
     link as link_module,
     protocol,
 )
@@ -40,6 +42,7 @@ from custom_components.glowrium.const import (
     KEY_TIME,
     KEY_TIME_SYNCED,
     KEY_TIMER,
+    KNOWN_KEYS,
     NOTIFY_UUID,
     STATE_KEYS,
     TIMER_BRIGHTNESS,
@@ -934,6 +937,81 @@ async def test_the_intake_notes_the_answer_and_tells_of_a_report_only(
     assert coordinator._ingest(cbor.encode({KEY_POWER: True})) == frozenset({KEY_POWER})
     assert link_of(coordinator).last_answer == 1001.0
     assert told == [1]
+
+
+async def test_what_the_lamp_is_asked_for_is_kept_whatever_else_it_sent(
+    hass: HomeAssistant,
+) -> None:
+    """The coordinator tells the mirror which ids the integration knows.
+
+    A device that fills the mirror with ids nobody named does not keep the
+    lamp's own state out: everything the lamp is asked for is taken in after
+    it. The mirror has room for sixty-four ids it has no name for, and
+    whatever answers at the lamp's address can fill it.
+    """
+    coordinator, _lamp = _at_a_lamp(hass)
+    for first in range(1000, 1200, 50):
+        coordinator._ingest(cbor.encode(dict.fromkeys(range(first, first + 50), True)))
+
+    carried = coordinator._ingest(cbor.encode(dict.fromkeys(STATE_KEYS, 1)))
+
+    assert carried == frozenset(STATE_KEYS)
+    assert set(STATE_KEYS) <= set(coordinator.state)
+    assert len(coordinator.state) == 64 + len(STATE_KEYS)
+
+
+def test_every_property_the_integration_names_is_known_to_the_mirror() -> None:
+    """What has a name in the integration is what the mirror always keeps.
+
+    The ids it asks the lamp for, every id it has a constant for - the ones
+    only its commands write among them - and every id the diagnostics read
+    out. A name added and left out of the set would be an id the mirror may
+    have no room for.
+    """
+    named = {value for name, value in vars(const).items() if name.startswith("KEY_")}
+    assert named <= KNOWN_KEYS
+    assert set(STATE_KEYS) <= KNOWN_KEYS
+    assert {*diagnostics._READ, *diagnostics._WHERE} <= KNOWN_KEYS
+
+
+async def test_every_id_a_command_writes_is_known_to_the_mirror(
+    hass: HomeAssistant,
+) -> None:
+    """What the integration writes, it has a name for.
+
+    The lighting-mode command carries two ids the lamp never reports back,
+    and the bring-up two more; all four are the integration's own.
+    """
+    coordinator, lamp, link = await _holding_a_link(hass)
+
+    await coordinator.async_set_lighting_mode(5)
+    await coordinator._async_activate(turn_over(coordinator, link))
+
+    written = {key for _uuid, frame in lamp.written for key in cbor.decode(frame)}
+    assert {0x2C, 0x32, 0x31, 0x53} <= written  # the ids this is about were written
+    assert written <= KNOWN_KEYS
+
+
+async def test_a_frame_of_which_nothing_was_kept_is_still_the_lamp_speaking(
+    hass: HomeAssistant, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Whatever came from the lamp's address has answered, kept or not.
+
+    Whether the link is alive is the link's question, and it is noted
+    before the mirror is asked anything. The entities hear of a report, and
+    a frame the mirror had no room for is none.
+    """
+    coordinator, _lamp = _at_a_lamp(hass)
+    for first in range(1000, 1200, 50):
+        coordinator._ingest(cbor.encode(dict.fromkeys(range(first, first + 50), True)))
+    told: list[int] = []
+    coordinator.async_add_listener(lambda: told.append(1))
+    monkeypatch.setattr(link_module, "monotonic", lambda: 1000.0)
+
+    assert coordinator._ingest(cbor.encode({5000: True})) == frozenset()
+
+    assert link_of(coordinator).last_answer == 1000.0
+    assert told == []
 
 
 async def test_split_notification_updates_state(hass: HomeAssistant) -> None:

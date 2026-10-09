@@ -39,6 +39,7 @@ from .const import (
     KEY_RAMP,
     KEY_SCHEDULE,
     KEY_TIMER,
+    KNOWN_KEYS,
     MODE_CIRCADIAN,
     MODE_MANUAL,
     MODE_PARAM_2C,
@@ -165,11 +166,7 @@ class GlowriumCoordinator:
         # entities read it as ``state``. It describes the lamp through
         # _model_and_firmware when it warns - the lamp describes itself only
         # after its first frames - and dates the lamp's clock by the host's.
-        self._mirror = Mirror(
-            address,
-            described=self._model_and_firmware,
-            now=self._now,
-        )
+        self._mirror = self._new_mirror()
         # What the lamp said about itself in this session; empty until read.
         self.device_info: dict[str, str] = {}
         self._remembered_model_id = model_id
@@ -454,6 +451,7 @@ class GlowriumCoordinator:
             },
             "state": dict(self.state),
             "clock_heard_at": self._mirror.clock_heard_at,
+            "properties_not_kept": self._mirror.not_kept,
         }
 
     @callback
@@ -1084,6 +1082,15 @@ class GlowriumCoordinator:
     def _clock_command(self) -> dict[int, Any]:
         """Return the command that sets the lamp's clock to now, local time."""
         return protocol.clock_command(dt_util.now())
+
+    def _new_mirror(self) -> Mirror:
+        """Build an empty mirror of this lamp, told what the integration knows."""
+        return Mirror(
+            self.address,
+            known=KNOWN_KEYS,
+            described=self._model_and_firmware,
+            now=self._now,
+        )
 
     @staticmethod
     def _now() -> datetime:

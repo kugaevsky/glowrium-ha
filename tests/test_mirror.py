@@ -28,12 +28,19 @@ _LOG = mirror_module._LOGGER.name
 
 
 def _a_mirror(
-    described: str = _DESCRIBED, moments: list[datetime] | None = None
+    described: str = _DESCRIBED,
+    moments: list[datetime] | None = None,
+    known: frozenset[int] = frozenset(),
 ) -> Mirror:
-    """Return a mirror of a lamp whose clock, when asked, reads from ``moments``."""
+    """Return a mirror of a lamp whose clock, when asked, reads from ``moments``.
+
+    ``known`` is what the integration has a name for; left out, the mirror
+    knows no id, and every id a frame brings is one nobody named.
+    """
     clock = list(moments or [datetime(2026, 10, 9, 12, 0, tzinfo=UTC)])
     return Mirror(
         _ADDRESS,
+        known=known,
         described=lambda: described,
         now=lambda: clock.pop(0) if len(clock) > 1 else clock[0],
     )
@@ -184,6 +191,7 @@ def test_the_warning_describes_the_lamp_as_it_is_known_when_written(
     said = ["model unknown, firmware unknown"]
     mirror = Mirror(
         _ADDRESS,
+        known=frozenset(),
         described=lambda: said[0],
         now=lambda: datetime(2026, 10, 9, 12, 0, tzinfo=UTC),
     )
@@ -539,3 +547,134 @@ def test_a_map_split_across_frames_is_kept_as_far_as_it_came(
     assert mirror[KEY_BRIGHTNESS] == 70
     assert mirror.reports == 1
     assert "split across frames; kept 2 of them" in caplog.text
+
+
+# --- how much of what a lamp sends is kept ------------------------------------
+
+
+def _ids_never_sent(first: int, count: int) -> bytes:
+    """Return a frame that reports ``count`` ids from ``first`` on, each as True."""
+    return cbor.encode(dict.fromkeys(range(first, first + count), True))
+
+
+def test_no_more_than_the_limit_of_ids_nobody_named_is_kept() -> None:
+    """A device that keeps sending new ids does not grow the mirror without end.
+
+    What the integration has no name for is kept all the same - a first
+    report of a new model has to show that it is there - but only so much of
+    it: the first ids to come, and no more. The rest is counted. The protocol
+    has no pairing, so whatever answers at the lamp's address fills the
+    mirror; measured, a device sending new ids in every frame took a host's
+    free memory in hours (2026-10-09).
+    """
+    mirror = _a_mirror()
+    for first in range(1000, 1200, 50):  # two hundred ids, fifty a frame
+        mirror.take(_ids_never_sent(first, 50))
+
+    assert len(mirror) == 64
+    assert set(mirror) == set(range(1000, 1064))  # the first to come
+    assert mirror.not_kept == 136
+    # What is kept stays kept, and goes on being heard.
+    assert mirror.take(cbor.encode({1000: False})) == frozenset({1000})
+    assert mirror[1000] is False
+    assert len(mirror) == 64
+
+
+def test_what_the_integration_knows_and_what_it_wrote_is_kept_whatever_else_came() -> (
+    None
+):
+    """The room for ids nobody named is not taken from the ones somebody did.
+
+    A lamp is asked for its power and its brightness whether or not something
+    filled the mirror first, and what a command set is the integration's own
+    word: neither waits for room, and neither takes any. An id that was
+    echoed and is reported later is heard as well.
+    """
+    mirror = _a_mirror(known=frozenset({KEY_POWER, KEY_BRIGHTNESS}))
+    mirror.take(cbor.encode({KEY_BRIGHTNESS: 70}))  # a known id takes no room
+    mirror.take(_ids_never_sent(1000, 100))  # more than there is room for
+    assert len(mirror) == 1 + 64
+
+    taken = mirror.take(cbor.encode({KEY_POWER: True, 2000: True}))
+    mirror.echo({3000: 1})
+    heard = mirror.take(cbor.encode({3000: 2}))
+
+    assert taken == frozenset({KEY_POWER})
+    assert heard == frozenset({3000})
+    assert mirror[KEY_POWER] is True
+    assert mirror[3000] == 2
+    assert 2000 not in mirror
+    assert len(mirror) == 1 + 64 + 2
+
+
+async def test_what_was_not_kept_was_not_reported(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """An id there was no room for is in nothing the mirror says of a report.
+
+    Not in what a frame carried and not in what was reported since a mark:
+    priming and vouching compare those with the ids they wait for, and an id
+    that is not in the mirror was not reported into it. A frame of which
+    nothing was kept is no report at all - it moves no number and wakes
+    nobody - and is named in the debug log, like every frame that is dropped.
+    """
+    mirror = _a_mirror(known=frozenset({KEY_POWER}))
+    mirror.take(_ids_never_sent(1000, 64))  # all the room there is, taken
+    mark = mirror.reports
+    waiting = asyncio.create_task(mirror.next_report())
+    await asyncio.sleep(0)
+
+    frame = _ids_never_sent(2000, 3)
+    with caplog.at_level(logging.DEBUG, logger=_LOG):
+        nothing = mirror.take(frame)
+    await asyncio.sleep(0)
+
+    assert nothing == frozenset()
+    assert mirror.reports == mark
+    assert mirror.reported_since(mark) == frozenset()
+    assert not waiting.done()
+    assert mirror.not_kept == 3
+    assert (
+        f"frame {frame.hex()} carries 3 properties and none of them is kept"
+        in caplog.text
+    )
+
+    some = mirror.take(cbor.encode({KEY_POWER: True, 2000: True}))
+    await asyncio.sleep(0)
+
+    assert some == frozenset({KEY_POWER})
+    assert mirror.reports == mark + 1
+    assert mirror.reported_since(mark) == frozenset({KEY_POWER})
+    assert waiting.done()
+    await waiting
+
+
+def test_the_first_property_not_kept_is_said_once_and_without_the_frame(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """That a lamp reports more than is kept is worth one line somebody sees.
+
+    A lamp that does it is a model nobody has met, or not a lamp: either is
+    worth a report, and the line asks for one, naming the model and the
+    firmware as the other warnings do. It carries nothing of the frame - the
+    ids and the values are the device's to choose - and it is said once: a
+    device that does this does it in every frame.
+    """
+    mirror = _a_mirror()
+    with caplog.at_level(logging.DEBUG, logger=_LOG):
+        mirror.take(_ids_never_sent(1000, 64))
+        assert not _warnings(caplog)  # room for all of it, and nothing to say
+
+        frame = _ids_never_sent(2000, 2)
+        mirror.take(frame)
+        (said,) = _warnings(caplog)
+        assert f"{_ADDRESS} ({_DESCRIBED}) reports more properties than" in said
+        assert "64 others" in said
+        assert "report this model" in said
+        assert frame.hex() not in said
+        assert "07d0" not in said  # nor an id out of it
+
+        caplog.clear()
+        mirror.take(_ids_never_sent(3000, 2))
+        assert not _warnings(caplog)
+    assert mirror.not_kept == 4

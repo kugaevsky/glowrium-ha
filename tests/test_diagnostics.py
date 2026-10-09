@@ -177,6 +177,7 @@ async def test_the_download_says_what_the_lamp_reported(hass: HomeAssistant) -> 
         "0x2f ramp": {"seconds": 3600},
         "0x35 daylight saving": {"enabled": True, "offset_seconds": 3600},
         "other_properties": 0,
+        "properties_not_kept": 0,
     }
     assert data["link"]["connected"] is False
     assert data["link"]["reports"] == 1
@@ -605,6 +606,27 @@ async def test_a_remembered_model_id_is_held_to_the_same(hass: HomeAssistant) ->
     _nothing_private_in(data)
 
 
+async def test_the_file_says_how_many_properties_were_not_kept(
+    hass: HomeAssistant,
+) -> None:
+    """A lamp that reports more than the mirror keeps shows in the file as a number.
+
+    Not which ids and not what was under them: the file repeats nothing
+    after the lamp. That there were some is what a reader of the file needs:
+    it is a model nobody has met, or not a lamp. The mirror has room for
+    sixty-four ids nobody named; the rest is counted.
+    """
+    entry = await _a_lamp_that_has_reported(hass)
+    coordinator = entry.runtime_data
+    for first in range(1000, 1200, 50):
+        coordinator._ingest(cbor.encode(dict.fromkeys(range(first, first + 50), True)))
+
+    data = await _downloaded(hass, entry)
+
+    assert data["state"]["other_properties"] == 64
+    assert data["state"]["properties_not_kept"] == 136
+
+
 async def test_a_lamp_that_has_reported_nothing_makes_a_file_all_the_same(
     hass: HomeAssistant,
 ) -> None:
@@ -615,7 +637,7 @@ async def test_a_lamp_that_has_reported_nothing_makes_a_file_all_the_same(
 
     data = await _downloaded(hass, entry)
 
-    assert data["state"] == {"other_properties": 0}
+    assert data["state"] == {"other_properties": 0, "properties_not_kept": 0}
     assert data["device"] == {
         "model": "Glowrium G7",  # remembered from an earlier session
         "model_id": "Glowrium-C051",

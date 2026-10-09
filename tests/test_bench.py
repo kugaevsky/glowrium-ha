@@ -12,6 +12,7 @@ from types import ModuleType
 
 import pytest
 
+from custom_components.glowrium import cbor
 from custom_components.glowrium.const import (
     KEY_BRIGHTNESS,
     KEY_LATITUDE,
@@ -186,6 +187,22 @@ def test_before_the_lamp_is_found_there_is_no_address_to_take_out(
     printed = io.StringIO()
     bench._Masked(printed).write("scanning 10s…\n")
     assert printed.getvalue() == "scanning 10s…\n"
+
+
+def test_the_report_lists_a_property_nobody_named(
+    bench: ModuleType, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A property the integration has no name for is listed all the same.
+
+    That is how a new model shows what else it reports. The mirror keeps a
+    bounded number of such ids, and the bench prints what the mirror holds.
+    """
+    coordinator = _a_lamp()
+    coordinator._ingest(cbor.encode({0x60: 5}))
+
+    bench._report(coordinator)
+
+    assert "0x60 ?" in capsys.readouterr().out
 
 
 def test_the_bench_reaches_the_coordinator_by_two_private_names_only() -> None:

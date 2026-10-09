@@ -2,7 +2,10 @@
 
 The mirror of the lamp's state: a read-only mapping of property id to value,
 filled from the frames the lamp notifies and from the echo of what was
-written to it, and never emptied. It knows how to read a frame (``cbor``)
+written to it, and never emptied. What it holds is bounded all the same: the
+ids the integration knows, and a fixed number of the ids it does not - the
+device chooses what it reports, and whatever answers at the lamp's address
+is taken for the lamp. It knows how to read a frame (``cbor``)
 and what in one gives the lamp's place away, and nothing of Home Assistant,
 of the link, or of the lamp's protocol beyond that.
 
@@ -16,10 +19,10 @@ value.
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Callable, Iterator, Mapping
+from collections.abc import Callable, Collection, Iterator, Mapping
 from datetime import datetime
 import logging
-from typing import Any
+from typing import Any, Final
 
 from . import cbor
 from .const import KEY_LATITUDE, KEY_LONGITUDE, KEY_TIME
@@ -29,6 +32,13 @@ from .const import KEY_LATITUDE, KEY_LONGITUDE, KEY_TIME
 # module existed.
 _LOGGER = logging.getLogger(f"{__package__}.coordinator")
 
+# How many ids the integration has no name for are kept. The device chooses
+# the ids it reports, and whatever answers at the lamp's address is taken for
+# the lamp - the protocol has no pairing - so without a limit a device that
+# sends new ids in every frame grows the mirror for as long as it is let: by
+# up to 32 KiB a frame, measured (2026-10-09). A G7 reports no such id and a
+# read of a G8 brings thirteen.
+_OTHERS_KEPT: Final = 64
 # Said wherever the log asks for a frame to be posted (see _for_the_log).
 _BLANKED = (
     "What reads as the coordinates stored in the lamp, or as the sunrise and "
@@ -106,7 +116,12 @@ class Mirror(Mapping[int, Any]):
     is ever taken out - the mirror is not emptied when a link drops, so what
     it holds can be hours old, which is why the clock in it is dated.
 
-    A report is a frame that carried at least one property. They are
+    The ids the integration knows are always kept, and so is every echo. Of
+    the ids it has no name for, the first ``_OTHERS_KEPT`` a session brings
+    are kept and none of them is ever dropped to make room; a property
+    beyond that is counted (``not_kept``) and not stored.
+
+    A report is a frame of which at least one property was kept. They are
     numbered: ``reports`` is how many there have been, and
     ``reported_since(n)`` the ids the reports numbered above ``n`` carried -
     what priming compares with the keys it asked for, and what vouching for
@@ -118,10 +133,16 @@ class Mirror(Mapping[int, Any]):
         self,
         address: str,
         *,
+        known: Collection[int],
         described: Callable[[], str],
         now: Callable[[], datetime],
     ) -> None:
         """Build an empty mirror of the lamp at ``address``.
+
+        ``known`` are the ids the integration has a name for - what it asks
+        the lamp for, reads or writes. They are always kept; of other ids
+        only ``_OTHERS_KEPT``. The mirror is told them and knows nothing else
+        of the protocol.
 
         ``described`` says what the lamp is - its model and firmware - for the
         two warnings that ask for a frame to be posted; it is asked when the
@@ -129,9 +150,16 @@ class Mirror(Mapping[int, Any]):
         first frames. ``now`` is the host's clock, for dating the lamp's.
         """
         self._address = address
+        self._known = frozenset(known)
         self._described = described
         self._now = now
         self._values: dict[int, Any] = {}
+        # The ids taken from frames that nobody has a name for: no more than
+        # _OTHERS_KEPT of them, the first to come. And how many reported
+        # properties were not kept because there was no room left.
+        self._others: set[int] = set()
+        self.not_kept = 0
+        self._not_kept_warned = False
         # Monotonic counters, not values: vouching needs to know that a report
         # is NEWER than the write it is vouching for, and the mirror alone
         # cannot tell a fresh report from an hours-old one.
@@ -171,10 +199,11 @@ class Mirror(Mapping[int, Any]):
     # --- the two ways in ------------------------------------------------------
 
     def take(self, frame: bytes) -> frozenset[int]:
-        """Take a frame from the lamp; return the ids it carried.
+        """Take a frame from the lamp; return the ids taken in from it.
 
         Empty when the frame was no report: nothing in it could be read, or
-        it was not a map of properties, or a map with nothing in it. Whatever
+        it was not a map of properties, or a map with nothing in it, or there
+        was room for none of what it carried (``_room_for``). Whatever
         the bytes, nothing is raised: this runs inside the Bluetooth stack's
         own notify handler, and the decoder's promise that nothing but a
         ``ValueError`` leaves it is kept here.
@@ -219,11 +248,54 @@ class Mirror(Mapping[int, Any]):
                 self._address,
                 len(decoded),
             )
-        self._merge(decoded)
+        kept = {key: value for key, value in decoded.items() if self._room_for(key)}
+        if len(kept) < len(decoded):
+            self._note_not_kept(len(decoded) - len(kept))
+        if not kept:
+            # There was room for none of it. No report, then - and named,
+            # like every frame that is dropped.
+            _LOGGER.debug(
+                "%s: frame %s carries %d properties and none of them is kept",
+                self._address,
+                _for_the_log(frame),
+                len(decoded),
+            )
+            return frozenset()
+        self._merge(kept)
         self.reports += 1
-        self._reported_at.update(dict.fromkeys(decoded, self.reports))
+        self._reported_at.update(dict.fromkeys(kept, self.reports))
         self._wake()
-        return frozenset(decoded)
+        return frozenset(kept)
+
+    def _room_for(self, key: int) -> bool:
+        """Tell whether a reported id is kept, giving it a place if one is left."""
+        if key in self._known or key in self._values:
+            return True
+        if len(self._others) < _OTHERS_KEPT:
+            self._others.add(key)
+            return True
+        return False
+
+    def _note_not_kept(self, count: int) -> None:
+        """Count properties there was no room for, and say so the first time.
+
+        Once a session, as with a frame that cannot be read in full: a device
+        that reports more ids than are kept does so in every frame. Nothing
+        of the frame goes into the line - the ids and the values in it are
+        the device's to choose.
+        """
+        self.not_kept += count
+        if self._not_kept_warned:
+            return
+        self._not_kept_warned = True
+        _LOGGER.warning(
+            "%s (%s) reports more properties than this integration keeps: it "
+            "keeps the ones it knows and %d others, and counts the rest. No "
+            "lamp has been seen to do this. Please report this model",
+            self._address,
+            self._described(),
+            _OTHERS_KEPT,
+        )
 
     def echo(self, payload: Mapping[int, Any]) -> None:
         """Take what a command set, once the lamp acknowledged the write.

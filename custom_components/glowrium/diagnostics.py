@@ -197,8 +197,14 @@ def _as_claimed(read: Callable[[object], str | None], value: Any) -> Any:
     return read(value) or REDACTED
 
 
-def _state(reported: dict[Any, Any], clock_heard_at: datetime | None) -> dict[str, Any]:
-    """Read the state mirror out, property by property."""
+def _state(
+    reported: dict[Any, Any], clock_heard_at: datetime | None, not_kept: int
+) -> dict[str, Any]:
+    """Read the state mirror out, property by property.
+
+    What has no name here is counted, and so is what the mirror had no room
+    for (``not_kept``): a number each, and nothing of the lamp's choosing.
+    """
     shown: dict[str, Any] = {}
     clock = ("clock", partial(_clock, heard_at=clock_heard_at))
     for key, (name, read) in ({KEY_TIME: clock} | _READ).items():
@@ -213,6 +219,7 @@ def _state(reported: dict[Any, Any], clock_heard_at: datetime | None) -> dict[st
         shown[_WHERE_NAME] = REDACTED
         named += sum(key in reported for key in _WHERE)
     shown["other_properties"] = len(reported) - named
+    shown["properties_not_kept"] = not_kept
     return dict(sorted(shown.items()))
 
 
@@ -244,5 +251,9 @@ async def async_get_config_entry_diagnostics(
             "device_info_fields": len(device["info"]),
         },
         "link": described["link"],
-        "state": _state(described["state"], described["clock_heard_at"]),
+        "state": _state(
+            described["state"],
+            described["clock_heard_at"],
+            described["properties_not_kept"],
+        ),
     }

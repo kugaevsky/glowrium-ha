@@ -26,7 +26,6 @@ from custom_components.glowrium import cbor
 from custom_components.glowrium.const import NOTIFY_UUID
 from custom_components.glowrium.coordinator import GlowriumCoordinator
 from custom_components.glowrium.link import Link, Turn, Unclosed
-from custom_components.glowrium.mirror import Mirror
 
 ADDRESS = "AA:BB:CC:DD:EE:FF"
 
@@ -419,8 +418,4 @@ def nothing_heard(coordinator: GlowriumCoordinator) -> None:
     command in the mirror. The mirror itself forgets nothing (``Mirror``), so
     the coordinator is handed a new one, built as it builds its own.
     """
-    coordinator._mirror = Mirror(
-        coordinator.address,
-        described=coordinator._model_and_firmware,
-        now=coordinator._now,
-    )
+    coordinator._mirror = coordinator._new_mirror()

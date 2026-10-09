@@ -32,6 +32,16 @@ All notable changes to this project are documented here. The format is based on
 
 ### Changed
 
+- **The integration keeps a bounded number of properties it has no name
+  for.** Whatever a lamp reported was kept for as long as Home Assistant
+  ran, under whichever ids the lamp chose. A lamp reports the same few
+  properties again and again, so that cost nothing - but the protocol has no
+  pairing, and a faulty device, or one answering at the lamp's address,
+  could report new ids in every frame and take the memory of the whole of
+  Home Assistant in hours. The properties the integration knows are kept as
+  before; of the others, the first sixty-four. The rest is counted: the log
+  says so once, and the diagnostics give the number
+  ([#23](https://github.com/kugaevsky/glowrium-ha/issues/23)).
 - **A connect waits for a hang-up that is still under way.** Whether a
   client will close is not known until its hang-up has ended, and only then
   is a client that will not close kept. A connect made in between - by a
