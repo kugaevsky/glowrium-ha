@@ -363,9 +363,10 @@ class GlowriumCoordinator:
     #
     # #21: the link holds these now, and makes the connect, the first exchange,
     # the probe and the delivery of a command (link.py). Nothing of the
-    # coordinator's own goes by these names any more - a test holds that. They
-    # are kept for the tests and the bench that have not moved yet, each a way
-    # through to the link, and each goes when nothing reaches through it.
+    # coordinator's own goes by these names any more - a test holds that. The
+    # tests have crossed over (stage 3); what is left is kept for the bench,
+    # which has not, each a way through to the link, and each goes when
+    # nothing reaches through it.
 
     @property
     def _client(self) -> BleakClientWithServiceCache | None:
@@ -380,58 +381,6 @@ class GlowriumCoordinator:
         return self._link.lock
 
     @property
-    def _backends(self) -> dict[BleakClientWithServiceCache, Any]:
-        return self._link.backends
-
-    @property
-    def _unreleased(self) -> set[BleakClientWithServiceCache]:
-        return self._link.unclosed
-
-    @property
-    def _stuck_hang_ups(self) -> int:
-        return self._link.stuck_hang_ups
-
-    @_stuck_hang_ups.setter
-    def _stuck_hang_ups(self, count: int) -> None:
-        self._link.stuck_hang_ups = count
-
-    @property
-    def _dial_not_before(self) -> float:
-        return self._link.dial_not_before
-
-    @_dial_not_before.setter
-    def _dial_not_before(self, moment: float) -> None:
-        self._link.dial_not_before = moment
-
-    @property
-    def _lost(self) -> tuple[BleakClientWithServiceCache, float] | None:
-        return self._link.lost
-
-    @property
-    def _last_answer(self) -> float:
-        return self._link.last_answer
-
-    @_last_answer.setter
-    def _last_answer(self, moment: float) -> None:
-        self._link.last_answer = moment
-
-    @property
-    def _present(self) -> bool:
-        return self._link.present
-
-    @_present.setter
-    def _present(self, present: bool) -> None:
-        self._link.present = present
-
-    @property
-    def _reconnecting(self) -> bool:
-        return self._link.reconnecting
-
-    @_reconnecting.setter
-    def _reconnecting(self, reconnecting: bool) -> None:
-        self._link.reconnecting = reconnecting
-
-    @property
     def _primed_client(self) -> BleakClientWithServiceCache | None:
         return self._link.primed
 
@@ -439,37 +388,10 @@ class GlowriumCoordinator:
     def _primed_client(self, client: BleakClientWithServiceCache | None) -> None:
         self._link.primed = client
 
-    @property
-    def _is_connected(self) -> bool:
-        """Return True while a live GATT connection is held."""
-        return self._link.connected
-
-    def _hang_up(self, client: BleakClientWithServiceCache) -> asyncio.Task[None]:
-        return self._link.hang_up(client)
-
-    def _note_answer(self) -> None:
-        self._link.note_answer()
-
-    def _note_stuck_hang_up(self) -> None:
-        self._link.note_stuck_hang_up()
-
-    @callback
-    def _async_on_disconnect(self, client: BleakClientWithServiceCache) -> None:
-        self._link.on_lost(client)
-
-    async def _async_initial_connect(self) -> None:
-        await self._link.initial_connect()
-
-    async def _async_reconnect(self) -> None:
-        await self._link.reconnect()
-
-    async def _async_ensure_connected(self) -> None:
-        await self._link.connect()
-
     async def _connect_locked(self, *, prime: bool = True) -> None:
         if prime:
             await self._link.connect_locked()
-        elif not self._is_connected:
+        elif not self._link.connected:
             # The bench: a link, and nothing asked on it before it measures.
             await self._link.open()
 

@@ -62,7 +62,7 @@ from custom_components.glowrium.light import GlowriumLight
 from custom_components.glowrium.models import GlowriumModel
 from custom_components.glowrium.select import GlowriumLightingModeSelect
 
-from .lamp import turn_over
+from .lamp import ScriptedLamp, in_range, link_of, turn_over
 
 ADDRESS = "AA:BB:CC:DD:EE:FF"
 G7_INFO = b"brand:INLEDCO;pkey:Glowrium-C051;devid:CST-0001;mac:x;version:4;;"
@@ -240,7 +240,7 @@ async def _setup_without_bluetooth(
     # Availability follows advertisement presence; these tests are about the
     # entities, not about that.
     entry.runtime_data._entry = entry
-    entry.runtime_data._present = True
+    link_of(entry.runtime_data).begin(present=True)
     entry.runtime_data._async_notify_listeners()
     await hass.async_block_till_done()
     return entry
@@ -630,16 +630,15 @@ async def test_stopping_home_assistant_hangs_up_the_lamp(hass: HomeAssistant) ->
     """
     entry = await _setup_without_bluetooth(hass)
     coordinator = entry.runtime_data
-    client = MagicMock()
-    client.is_connected = True
-    client.disconnect = AsyncMock()
-    coordinator._client = client
+    lamp = ScriptedLamp()
+    with in_range(lamp):
+        await coordinator.async_set_power(True)  # a link is held
 
     hass.bus.async_fire(EVENT_HOMEASSISTANT_STOP)
     await hass.async_block_till_done()
 
-    client.disconnect.assert_awaited_once()
-    assert coordinator._client is None
+    assert lamp.links[0].hung_up == 1
+    assert link_of(coordinator).diagnostics()["connected"] is False
 
 
 async def test_the_stop_listener_goes_with_the_entry(hass: HomeAssistant) -> None:
@@ -1080,16 +1079,12 @@ async def test_syncing_a_home_that_was_never_set_writes_nothing_and_says_why(
     """
     entry = await _setup_without_bluetooth(hass)
     coordinator = entry.runtime_data
-    client = MagicMock()
-    client.is_connected = True
-    client.write_gatt_char = AsyncMock()
-    client.disconnect = AsyncMock()
-    coordinator._client = client
+    lamp = ScriptedLamp()
     hass.config.latitude = 0
     hass.config.longitude = 0
     domain, service, data = _call("button", "press", "_sync_location")
 
-    with pytest.raises(HomeAssistantError) as err:
+    with in_range(lamp), pytest.raises(HomeAssistantError) as err:
         await hass.services.async_call(domain, service, data, blocking=True)
 
     assert err.value.translation_domain == DOMAIN
@@ -1100,7 +1095,8 @@ async def test_syncing_a_home_that_was_never_set_writes_nothing_and_says_why(
     # What the user is shown is the message, with the lamp named in it - not
     # the key, which is what Home Assistant falls back on for one it lacks.
     assert "Glowrium-G7_1234" in str(err.value)
-    client.write_gatt_char.assert_not_awaited()
+    assert lamp.dials == 0  # nothing was dialled, let alone written
+    assert lamp.written == []
     assert KEY_LATITUDE not in coordinator.state
     assert KEY_LONGITUDE not in coordinator.state
 

@@ -289,13 +289,9 @@ async def test_sync_location_writes_nothing_without_home_assistant() -> None:
     tools/bench.py builds the real coordinator with ``hass=None``; the command
     returns there as it always did, whatever else it now refuses.
     """
-    coordinator = GlowriumCoordinator(None, "AA:BB:CC:DD:EE:FF", "bench")
-    client = MagicMock()
-    client.is_connected = True
-    client.write_gatt_char = AsyncMock()
-    coordinator._client = client
+    coordinator, lamp, _link = await _holding_a_link(None, "bench")
     await coordinator.async_sync_location()
-    client.write_gatt_char.assert_not_awaited()
+    assert lamp.written == []
 
 
 async def test_set_timer_start(hass: HomeAssistant) -> None:
@@ -320,30 +316,29 @@ async def test_set_timer_gradual(hass: HomeAssistant) -> None:
 
 async def test_available_follows_presence_not_connection(hass: HomeAssistant) -> None:
     """Availability tracks presence or a live link, so it does not flap on reconnect."""
-    coordinator = GlowriumCoordinator(hass, "AA:BB:CC:DD:EE:FF", "Glowrium-G7")
+    coordinator, lamp = _at_a_lamp(hass)
     assert coordinator.available is False  # neither present nor connected
-    coordinator._present = True
+    link_of(coordinator).begin(present=True)
     assert coordinator.available is True  # advertising -> available
-    coordinator._present = False
-    client = MagicMock()
-    client.is_connected = True
-    coordinator._client = client
+    link_of(coordinator).advertising(False)
+    await coordinator.async_set_power(True)  # a link is taken
     assert coordinator.available is True  # connected -> available
-    client.is_connected = False
+    lamp.links[0].is_connected = False
     assert coordinator.available is False  # link dropped and gone -> unavailable
 
 
 async def test_presence_callbacks_notify(hass: HomeAssistant) -> None:
     """Advertisement/unavailable callbacks flip presence and notify listeners."""
-    coordinator = GlowriumCoordinator(hass, "AA:BB:CC:DD:EE:FF", "Glowrium-G7")
-    coordinator._reconnecting = True  # suppress the reconnect attempt
+    coordinator, lamp = _at_a_lamp(hass)
+    lamp.out_of_range()  # the reconnect an advertisement sets off comes to nothing
     updates: list[int] = []
     coordinator.async_add_listener(lambda: updates.append(1))
-    coordinator._async_on_advertisement(MagicMock(), MagicMock())
-    assert coordinator._present is True
-    coordinator._async_on_unavailable(MagicMock())
-    assert coordinator._present is False
+    link_of(coordinator).advertising(True)
+    assert link_of(coordinator).diagnostics()["advertising"] is True
+    link_of(coordinator).advertising(False)
+    assert link_of(coordinator).diagnostics()["advertising"] is False
     assert updates == [1, 1]  # notified on the present flip and on going away
+    await hass.async_block_till_done()  # the reconnect, failing at debug level
 
 
 async def test_async_activate_sequence(hass: HomeAssistant) -> None:
@@ -1204,21 +1199,24 @@ async def test_setup_is_not_held_by_a_connect_that_never_finishes(
 ) -> None:
     """A connect to an unreachable lamp must not hold the connection lock open.
 
-    async_setup_entry awaits this path. When the reconnect poll held _lock while
+    Setup awaited this path once. When the reconnect poll held the lock while
     grinding through attempts to a lamp that was out of range, setup waited on
     that lock with no deadline and the entry stayed in "setup in progress"
     forever - never even reaching setup_retry.
     """
-    coordinator = GlowriumCoordinator(hass, "AA:BB:CC:DD:EE:FF", "Glowrium-G7")
+    coordinator, lamp = _at_a_lamp(hass)
     monkeypatch.setattr(link_module, "_CONNECT_TIMEOUT", 0.05)
-
-    # Stand in for the other holder: the lock is taken and not given back.
-    await coordinator._lock.acquire()
+    # The other holder: a command dialling a lamp that is never found.
+    lamp.dials_when(asyncio.Event())
+    command = asyncio.create_task(coordinator.async_set_power(True))
+    await asyncio.sleep(0)
     try:
         with pytest.raises(TimeoutError):
-            await coordinator._async_ensure_connected()
+            await link_of(coordinator).connect()
     finally:
-        coordinator._lock.release()
+        command.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await command
 
 
 async def test_lost_acknowledgement_is_not_reported_as_failure(

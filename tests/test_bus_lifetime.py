@@ -1035,6 +1035,9 @@ class _GattClient(_HaClient):
         path = "/org/bluez/hci0/dev_AA_BB_CC_DD_EE_FF/service0001/char0002"
         return SimpleNamespace(obj=(path, {}), uuid=uuid)
 
+    async def start_notify(self, _uuid: str, _heard: Any) -> None:
+        return  # the subscription is not what these tests are about
+
     async def write_gatt_char(self, uuid: str, data: bytes, response: bool) -> None:
         assert self._backend is not None
         await self._backend.write_gatt_char(self._characteristic(uuid), data, response)
@@ -1055,15 +1058,19 @@ class _WorkingClient:
         self.disconnect = AsyncMock()
 
 
-def _on_a_busy_link(
+async def _on_a_busy_link(
     hass: HomeAssistant,
 ) -> tuple[GlowriumCoordinator, _GattClient, _BusyBus]:
     """Return a coordinator holding bleak's own client, on a link BlueZ is busy on."""
-    coordinator = ScriptedLamp().coordinator(hass)
+    lamp = ScriptedLamp()
+    coordinator = lamp.coordinator(hass)
     bus = _BusyBus()
     backend, _ = _bleaks_own_client(bus)
     client = _GattClient(backend)
-    coordinator._client = client
+    lamp.dials_through(AsyncMock(return_value=client))
+    async with link_of(coordinator).lock:
+        await link_of(coordinator).open()  # taken bare: nothing asked on the bus
+    lamp.dials_through(None)  # the next dial is the lamp's own
     return coordinator, client, bus
 
 
@@ -1090,7 +1097,7 @@ def _bluez_reports_the_link_gone(
     backend._disconnect_monitor_event.set()
     backend._disconnect_monitor_event = None
     backend._cleanup_all()
-    coordinator._async_on_disconnect(client)
+    link_of(coordinator).on_lost(client)
 
 
 @pytest.mark.parametrize(
@@ -1121,10 +1128,10 @@ async def test_a_call_waiting_its_turn_when_the_link_drops_ends_as_a_lost_link(
     That is a lost link like any other, and has to end like one: nothing comes
     out of the exchange, and the bus is closed once.
     """
-    coordinator, client, bus = _on_a_busy_link(hass)
+    coordinator, client, bus = await _on_a_busy_link(hass)
     caplog.set_level(logging.DEBUG, logger=coordinator_module.__name__)
     exchanges = {
-        "the state request": coordinator._async_prime,
+        "the state request": link_of(coordinator).prime_held,
         "the state read": lambda: coordinator._async_read_state(
             turn_over(coordinator, client)
         ),
@@ -1140,8 +1147,8 @@ async def test_a_call_waiting_its_turn_when_the_link_drops_ends_as_a_lost_link(
         await waiting  # ends, and with nothing to say about an assertion
     await hass.async_block_till_done()
 
-    assert coordinator._client is None
-    assert coordinator._primed_client is not client
+    assert link_of(coordinator).diagnostics()["connected"] is False
+    assert link_of(coordinator).diagnostics()["primed"] is False
     assert coordinator.device_info == {}
     # A link that was lost, and not a lamp that refused: nothing is counted
     # towards asking it no more.
@@ -1163,9 +1170,8 @@ async def test_a_command_waiting_its_turn_when_the_link_drops_is_sent_on_a_new_l
     assertion was not taken for a lost link, so it would have reached whoever
     pressed the button as an unknown error, with the retry never made.
     """
-    coordinator, client, bus = _on_a_busy_link(hass)
-    second = _WorkingClient()
-    lamp_of(coordinator).dials_through(AsyncMock(return_value=second))
+    coordinator, client, bus = await _on_a_busy_link(hass)
+    lamp = lamp_of(coordinator)
 
     command = asyncio.create_task(coordinator.async_set_power(True))
     await _turned_away(bus, "WriteValue")
@@ -1174,10 +1180,8 @@ async def test_a_command_waiting_its_turn_when_the_link_drops_is_sent_on_a_new_l
         await command  # delivered, and nothing raised
     await hass.async_block_till_done()
 
-    second.write_gatt_char.assert_awaited_once_with(
-        WRITE_UUID, cbor.encode({KEY_POWER: True}), response=True
-    )
-    assert coordinator._client is second
+    assert lamp.written == [(WRITE_UUID, cbor.encode({KEY_POWER: True}))]
+    assert link_of(coordinator).client is lamp.links[0]  # the retry's, a new link
     assert coordinator.state[KEY_POWER] is True
     assert bus.closings == 1
 
@@ -1191,20 +1195,23 @@ async def test_an_assertion_on_a_link_that_is_up_is_nobodys_lost_link(
     wrapper, a test's own stand-in for the lamp - and taking every one of them
     for a link that dropped would bury it in a debug line about the radio.
     """
-    coordinator = GlowriumCoordinator(hass, "AA:BB:CC:DD:EE:FF", "Glowrium-G7")
+    lamp = ScriptedLamp()
+    coordinator = lamp.coordinator(hass)
     client = _WorkingClient()
     client.write_gatt_char.side_effect = AssertionError("not about the bus")
     client.read_gatt_char.side_effect = AssertionError("not about the bus")
-    coordinator._client = client
+    lamp.dials_through(AsyncMock(return_value=client))
+    async with link_of(coordinator).lock:
+        await link_of(coordinator).open()
 
     with pytest.raises(AssertionError, match="not about the bus"):
         await coordinator.async_set_power(True)
     with pytest.raises(AssertionError, match="not about the bus"):
         await coordinator._async_read_device_info(turn_over(coordinator, client))
     with pytest.raises(AssertionError, match="not about the bus"):
-        await coordinator._async_prime()
+        await link_of(coordinator).prime_held()
 
-    assert coordinator._client is client  # and nothing was let go of over it
+    assert link_of(coordinator).client is client  # and nothing was let go of over it
 
 
 _GATT_CALLS = frozenset(

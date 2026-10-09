@@ -6,6 +6,7 @@ what must not come out of it, whatever the lamp reports.
 """
 
 from datetime import datetime, timedelta, timezone
+import inspect
 import json
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -39,7 +40,7 @@ from custom_components.glowrium.const import (
 from custom_components.glowrium.coordinator import _parse_device_info
 from custom_components.glowrium.diagnostics import async_get_config_entry_diagnostics
 
-from .lamp import turn_over
+from .lamp import ScriptedLamp, in_range, link_of, turn_over
 
 ADDRESS = "AA:BB:CC:DD:EE:FF"
 TITLE = "Glowrium-G7_DDEEFF"
@@ -240,15 +241,12 @@ async def test_a_clock_the_integration_set_is_judged_from_when_it_set_it(
     entry = await _a_lamp_that_has_reported(hass)
     coordinator = entry.runtime_data
     coordinator.state[KEY_TIME] = bytes.fromhex("07e80101000000")  # far off
-    coordinator._client = MagicMock(write_gatt_char=AsyncMock())
+    link = await ScriptedLamp().dial(MagicMock())  # a link to write the clock on
     with patch(
         "custom_components.glowrium.coordinator.dt_util.now",
         return_value=HEARD_AT + timedelta(minutes=2),
     ):
-        await coordinator._async_sync_clock_if_needed(
-            turn_over(coordinator, coordinator._client)
-        )
-    coordinator._client = None  # nothing real to hang up when the test ends
+        await coordinator._async_sync_clock_if_needed(turn_over(coordinator, link))
 
     data = await _downloaded(hass, entry)
 
@@ -622,10 +620,6 @@ async def test_a_lamp_that_has_reported_nothing_makes_a_file_all_the_same(
     }
 
 
-class _Behind:
-    """What sits behind a client. Its class name is what the file shows."""
-
-
 _NOW = 5000.0  # the coordinator's monotonic clock, held still
 _LINK_AT_REST = {
     "available": False,
@@ -644,13 +638,23 @@ _LINK_AT_REST = {
 }
 
 
-def _hold(coordinator: Any, *, connected: bool = True, primed: bool = False) -> None:
-    """Give the coordinator a client, with something known behind it."""
-    client = MagicMock(is_connected=connected)
-    coordinator._client = client
-    coordinator._backends[client] = _Behind()
-    if primed:
-        coordinator._primed_client = client
+async def _hold(
+    coordinator: Any, *, connected: bool = True, primed: bool = False
+) -> None:
+    """Have the coordinator take a link of a scripted lamp: bare, or primed.
+
+    What is behind the lamp's link is named by its class, as the file names
+    a client.
+    """
+    lamp = ScriptedLamp()
+    lamp.answers()
+    with in_range(lamp):
+        if primed:
+            await link_of(coordinator).connect()  # and the first exchange on it
+        else:
+            async with link_of(coordinator).lock:
+                await link_of(coordinator).open()  # taken bare, nothing asked
+    lamp.links[0].is_connected = connected
 
 
 @pytest.mark.parametrize(
@@ -658,23 +662,29 @@ def _hold(coordinator: Any, *, connected: bool = True, primed: bool = False) -> 
     [
         pytest.param(lambda _: None, {}, id="at rest"),
         pytest.param(
-            lambda c: setattr(c, "_present", True),
+            lambda c: link_of(c).begin(present=True),
             {"advertising": True, "available": True},
             id="heard advertising",
         ),
         pytest.param(
             _hold,
-            {"connected": True, "available": True, "client": "_Behind"},
+            {"connected": True, "available": True, "client": "NothingBehind"},
             id="a link nobody has primed",
         ),
         pytest.param(
             lambda c: _hold(c, primed=True),
-            {"connected": True, "available": True, "client": "_Behind", "primed": True},
+            {
+                "connected": True,
+                "available": True,
+                "client": "NothingBehind",
+                "primed": True,
+                "reports": 2,  # the lamp answered the first exchange
+            },
             id="a primed link",
         ),
         pytest.param(
             lambda c: _hold(c, connected=False),
-            {"client": "_Behind"},
+            {"client": "NothingBehind"},
             id="a client that says it is not connected",
         ),
         pytest.param(_report, {"reports": 2}, id="a second report"),
@@ -682,7 +692,7 @@ def _hold(coordinator: Any, *, connected: bool = True, primed: bool = False) -> 
             lambda c: setattr(c, "_writes_sent", 3), {"writes_sent": 3}, id="writes"
         ),
         pytest.param(
-            lambda c: setattr(c, "_last_answer", _NOW - 42),
+            lambda c: setattr(link_of(c), "last_answer", _NOW - 42),
             {"seconds_since_last_answer": 42},
             id="silence",
         ),
@@ -702,17 +712,17 @@ def _hold(coordinator: Any, *, connected: bool = True, primed: bool = False) -> 
             id="the state request given up",
         ),
         pytest.param(
-            lambda c: setattr(c, "_stuck_hang_ups", 2),
+            lambda c: setattr(link_of(c), "stuck_hang_ups", 2),
             {"unanswered_hang_ups": 2},
             id="hang-ups left unanswered",
         ),
         pytest.param(
-            lambda c: setattr(c, "_dial_not_before", _NOW + 60),
+            lambda c: setattr(link_of(c), "dial_not_before", _NOW + 60),
             {"dials_held_back": True},
             id="dials held back",
         ),
         pytest.param(
-            lambda c: c._unreleased.add(object()),
+            lambda c: link_of(c).unclosed.add(object()),
             {"clients_that_would_not_close": 1},
             id="a client that would not close",
         ),
@@ -739,12 +749,13 @@ async def test_each_field_of_the_link_section_follows_its_own_source(
     coordinator = entry.runtime_data
     monkeypatch.setattr(coordinator_module, "monotonic", lambda: _NOW)
     monkeypatch.setattr(link_module, "monotonic", lambda: _NOW)
-    coordinator._last_answer = _NOW
-    arrange(coordinator)
+    link_of(coordinator).last_answer = _NOW
+    arranged = arrange(coordinator)
+    if inspect.isawaitable(arranged):
+        await arranged
 
     data = await _downloaded(hass, entry)
-    coordinator._client = None  # nothing real to hang up when the test ends
-    coordinator._unreleased.clear()
+    link_of(coordinator).unclosed.clear()
 
     assert data["link"] == _LINK_AT_REST | differs
     _nothing_private_in(data)

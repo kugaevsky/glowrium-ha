@@ -13,8 +13,10 @@ that will not hang up - puts it behind the lamp's with ``dials_through``.
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Iterator
+import contextlib
 from typing import Any
+from unittest.mock import patch
 from weakref import WeakKeyDictionary
 
 from bleak.exc import BleakError
@@ -27,9 +29,16 @@ from custom_components.glowrium.link import Link, Turn, Unclosed
 
 ADDRESS = "AA:BB:CC:DD:EE:FF"
 
-# What a link of the scripted lamp has behind it: not BlueZ's client, and no
-# bus - the link looks at the module its class lives in to tell.
-_NOTHING_BEHIND = object()
+
+class NothingBehind:
+    """What a link of the scripted lamp has behind it: no bus, and not BlueZ's.
+
+    The link tells BlueZ's client by the module its class lives in, and the
+    diagnostics name a client by its class.
+    """
+
+
+_NOTHING_BEHIND = NothingBehind()
 
 # The lamp each coordinator was built to dial, for a helper that is given the
 # coordinator alone. Kept here and not on the coordinator: nothing outside the
@@ -324,8 +333,12 @@ class ScriptedLamp:
         self._in_range = False
         self._through = None
 
-    def dials_through(self, dial: Callable[..., Awaitable[Any]]) -> None:
-        """Send every dial from here on to ``dial``, and hand back what it does."""
+    def dials_through(self, dial: Callable[..., Awaitable[Any]] | None) -> None:
+        """Send every dial from here on to ``dial``, and hand back what it does.
+
+        ``None`` gives the dials back to the lamp: it hands out links of its
+        own again.
+        """
         self._through = dial
 
     def say(self, frame: bytes) -> None:
@@ -337,6 +350,33 @@ class ScriptedLamp:
         """Lose every link that is up."""
         for link in self.links:
             link.lose()
+
+
+@contextlib.contextmanager
+def in_range(lamp: ScriptedLamp) -> Iterator[None]:
+    """Put ``lamp`` where the integration's own dial finds it and connects to it.
+
+    For a coordinator the integration's setup made, which is handed no dial:
+    what stands in for the lamp is what that dial is made of - Home
+    Assistant's lookup of the device, and the library's connect, which here
+    hands out the lamp's links. With the tests of the dial itself, the one
+    place either is replaced at module level.
+    """
+
+    async def _connects(*_args: object, **kwargs: object) -> Any:
+        return await lamp.dial(kwargs["disconnected_callback"])
+
+    with (
+        patch(
+            "homeassistant.components.bluetooth.async_ble_device_from_address",
+            return_value=object(),
+        ),
+        patch(
+            "custom_components.glowrium.link.establish_connection",
+            side_effect=_connects,
+        ),
+    ):
+        yield
 
 
 def link_of(coordinator: GlowriumCoordinator) -> Link:
