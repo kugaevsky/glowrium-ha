@@ -27,6 +27,10 @@ from custom_components.glowrium.link import Link, Turn, Unclosed
 
 ADDRESS = "AA:BB:CC:DD:EE:FF"
 
+# What a link of the scripted lamp has behind it: not BlueZ's client, and no
+# bus - the link looks at the module its class lives in to tell.
+_NOTHING_BEHIND = object()
+
 # The lamp each coordinator was built to dial, for a helper that is given the
 # coordinator alone. Kept here and not on the coordinator: nothing outside the
 # tests has any business asking a coordinator what it dials through.
@@ -42,14 +46,20 @@ class LampLink:
         self._lost = lost
         self._heard: Callable[[Any, bytearray], None] | None = None
         self.is_connected = True
-        self.hung_up = False
+        # How many hang-ups were asked for, and how many got through.
+        self.hang_ups = 0
+        self.hung_up = 0
         self.subscribed = False
+        # What sits behind the link, as the link asks a client: nothing with a
+        # bus of its own, so a hang-up that failed leaves nothing to close.
+        self._backend = _NOTHING_BEHIND
 
     async def start_notify(
         self, _uuid: str, heard: Callable[[Any, bytearray], None]
     ) -> None:
         """Subscribe: what the lamp says from here on goes to ``heard``."""
         self._gone_is_an_error()
+        await self._lamp.subscribing()
         self._heard = heard
         self.subscribed = True
 
@@ -69,11 +79,17 @@ class LampLink:
         which is what the error says.
         """
         self._gone_is_an_error()
-        return self._lamp.read_of(uuid)
+        return await self._lamp.read_of(uuid)
 
     async def disconnect(self) -> None:
-        """Hang up. The lamp says nothing more on this link."""
-        self.hung_up = True
+        """Hang up. The lamp says nothing more on this link.
+
+        Unless the lamp is scripted to be slow about it, or to fail it: then
+        the hang-up was asked for and did not get through.
+        """
+        self.hang_ups += 1
+        await self._lamp.hanging_up()
+        self.hung_up += 1
         self.is_connected = False
 
     def say(self, frame: bytes) -> None:
@@ -115,11 +131,19 @@ class ScriptedLamp:
             | None
         ) = None
         self._never_acknowledges = False
+        self._never_reads = False
+        self._read_fails: Exception | None = None
+        self._hang_up_released: asyncio.Event | None = None
+        self._hang_up_fails: Exception | None = None
+        self._subscribed_when: asyncio.Event | None = None
+        self._subscription_fails: Exception | None = None
         # What the next writes meet, when the lamp is scripted to fail them:
-        # the error, how many writes (None: every one), and what the lamp
-        # reports back first, if it acts on the write (see fails_writes).
+        # the error, how many writes (None: every one), what the lamp reports
+        # back first if it acts on the write, and which characteristic alone
+        # (None: any) - see fails_writes.
         self._failing: (
-            tuple[Exception, int | None, Callable[[bytes], bytes] | None] | None
+            tuple[Exception, int | None, Callable[[bytes], bytes] | None, str | None]
+            | None
         ) = None
 
     @property
@@ -140,8 +164,10 @@ class ScriptedLamp:
         It carries every id asked for, zero unless ``values`` gives one, and
         only the ids in ``only`` if that is given - a lamp that knows some of
         what it is asked. ``after`` holds the answer back for that long;
-        ``frame`` is reported as it is given, in place of all of that.
+        ``frame`` is reported as it is given, in place of all of that. A lamp
+        that answers no longer keeps writes waiting.
         """
+        self._never_acknowledges = False
         self._answer = (values, only, after, frame)
 
     def readable(self, uuid: str, data: bytes | None) -> None:
@@ -158,21 +184,64 @@ class ScriptedLamp:
         """Keep every write waiting: it neither returns nor fails."""
         self._never_acknowledges = True
 
+    def never_answers_a_read(self) -> None:
+        """Keep every read waiting: it neither returns nor fails."""
+        self._never_reads = True
+
+    def fails_reads(self, error: Exception) -> None:
+        """Fail every read with ``error``, whatever the lamp was given to read."""
+        self._read_fails = error
+
+    def hangs_up_when(self, released: asyncio.Event) -> None:
+        """Hold every hang-up until ``released`` is set: a slow disconnect."""
+        self._hang_up_released = released
+
+    def fails_hang_ups(self, error: Exception) -> None:
+        """Fail every hang-up with ``error``, as a stack that answers no."""
+        self._hang_up_fails = error
+
+    def subscribes_when(self, subscribed: asyncio.Event) -> None:
+        """Hold every subscription until ``subscribed`` is set."""
+        self._subscribed_when = subscribed
+
+    def subscription_fails(self, error: Exception | None) -> None:
+        """Fail every subscription with ``error`` (``None``: fail none again).
+
+        A link taken and not kept.
+        """
+        self._subscription_fails = error
+
+    async def hanging_up(self) -> None:
+        """Let a link's hang-up through, late, or not at all."""
+        if self._hang_up_released is not None:
+            await self._hang_up_released.wait()
+        if self._hang_up_fails is not None:
+            raise self._hang_up_fails
+
+    async def subscribing(self) -> None:
+        """Let a link's subscription through, late, or fail it."""
+        if self._subscribed_when is not None:
+            await self._subscribed_when.wait()
+        if self._subscription_fails is not None:
+            raise self._subscription_fails
+
     def fails_writes(
         self,
         error: Exception,
         *,
         times: int | None = None,
         saying: Callable[[bytes], bytes] | None = None,
+        of: str | None = None,
     ) -> None:
         """Fail the next ``times`` writes (every one, if not given) with ``error``.
 
         A failed write was still put to the lamp, and is noted as one. With
         ``saying``, the lamp reports back first - what it makes of the frame
         it was written - and only then fails the write: a lamp that acted on
-        it and lost the acknowledgement.
+        it and lost the acknowledgement. With ``of``, only the writes to that
+        characteristic fail; the rest go through.
         """
-        self._failing = (error, times, saying)
+        self._failing = (error, times, saying, of)
 
     async def taken(self, link: LampLink, uuid: str, frame: bytes) -> None:
         """Note a write ``link`` was given, and do with it what the lamp is scripted to.
@@ -183,11 +252,11 @@ class ScriptedLamp:
         self.exchanges.append(("write", uuid))
         if self._never_acknowledges:
             await asyncio.Event().wait()
-        if self._failing is not None:
-            error, left, saying = self._failing
+        if self._failing is not None and self._failing[3] in (None, uuid):
+            error, left, saying, of = self._failing
             if left is not None:
                 left -= 1
-                self._failing = (error, left, saying) if left > 0 else None
+                self._failing = (error, left, saying, of) if left > 0 else None
             if saying is not None:
                 link.say(saying(frame))
             raise error
@@ -200,10 +269,17 @@ class ScriptedLamp:
                 raw = cbor.encode(dict.fromkeys(asked, 0) | (values or {}))
             link.say(raw)
 
-    def read_of(self, uuid: str) -> bytearray:
-        """Note a read, and return what the lamp was given to read there."""
+    async def read_of(self, uuid: str) -> bytearray:
+        """Note a read, and return what the lamp was given to read there.
+
+        Or keep it waiting, or fail it, as the lamp is scripted to.
+        """
         self.read.append(uuid)
         self.exchanges.append(("read", uuid))
+        if self._never_reads:
+            await asyncio.Event().wait()
+        if self._read_fails is not None:
+            raise self._read_fails
         if uuid in self._readable:
             return bytearray(self._readable[uuid])
         raise BleakError("Not connected")

@@ -58,27 +58,8 @@ from custom_components.glowrium.coordinator import (
 from .lamp import LampLink, ScriptedLamp, lamp_of, link_of, turn_over
 
 
-def _connected_coordinator(
-    hass: HomeAssistant,
-) -> tuple[GlowriumCoordinator, MagicMock]:
-    """Return a coordinator wired to a fake, already-connected BLE client."""
-    # Out of range unless a test dials (_dialling). Left to Home Assistant, the
-    # answer depends on whether some earlier test module happened to set up its
-    # Bluetooth manager: with one, "not in range"; without, a RuntimeError.
-    lamp = ScriptedLamp()
-    lamp.out_of_range()
-    coordinator = lamp.coordinator(hass)
-    client = MagicMock()
-    client.is_connected = True
-    client.start_notify = AsyncMock()
-    client.write_gatt_char = AsyncMock()
-    client.disconnect = AsyncMock()
-    coordinator._client = client
-    return coordinator, client
-
-
 def _at_a_lamp(
-    hass: HomeAssistant, name: str = "Glowrium-G7"
+    hass: HomeAssistant | None, name: str = "Glowrium-G7"
 ) -> tuple[GlowriumCoordinator, ScriptedLamp]:
     """Return a coordinator at a scripted lamp in range, with no link yet.
 
@@ -92,7 +73,7 @@ def _at_a_lamp(
 
 
 async def _holding_a_link(
-    hass: HomeAssistant, name: str = "Glowrium-G7"
+    hass: HomeAssistant | None, name: str = "Glowrium-G7"
 ) -> tuple[GlowriumCoordinator, ScriptedLamp, LampLink]:
     """Return a coordinator holding a bare link to a scripted lamp, and that link.
 
@@ -118,33 +99,6 @@ def _refusing(lamp: ScriptedLamp) -> None:
     """
     lamp.fails_writes(BleakError("Insufficient authorization (8)"))
     lamp.readable(NOTIFY_UUID, cbor.encode({KEY_POWER: True}))
-
-
-def _answers(
-    coordinator: GlowriumCoordinator,
-    client: MagicMock,
-    values: dict[int, Any] | None = None,
-    *,
-    only: tuple[int, ...] | None = None,
-) -> AsyncMock:
-    """Put a lamp behind ``client`` that answers the state request, as a G7 does.
-
-    The request is a write of ids to ``NOTIFY_UUID``; the answer is one
-    notification carrying a map of exactly those ids, and on a real lamp it
-    arrives before the write has returned (measured, 2026-10-05). ``only``
-    makes it a lamp that knows just some of what it is asked. Any other
-    write is accepted and answered with nothing.
-    """
-
-    async def _write(uuid: str, payload: bytes, **_kwargs: object) -> None:
-        if uuid != NOTIFY_UUID:
-            return
-        asked = [key for key in bytes(payload) if only is None or key in only]
-        answer = dict.fromkeys(asked, 0) | (values or {})
-        coordinator._on_notify(None, bytearray(cbor.encode(answer)))
-
-    client.write_gatt_char = AsyncMock(side_effect=_write)
-    return client.write_gatt_char
 
 
 async def test_set_power(hass: HomeAssistant) -> None:
@@ -880,15 +834,19 @@ async def test_command_budget_covers_waiting_for_the_lock(
     The reconnect poll holds ``_lock`` while it retries, so the budget has to
     cover the wait for the lock, not just the write itself.
     """
-    coordinator, _client = _connected_coordinator(hass)
+    coordinator, lamp = _at_a_lamp(hass)
     monkeypatch.setattr(link_module, "_COMMAND_TIMEOUT", 0.05)
     monkeypatch.setattr(link_module, "_CONFIRM_TIMEOUT", 0.01)
-    await coordinator._lock.acquire()
+    lamp.dials_when(asyncio.Event())  # a background connect holds the lock, dialling
+    connecting = asyncio.create_task(link_of(coordinator).connect())
+    await asyncio.sleep(0)
     try:
         with pytest.raises(HomeAssistantError) as err:
             await coordinator.async_set_power(True)
     finally:
-        coordinator._lock.release()
+        connecting.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await connecting
     assert err.value.translation_key == "cannot_connect"
 
 
@@ -1508,16 +1466,20 @@ async def test_unload_does_not_wait_out_a_connect(
     Unload waiting behind a connect is what made reloading the integration take
     the best part of ten seconds.
     """
-    coordinator, client = _connected_coordinator(hass)
+    coordinator, lamp, link = await _holding_a_link(hass)
     monkeypatch.setattr(link_module, "_STOP_TIMEOUT", 0.05)
-    client.disconnect = AsyncMock()
+    lamp.never_acknowledges_a_write()  # the exchange on the held link hangs...
+    priming = asyncio.create_task(link_of(coordinator).prime_held())
+    await asyncio.sleep(0)  # ...holding the lock
 
-    await coordinator._lock.acquire()  # stand in for a connect in flight
     try:
         await coordinator.async_stop()  # must return, not hang
     finally:
-        coordinator._lock.release()
-    assert coordinator._client is None
+        priming.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await priming
+    assert link.hung_up == 1
+    assert link_of(coordinator).diagnostics()["connected"] is False
 
 
 async def test_a_device_report_reaches_the_entities(hass: HomeAssistant) -> None:
@@ -1940,8 +1902,7 @@ async def test_stopping_tears_everything_down(hass: HomeAssistant) -> None:
     reacting to advertisements and polling for reconnects alongside the new
     one, both competing for the lamp's single connection.
     """
-    coordinator, client = _connected_coordinator(hass)
-    client.disconnect = AsyncMock()
+    coordinator, _lamp, link = await _holding_a_link(hass)
     cancels = {name: MagicMock() for name in ("bluetooth", "unavailable", "poll")}
     coordinator._cancel_bluetooth = cancels["bluetooth"]
     coordinator._cancel_unavailable = cancels["unavailable"]
@@ -1951,8 +1912,8 @@ async def test_stopping_tears_everything_down(hass: HomeAssistant) -> None:
 
     for name, cancel in cancels.items():
         assert cancel.call_count == 1, f"{name} watcher was left running"
-    client.disconnect.assert_awaited_once()
-    assert coordinator._client is None
+    assert link.hung_up == 1
+    assert link_of(coordinator).diagnostics()["connected"] is False
 
 
 async def test_a_dropped_link_is_forgotten(hass: HomeAssistant) -> None:
@@ -1962,13 +1923,12 @@ async def test_a_dropped_link_is_forgotten(hass: HomeAssistant) -> None:
     client left in place looks connected, so the poll never reconnects and
     every command writes into a dead handle.
     """
-    coordinator, client = _connected_coordinator(hass)
-    assert coordinator._is_connected is True
+    coordinator, _lamp, link = await _holding_a_link(hass)
+    assert link_of(coordinator).diagnostics()["connected"] is True
 
-    coordinator._async_on_disconnect(client)
+    link.lose()
 
-    assert coordinator._client is None
-    assert coordinator._is_connected is False
+    assert link_of(coordinator).diagnostics()["connected"] is False
 
 
 async def test_a_write_without_a_link_is_refused_not_dropped(
@@ -1979,9 +1939,8 @@ async def test_a_write_without_a_link_is_refused_not_dropped(
     Returning quietly would make every command look like it succeeded while
     nothing reached the lamp.
     """
-    coordinator, _ = _connected_coordinator(hass)
+    coordinator, _lamp = _at_a_lamp(hass)
     monkeypatch.setattr(link_module, "_CONFIRM_TIMEOUT", 0.01)
-    coordinator._client = None
 
     with pytest.raises(link_module.LinkLostError):
         await coordinator._write_raw({KEY_POWER: True})
@@ -1997,19 +1956,15 @@ async def test_the_bench_takes_a_link_and_writes_with_nothing_asked_of_the_lamp(
     integration would, holding the lock itself. Both names go when the bench
     speaks to the link through its own interface (#21, stage 3).
     """
-    coordinator, client = _connected_coordinator(hass)
-    coordinator._client = None
-    _dialling(coordinator, client)
+    coordinator, lamp = _at_a_lamp(hass)
 
-    async with coordinator._lock:
+    async with link_of(coordinator).lock:
         await coordinator._connect_locked(prime=False)
         await coordinator._write_raw({KEY_POWER: True})
 
-    assert coordinator._client is client
-    assert coordinator._primed_client is not client
-    client.write_gatt_char.assert_awaited_once_with(
-        WRITE_UUID, cbor.encode({KEY_POWER: True}), response=True
-    )
+    assert link_of(coordinator).client is lamp.links[0]
+    assert link_of(coordinator).diagnostics()["primed"] is False
+    assert lamp.written == [(WRITE_UUID, cbor.encode({KEY_POWER: True}))]
 
 
 async def test_the_entities_are_told_when_a_link_is_taken(hass: HomeAssistant) -> None:
@@ -2486,21 +2441,31 @@ async def test_what_else_was_written_meanwhile_vouches_for_no_command(
     and was called delivered on the strength of that report: a command the
     lamp never received. It fails, and at once.
     """
-    coordinator, client = _connected_coordinator(hass)
+    coordinator, lamp = _at_a_lamp(hass)
     monkeypatch.setattr(link_module, "_CONFIRM_TIMEOUT", 30)
-    await coordinator._lock.acquire()  # a first exchange is under way
+    stale = bytes.fromhex("07e80101000000")  # the exchange has a clock to write
+    lamp.answers({KEY_TIME: stale, KEY_ACTIVATED: True}, after=0.01)
+
+    def _reports_then_loses_the_link(_frame: bytes) -> bytes:
+        hass.loop.call_soon(lamp.lose)  # the link goes, right after the report
+        lamp.out_of_range()  # and the lamp is not heard again
+        return cbor.encode({KEY_POWER: True})  # the very state the command asks for
+
+    lamp.fails_writes(
+        BleakError("Not connected"), of=WRITE_UUID, saying=_reports_then_loses_the_link
+    )
+
+    exchange = asyncio.create_task(link_of(coordinator).reconnect())
+    await asyncio.sleep(0)  # a first exchange is under way
     command = asyncio.create_task(coordinator.async_set_power(True))
     await asyncio.sleep(0)  # taken up, and waiting for the lock
-
-    await coordinator._write_raw({KEY_INDICATOR: True})  # the exchange writes
-    coordinator._ingest(cbor.encode({KEY_POWER: True}))  # and the lamp reports
-    coordinator._client = None  # then the link is lost
-    coordinator._lock.release()
+    await exchange
 
     async with asyncio.timeout(2):
         with pytest.raises(HomeAssistantError):
             await command
-    client.write_gatt_char.assert_awaited_once()  # the exchange's, and no other
+    # The exchange's writes - the request, the clock - and no other.
+    assert [uuid for uuid, _frame in lamp.written] == [NOTIFY_UUID, WRITE_UUID]
 
 
 async def test_a_command_that_failed_is_not_echoed_into_the_mirror(
@@ -2637,20 +2602,22 @@ async def test_an_old_client_disconnecting_does_not_drop_the_live_one(
     with "out of connection slots" while the working connection sits there
     unreferenced until the lamp's own churn drops it.
     """
-    coordinator, live = _connected_coordinator(hass)
-    superseded = MagicMock()  # the client an earlier attempt gave up on
-    superseded.disconnect = AsyncMock()
+    coordinator, lamp, _first = await _holding_a_link(hass)
+    lamp.fails_writes(BleakError("dropped"), times=1)
+    await coordinator.async_set_power(True)  # retried, on a link of its own
+    superseded, live = lamp.links  # the client an earlier attempt gave up on
+    assert superseded.hung_up == 1
 
-    coordinator._async_on_disconnect(superseded)
+    link_of(coordinator).on_lost(superseded)
 
-    assert coordinator._client is live
-    assert coordinator._is_connected is True
-    live.disconnect.assert_not_awaited()
-    superseded.disconnect.assert_not_awaited()
+    assert link_of(coordinator).client is live
+    assert link_of(coordinator).diagnostics()["connected"] is True
+    assert live.hang_ups == 0
+    assert superseded.hang_ups == 1  # and not hung up a second time
 
     # The live one going down is still heard.
-    coordinator._async_on_disconnect(live)
-    assert coordinator._client is None
+    live.lose()
+    assert link_of(coordinator).diagnostics()["connected"] is False
 
 
 async def test_a_connect_that_fails_half_way_leaves_no_link_behind(
@@ -2664,17 +2631,15 @@ async def test_a_connect_that_fails_half_way_leaves_no_link_behind(
     slot with nothing referencing it: every later attempt then fails for want
     of a slot until the lamp's own churn drops it.
     """
-    coordinator, client = _connected_coordinator(hass)
-    coordinator._client = None
-    client.start_notify = AsyncMock(side_effect=BleakError("subscribe failed"))
-    client.disconnect = AsyncMock()
-    lamp_of(coordinator).dials_through(AsyncMock(return_value=client))
+    coordinator, lamp = _at_a_lamp(hass)
+    lamp.subscription_fails(BleakError("subscribe failed"))
 
     with pytest.raises(BleakError):
-        await coordinator._connect_locked()
+        await link_of(coordinator).connect()
 
-    client.disconnect.assert_awaited_once()
-    assert coordinator._client is None  # and nothing is left claiming to be live
+    assert lamp.links[0].hung_up == 1
+    # And nothing is left claiming to be live.
+    assert link_of(coordinator).diagnostics()["connected"] is False
 
 
 async def test_stopping_hangs_up_even_when_the_lock_is_busy(
@@ -2686,18 +2651,21 @@ async def test_stopping_hangs_up_even_when_the_lock_is_busy(
     on garbage collection - so the lamp's one slot stays taken and the next
     coordinator cannot have it.
     """
-    coordinator, client = _connected_coordinator(hass)
+    coordinator, lamp, link = await _holding_a_link(hass)
     monkeypatch.setattr(link_module, "_STOP_TIMEOUT", 0.05)
-    client.disconnect = AsyncMock()
+    lamp.never_acknowledges_a_write()  # the exchange on the held link hangs...
+    priming = asyncio.create_task(link_of(coordinator).prime_held())
+    await asyncio.sleep(0)  # ...holding the lock
 
-    await coordinator._lock.acquire()  # something else is mid-connect
     try:
         await coordinator.async_stop()
     finally:
-        coordinator._lock.release()
+        priming.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await priming
 
-    client.disconnect.assert_awaited()  # hung up anyway
-    assert coordinator._client is None
+    assert link.hung_up  # hung up anyway
+    assert link_of(coordinator).diagnostics()["connected"] is False
 
 
 async def test_background_work_is_tied_to_the_entry(hass: HomeAssistant) -> None:
@@ -2812,21 +2780,15 @@ async def test_stopping_hangs_up_once_not_twice(
     timed out again. The lock and the hang-up are separate problems and need
     separate deadlines - the lock is best-effort, the disconnect is tried once.
     """
-    coordinator, client = _connected_coordinator(hass)
+    coordinator, lamp, link = await _holding_a_link(hass)
     monkeypatch.setattr(link_module, "_STOP_TIMEOUT", 0.05)
-    attempts: list[int] = []
-
-    async def _hangs() -> None:
-        attempts.append(1)
-        await asyncio.Event().wait()
-
-    client.disconnect = _hangs
+    lamp.hangs_up_when(asyncio.Event())  # never
 
     async with asyncio.timeout(0.4):  # comfortably under two ceilings plus slack
         await coordinator.async_stop()
 
-    assert attempts == [1]
-    assert coordinator._client is None
+    assert link.hang_ups == 1
+    assert link_of(coordinator).diagnostics()["connected"] is False
 
 
 async def test_a_prime_that_got_nothing_does_not_count_as_primed(
@@ -3305,13 +3267,6 @@ async def test_dst_falls_back_to_an_hour_when_unread(hass: HomeAssistant) -> Non
     assert cbor.decode(lamp.written[-1][1])[KEY_DST] == DST_ON
 
 
-def _dialling(coordinator: GlowriumCoordinator, *clients: MagicMock) -> AsyncMock:
-    """Make the coordinator's next connects hand back ``clients``, in order."""
-    dial = AsyncMock(side_effect=list(clients))
-    lamp_of(coordinator).dials_through(dial)
-    return dial
-
-
 def _counting_connects(coordinator: GlowriumCoordinator) -> list[int]:
     """Note each time the coordinator sets about getting a link.
 
@@ -3321,7 +3276,7 @@ def _counting_connects(coordinator: GlowriumCoordinator) -> list[int]:
     what these tests are about.
     """
     asked: list[int] = []
-    link = coordinator._link
+    link = link_of(coordinator)
     ask = link.open
 
     async def _counted() -> Any:
@@ -3330,17 +3285,6 @@ def _counting_connects(coordinator: GlowriumCoordinator) -> list[int]:
 
     link.open = _counted
     return asked
-
-
-def _fresh_client() -> MagicMock:
-    """Return a client as establish_connection hands one back: up, but unread."""
-    client = MagicMock()
-    client.is_connected = True
-    client.start_notify = AsyncMock()
-    client.disconnect = AsyncMock()
-    client.read_gatt_char = AsyncMock(side_effect=BleakError("Not connected"))
-    client.write_gatt_char = AsyncMock(side_effect=BleakError("Not connected"))
-    return client
 
 
 async def test_a_link_the_poll_gives_up_on_is_hung_up(hass: HomeAssistant) -> None:
@@ -3354,29 +3298,26 @@ async def test_a_link_the_poll_gives_up_on_is_hung_up(hass: HomeAssistant) -> No
     that way kept its connection until the bus's limit of 256 per user was
     reached.
     """
-    coordinator, client = _connected_coordinator(hass)
-    client.read_gatt_char = AsyncMock(side_effect=BleakError("Not connected"))
-    client.write_gatt_char = AsyncMock(side_effect=BleakError("Not connected"))
+    coordinator, lamp, link = await _holding_a_link(hass)
+    lamp.fails_writes(BleakError("Not connected"))  # and there is nothing to read
 
-    await coordinator._async_prime()
+    await link_of(coordinator).prime_held()
     await hass.async_block_till_done()
 
-    assert coordinator._client is None
-    client.disconnect.assert_awaited_once()
+    assert link_of(coordinator).diagnostics()["connected"] is False
+    assert link.hung_up == 1
 
 
 async def test_a_connect_that_cannot_be_read_is_hung_up(hass: HomeAssistant) -> None:
     """The same on the connect path, which is the one the poll takes every tick."""
-    coordinator, _ = _connected_coordinator(hass)
-    coordinator._client = None
-    client = _fresh_client()
-    _dialling(coordinator, client)
+    coordinator, lamp = _at_a_lamp(hass)
+    lamp.fails_writes(BleakError("Not connected"))  # and there is nothing to read
 
-    await coordinator._connect_locked()
+    await link_of(coordinator).connect()
     await hass.async_block_till_done()
 
-    assert coordinator._client is None
-    client.disconnect.assert_awaited_once()
+    assert link_of(coordinator).diagnostics()["connected"] is False
+    assert lamp.links[0].hung_up == 1
 
 
 async def test_a_write_retry_hangs_up_before_it_dials_again(
@@ -3388,29 +3329,22 @@ async def test_a_write_retry_hangs_up_before_it_dials_again(
     while the old link is still up is handed that same link, and the hang-up
     then closes it underneath the retry.
     """
-    coordinator, first = _connected_coordinator(hass)
-    first.write_gatt_char = AsyncMock(side_effect=BleakError("dropped"))
-    second = _fresh_client()
-    second.write_gatt_char = AsyncMock()
-    order: list[str] = []
+    coordinator, lamp, first = await _holding_a_link(hass)
+    lamp.fails_writes(BleakError("dropped"), times=1)
+    released = asyncio.Event()
+    lamp.hangs_up_when(released)  # a real disconnect is not instant either
 
-    async def _hang_up_slowly() -> None:
-        await asyncio.sleep(0.01)  # a real disconnect is not instant either
-        order.append("hung up")
+    command = asyncio.create_task(coordinator.async_set_power(True))
+    await asyncio.sleep(0.01)
+    assert first.hang_ups == 1  # being hung up...
+    assert lamp.dials == 1  # ...and not dialled again before that is through
+    released.set()
+    await command
 
-    async def _dial(*_a: object, **_kw: object) -> MagicMock:
-        order.append("dialled")
-        return second
-
-    first.disconnect = AsyncMock(side_effect=_hang_up_slowly)
-    _dialling(coordinator).side_effect = _dial
-
-    await coordinator.async_set_power(True)
-
-    assert order == ["hung up", "dialled"]
-    first.disconnect.assert_awaited_once()
-    assert coordinator._client is second
-    second.disconnect.assert_not_awaited()  # the link that worked is kept
+    assert first.hung_up == 1
+    second = lamp.links[1]
+    assert link_of(coordinator).client is second
+    assert second.hang_ups == 0  # the link that worked is kept
 
 
 async def test_a_failed_command_hangs_up_only_after_the_device_could_confirm(
@@ -3429,55 +3363,43 @@ async def test_a_failed_command_hangs_up_only_after_the_device_could_confirm(
     failure - on the link the write failed on, and only if that link is still
     up: a client that has been hung up delivers nothing.
     """
-    coordinator, first = _connected_coordinator(hass)
-    first.write_gatt_char = AsyncMock(side_effect=BleakError("Unlikely Error"))
-    second = _fresh_client()
-    _dialling(coordinator, second)
+    coordinator, lamp, first = await _holding_a_link(hass)
+    lamp.fails_writes(BleakError("GATT Protocol Error: Unlikely Error"))
     still_up_when_reporting: list[bool] = []
 
     def _report_if_still_connected() -> None:
-        still_up = second.disconnect.await_count == 0
-        still_up_when_reporting.append(still_up)
-        if still_up:
-            notify = second.start_notify.await_args.args[1]
-            notify(None, bytearray(cbor.encode({KEY_POWER: True})))
+        second = lamp.links[-1]
+        still_up_when_reporting.append(second.hang_ups == 0)
+        lamp.say(cbor.encode({KEY_POWER: True}))  # nothing over a hung-up link
 
-    async def _acted_on_but_unacknowledged(*_a: object, **_kw: object) -> None:
-        hass.loop.call_later(0.05, _report_if_still_connected)
-        raise BleakError("GATT Protocol Error: Unlikely Error")
-
-    second.write_gatt_char = AsyncMock(side_effect=_acted_on_but_unacknowledged)
+    # Acted on, and not acknowledged: the lamp's report comes a moment after.
+    hass.loop.call_later(0.05, _report_if_still_connected)
 
     await coordinator.async_set_power(True)  # confirmed by the late report
     await hass.async_block_till_done()
 
     assert still_up_when_reporting == [True]  # up while the device could answer
     assert coordinator.state[KEY_POWER] is True
-    first.disconnect.assert_awaited_once()
-    second.disconnect.assert_awaited_once()  # ...and hung up once it had
-    assert coordinator._client is None
+    assert first.hung_up == 1
+    assert lamp.links[1].hung_up == 1  # ...and hung up once it had
+    assert link_of(coordinator).diagnostics()["connected"] is False
 
 
 async def test_a_confirmed_command_still_hangs_up_the_client_it_gave_up_on(
     hass: HomeAssistant,
 ) -> None:
     """Being told the command worked is no reason to keep the leak."""
-    coordinator, first = _connected_coordinator(hass)
-    second = _fresh_client()
-
-    async def _write_then_notify(*_a: object, **_kw: object) -> None:
-        coordinator._ingest(cbor.encode({KEY_POWER: True}))
-        raise BleakError("GATT Protocol Error: Unlikely Error")
-
-    first.write_gatt_char = AsyncMock(side_effect=_write_then_notify)
-    second.write_gatt_char = AsyncMock(side_effect=_write_then_notify)
-    _dialling(coordinator, second)
+    coordinator, lamp, first = await _holding_a_link(hass)
+    lamp.fails_writes(
+        BleakError("GATT Protocol Error: Unlikely Error"),
+        saying=lambda _frame: cbor.encode({KEY_POWER: True}),
+    )
 
     await coordinator.async_set_power(True)  # confirmed by the report
     await hass.async_block_till_done()
 
-    first.disconnect.assert_awaited_once()
-    second.disconnect.assert_awaited_once()
+    assert first.hung_up == 1
+    assert lamp.links[1].hung_up == 1
 
 
 async def test_a_link_the_lamp_dropped_is_hung_up_as_well(hass: HomeAssistant) -> None:
@@ -3490,13 +3412,13 @@ async def test_a_link_the_lamp_dropped_is_hung_up_as_well(hass: HomeAssistant) -
     later - 678 times in one night - and each time the callback only cleared
     the reference.
     """
-    coordinator, client = _connected_coordinator(hass)
+    coordinator, _lamp, link = await _holding_a_link(hass)
 
-    coordinator._async_on_disconnect(client)
+    link.lose()
     await hass.async_block_till_done()
 
-    assert coordinator._client is None
-    client.disconnect.assert_awaited_once()
+    assert link_of(coordinator).diagnostics()["connected"] is False
+    assert link.hung_up == 1
 
 
 async def test_a_client_that_is_not_ours_is_left_to_bleak(
@@ -3512,15 +3434,14 @@ async def test_a_client_that_is_not_ours_is_left_to_bleak(
     "Failed to cancel connection ... Bad file descriptor" on every such drop,
     and a retry that died on a bus that was no longer there.
     """
-    coordinator, live = _connected_coordinator(hass)
-    connecting = MagicMock()  # still inside establish_connection
-    connecting.disconnect = AsyncMock()
+    coordinator, lamp, live = await _holding_a_link(hass)
+    connecting = await lamp.dial(MagicMock())  # still inside establish_connection
 
-    coordinator._async_on_disconnect(connecting)
+    link_of(coordinator).on_lost(connecting)
     await hass.async_block_till_done()
 
-    connecting.disconnect.assert_not_awaited()
-    assert coordinator._client is live
+    assert connecting.hang_ups == 0
+    assert link_of(coordinator).client is live
 
 
 async def test_a_hang_up_outlives_the_deadline_of_whoever_asked_for_it(
@@ -3532,28 +3453,21 @@ async def test_a_hang_up_outlives_the_deadline_of_whoever_asked_for_it(
     and then walked away before closing its own D-Bus connection - the leak
     again, by another route.
     """
-    coordinator, first = _connected_coordinator(hass)
+    coordinator, lamp, first = await _holding_a_link(hass)
     monkeypatch.setattr(link_module, "_COMMAND_TIMEOUT", 0.05)
     monkeypatch.setattr(link_module, "_CONFIRM_TIMEOUT", 0.01)
-    first.write_gatt_char = AsyncMock(side_effect=BleakError("dropped"))
+    lamp.fails_writes(BleakError("dropped"))
     released = asyncio.Event()
-    finished: list[int] = []
-
-    async def _slow_hang_up() -> None:
-        await released.wait()
-        finished.append(1)
-
-    first.disconnect = AsyncMock(side_effect=_slow_hang_up)
-    dial = _dialling(coordinator, _fresh_client())
+    lamp.hangs_up_when(released)
 
     with pytest.raises(HomeAssistantError):
         await coordinator.async_set_power(True)  # the deadline ends the wait
 
-    assert finished == []
-    dial.assert_not_awaited()  # and it never dialled over the old link
+    assert not first.hung_up
+    assert lamp.dials == 1  # and it never dialled over the old link
     released.set()
     await hass.async_block_till_done()
-    assert finished == [1]  # the hang-up itself ran to the end
+    assert first.hung_up == 1  # the hang-up itself ran to the end
 
 
 async def test_a_hang_up_that_fails_or_hangs_troubles_nobody(
@@ -3572,26 +3486,22 @@ async def test_a_hang_up_that_fails_or_hangs_troubles_nobody(
     monkeypatch.setattr(link_module, "_HANG_UP_TIMEOUT", 0.05)
     caplog.set_level(logging.DEBUG, logger=coordinator_module.__name__)
     for failure in (BleakError("gone"), OSError(9, "Bad file descriptor"), EOFError()):
-        coordinator, client = _connected_coordinator(hass)
-        client.disconnect = AsyncMock(side_effect=failure)
+        coordinator, lamp, link = await _holding_a_link(hass)
+        lamp.fails_hang_ups(failure)
         caplog.clear()
 
-        await coordinator._hang_up(client)  # the failure does not come out
+        await link_of(coordinator).hang_up(link)  # the failure does not come out
 
-        client.disconnect.assert_awaited_once()
-        assert coordinator._client is None
+        assert link.hang_ups == 1
+        assert link_of(coordinator).diagnostics()["connected"] is False
         assert f"failed: {failure!r}" in caplog.text
 
-    coordinator, client = _connected_coordinator(hass)
-
-    async def _never() -> None:
-        await asyncio.Event().wait()
-
-    client.disconnect = AsyncMock(side_effect=_never)
+    coordinator, lamp, link = await _holding_a_link(hass)
+    lamp.hangs_up_when(asyncio.Event())  # never
     caplog.clear()
     async with asyncio.timeout(1):
-        await coordinator._hang_up(client)  # ends at the ceiling, not never
-    assert coordinator._client is None
+        await link_of(coordinator).hang_up(link)  # ends at the ceiling, not never
+    assert link_of(coordinator).diagnostics()["connected"] is False
     assert "failed: TimeoutError()" in caplog.text
 
 
@@ -3604,15 +3514,15 @@ async def test_a_hang_up_is_not_tied_to_the_entry(hass: HomeAssistant) -> None:
     cancelled by an unload, it leaves the slot taken and the D-Bus connection
     open.
     """
-    coordinator, client = _connected_coordinator(hass)
+    coordinator, _lamp, link = await _holding_a_link(hass)
     entry = MagicMock()
     coordinator._entry = entry
 
-    coordinator._hang_up(client)
+    link_of(coordinator).hang_up(link)
     await hass.async_block_till_done()
 
     entry.async_create_background_task.assert_not_called()
-    client.disconnect.assert_awaited_once()
+    assert link.hung_up == 1
 
 
 async def test_hanging_up_does_not_need_home_assistant() -> None:
@@ -3626,15 +3536,13 @@ async def test_hanging_up_does_not_need_home_assistant() -> None:
     Found by walking those three paths on a coordinator built the way the bench
     builds it; 0.2.1 took all three.
     """
-    coordinator = GlowriumCoordinator(None, "AA:BB:CC:DD:EE:FF", "bench")
-    client = _fresh_client()
-    coordinator._client = client
+    coordinator, _lamp, link = await _holding_a_link(None, "bench")
 
-    coordinator._async_on_disconnect(client)  # the lamp drops the link
+    link.lose()  # the lamp drops the link
     await asyncio.sleep(0)  # nothing to block on without hass; one turn does it
 
-    assert coordinator._client is None
-    client.disconnect.assert_awaited_once()
+    assert link_of(coordinator).diagnostics()["connected"] is False
+    assert link.hung_up == 1
 
 
 async def test_reading_the_device_info_does_not_need_home_assistant() -> None:
@@ -3643,13 +3551,10 @@ async def test_reading_the_device_info_does_not_need_home_assistant() -> None:
     Home Assistant gets it in its device registry and its config entry; the
     bench has neither, and reads the string all the same.
     """
-    coordinator = GlowriumCoordinator(None, "AA:BB:CC:DD:EE:FF", "bench")
-    client = _fresh_client()
-    client.read_gatt_char = AsyncMock(
-        return_value=bytearray(b"pkey:Glowrium-C051;version:4;;")
-    )
+    coordinator, lamp, link = await _holding_a_link(None, "bench")
+    lamp.readable(INFO_UUID, b"pkey:Glowrium-C051;version:4;;")
 
-    await coordinator._async_read_device_info(turn_over(coordinator, client))
+    await coordinator._async_read_device_info(turn_over(coordinator, link))
 
     assert coordinator.model_id == "Glowrium-C051"
     assert coordinator.sw_version == "4"
@@ -3661,18 +3566,13 @@ async def test_a_retry_hangs_up_without_home_assistant() -> None:
     This is the one the bench exists to exercise: a command on a link that
     drops under it.
     """
-    coordinator = ScriptedLamp().coordinator(None, "bench")
-    first = _fresh_client()
-    first.write_gatt_char = AsyncMock(side_effect=BleakError("dropped"))
-    coordinator._client = first
-    second = _fresh_client()
-    second.write_gatt_char = AsyncMock()
-    _dialling(coordinator, second)
+    coordinator, lamp, first = await _holding_a_link(None, "bench")
+    lamp.fails_writes(BleakError("dropped"), times=1)
 
     await coordinator.async_set_power(True)
 
-    first.disconnect.assert_awaited_once()
-    assert coordinator._client is second
+    assert first.hung_up == 1
+    assert link_of(coordinator).client is lamp.links[1]
 
 
 async def test_background_work_does_not_need_home_assistant() -> None:
@@ -3730,19 +3630,15 @@ async def test_home_assistant_waits_for_a_hang_up_in_flight(
     straight past, and that call is how Home Assistant - and every test here -
     lets pending work settle before it looks at the result.
     """
-    coordinator, client = _connected_coordinator(hass)
-    finished: list[int] = []
+    coordinator, lamp, link = await _holding_a_link(hass)
+    released = asyncio.Event()
+    lamp.hangs_up_when(released)
+    hass.loop.call_later(0.05, released.set)  # it takes a moment
 
-    async def _takes_a_moment() -> None:
-        await asyncio.sleep(0.05)
-        finished.append(1)
-
-    client.disconnect = AsyncMock(side_effect=_takes_a_moment)
-
-    coordinator._hang_up(client)
+    link_of(coordinator).hang_up(link)
     await hass.async_block_till_done()
 
-    assert finished == [1]
+    assert link.hung_up == 1
 
 
 async def test_stopping_does_not_cut_the_hang_up_short(
@@ -3758,24 +3654,18 @@ async def test_stopping_does_not_cut_the_hang_up_short(
     That is the leak this fix is about, taken on every reload that meets a slow
     link - and a reload is what one reaches for when Bluetooth misbehaves.
     """
-    coordinator, client = _connected_coordinator(hass)
+    coordinator, lamp, link = await _holding_a_link(hass)
     monkeypatch.setattr(link_module, "_STOP_TIMEOUT", 0.05)
     released = asyncio.Event()
-    finished: list[int] = []
-
-    async def _slow_hang_up() -> None:
-        await released.wait()
-        finished.append(1)
-
-    client.disconnect = AsyncMock(side_effect=_slow_hang_up)
+    lamp.hangs_up_when(released)
 
     async with asyncio.timeout(0.4):  # the unload itself is still bounded
         await coordinator.async_stop()
 
-    assert finished == []
+    assert not link.hung_up
     released.set()
     await hass.async_block_till_done()
-    assert finished == [1]  # the disconnect ran to the end, after the unload
+    assert link.hung_up == 1  # the disconnect ran to the end, after the unload
 
 
 async def test_stopping_is_not_broken_by_what_the_bus_raises(
@@ -3791,13 +3681,13 @@ async def test_stopping_is_not_broken_by_what_the_bus_raises(
     state where reloading is the remedy and the log is what gets read.
     """
     for failure in (OSError(9, "Bad file descriptor"), EOFError()):
-        coordinator, client = _connected_coordinator(hass)
-        client.disconnect = AsyncMock(side_effect=failure)
+        coordinator, lamp, link = await _holding_a_link(hass)
+        lamp.fails_hang_ups(failure)
 
         await coordinator.async_stop()
 
-        client.disconnect.assert_awaited_once()
-        assert coordinator._client is None
+        assert link.hang_ups == 1
+        assert link_of(coordinator).diagnostics()["connected"] is False
 
 
 async def test_a_connect_that_fails_half_way_hangs_up_outside_its_deadline(
@@ -3811,36 +3701,27 @@ async def test_a_connect_that_fails_half_way_hangs_up_outside_its_deadline(
     still waits for the hang-up, so that a retry does not dial over it; what
     the deadline ends now is that wait.
     """
-    coordinator, _ = _connected_coordinator(hass)
-    coordinator._client = None
+    coordinator, lamp = _at_a_lamp(hass)
     monkeypatch.setattr(link_module, "_CONNECT_TIMEOUT", 0.05)
-    client = _fresh_client()
-    client.start_notify = AsyncMock(side_effect=BleakError("subscribe failed"))
+    lamp.subscription_fails(BleakError("subscribe failed"))
     released = asyncio.Event()
-    finished: list[int] = []
-
-    async def _slow_hang_up() -> None:
-        await released.wait()
-        finished.append(1)
-
-    client.disconnect = AsyncMock(side_effect=_slow_hang_up)
-    _dialling(coordinator, client)
+    lamp.hangs_up_when(released)
 
     with pytest.raises(TimeoutError):  # the deadline, while it waits
-        await coordinator._async_ensure_connected()
+        await link_of(coordinator).connect()
 
-    assert finished == []
+    assert not lamp.links[0].hung_up
     released.set()
     await hass.async_block_till_done()
-    assert finished == [1]
-    assert coordinator._client is None
+    assert lamp.links[0].hung_up == 1
+    assert link_of(coordinator).diagnostics()["connected"] is False
 
 
 # The two ways a connect is started in the background, and what each is called
 # in the log.
 _BACKGROUND_CONNECTS = (
-    ("_async_reconnect", "Reconnect to"),
-    ("_async_initial_connect", "Initial connect to"),
+    ("reconnect", "Reconnect to"),
+    ("initial_connect", "Initial connect to"),
 )
 
 
@@ -3866,28 +3747,26 @@ async def test_a_deadline_that_falls_on_a_held_link_leaves_it_and_calls_it_held(
     another dial - and the log says that it is held, so whoever reads it is
     not sent looking for a lamp out of range.
     """
-    coordinator, _ = _connected_coordinator(hass)
-    coordinator._client = None
+    coordinator, lamp = _at_a_lamp(hass)
     monkeypatch.setattr(link_module, "_CONNECT_TIMEOUT", 0.05)
-    client = _fresh_client()
-    client.write_gatt_char = AsyncMock(side_effect=_never_returns)
-    dial = _dialling(coordinator, client)
+    lamp.never_acknowledges_a_write()
     caplog.set_level(logging.DEBUG)
 
-    await getattr(coordinator, connect)()
+    await getattr(link_of(coordinator), connect)()
 
-    assert coordinator._client is client  # taken, and not let go of
-    client.disconnect.assert_not_awaited()
+    client = lamp.links[0]
+    assert link_of(coordinator).client is client  # taken, and not let go of
+    assert client.hang_ups == 0
     assert f"{named} AA:BB:CC:DD:EE:FF ran out of time" in caplog.text
     assert "the link is held (not primed yet)" in caplog.text
     assert "failed" not in caplog.text
 
-    _answers(coordinator, client, {KEY_POWER: True, KEY_ACTIVATED: True})
-    coordinator._async_poll_reconnect(None)
+    lamp.answers({KEY_POWER: True, KEY_ACTIVATED: True})
+    link_of(coordinator).tick()
     await hass.async_block_till_done()
 
-    assert coordinator._primed_client is client
-    dial.assert_awaited_once()  # the same link, primed; nothing was redialled
+    assert link_of(coordinator).diagnostics()["primed"] is True
+    assert lamp.dials == 1  # the same link, primed; nothing was redialled
 
 
 @pytest.mark.parametrize(("connect", "named"), _BACKGROUND_CONNECTS)
@@ -3911,11 +3790,11 @@ async def test_a_background_connect_ends_in_the_log_whatever_ended_it(
     new client, a write of the first exchange that lost its link, or one the
     lamp refused.
     """
-    coordinator, _ = _connected_coordinator(hass)
-    coordinator._client = None
-    client = _fresh_client()
+    kept = link_module.Unclosed()
+    lamp = ScriptedLamp()
+    coordinator = lamp.coordinator(hass, unclosed=kept)
     if ended_by == "the link's own no":
-        coordinator._unreleased.add(object())  # a client that would not close
+        kept.keep(object(), None)  # a client that would not close
     else:
         failure = BleakError(
             "Not connected"
@@ -3923,18 +3802,11 @@ async def test_a_background_connect_ends_in_the_log_whatever_ended_it(
             else "Insufficient authorization (8)"
         )
         # A lamp that reports itself not activated: the exchange has to write.
-        answer = _answers(coordinator, client, {KEY_ACTIVATED: False}).side_effect
-
-        async def _write(uuid: str, payload: bytes, **kwargs: object) -> None:
-            if uuid != NOTIFY_UUID:
-                raise failure
-            await answer(uuid, payload, **kwargs)
-
-        client.write_gatt_char = AsyncMock(side_effect=_write)
-    _dialling(coordinator, client)
+        lamp.answers({KEY_ACTIVATED: False})
+        lamp.fails_writes(failure, of=WRITE_UUID)
     caplog.set_level(logging.DEBUG)
 
-    await getattr(coordinator, connect)()  # and nothing is raised
+    await getattr(link_of(coordinator), connect)()  # and nothing is raised
 
     assert f"{named} AA:BB:CC:DD:EE:FF failed: " in caplog.text
 
@@ -3949,18 +3821,15 @@ async def test_a_deadline_that_falls_after_priming_says_the_link_is_primed(
     The state has arrived by then and the link is primed; the poll has nothing
     to add to it, so the line must not promise that it will.
     """
-    coordinator, _ = _connected_coordinator(hass)
-    coordinator._client = None
+    coordinator, lamp = _at_a_lamp(hass)
     monkeypatch.setattr(link_module, "_CONNECT_TIMEOUT", 0.05)
-    client = _fresh_client()
-    _answers(coordinator, client, {KEY_POWER: True, KEY_ACTIVATED: True})
-    client.read_gatt_char = AsyncMock(side_effect=_never_returns)
-    _dialling(coordinator, client)
+    lamp.answers({KEY_POWER: True, KEY_ACTIVATED: True})
+    lamp.never_answers_a_read()
     caplog.set_level(logging.DEBUG)
 
-    await coordinator._async_reconnect()
+    await link_of(coordinator).reconnect()
 
-    assert coordinator._primed_client is client
+    assert link_of(coordinator).diagnostics()["primed"] is True
     assert "the link is held (primed)" in caplog.text
     assert "failed" not in caplog.text
 
@@ -3975,19 +3844,24 @@ async def test_a_deadline_spent_waiting_behind_a_command_that_connected_is_no_fa
     The connect then runs out of time without having dialled at all, and the
     lamp is connected all the same - by the command, which does not prime.
     """
-    coordinator, client = _connected_coordinator(hass)
-    coordinator._client = None
+    coordinator, lamp = _at_a_lamp(hass)
     monkeypatch.setattr(link_module, "_CONNECT_TIMEOUT", 0.05)
-    dial = _dialling(coordinator)
+    found = asyncio.Event()
+    lamp.dials_when(found)
+    lamp.never_acknowledges_a_write()
     caplog.set_level(logging.DEBUG)
 
-    async with coordinator._lock:  # the command's turn
-        waiting = asyncio.create_task(coordinator._async_reconnect())
-        await asyncio.sleep(0)
-        coordinator._client = client  # ...and the link it made, unprimed
-        await waiting
+    command = asyncio.create_task(coordinator.async_set_power(True))
+    await asyncio.sleep(0)  # the command's turn: it has the lock, and dials
+    waiting = asyncio.create_task(link_of(coordinator).reconnect())
+    await asyncio.sleep(0)  # ...and the connect waits behind it
+    found.set()  # the link the command made, unprimed; its write never returns
+    await waiting
+    command.cancel()
+    with contextlib.suppress(asyncio.CancelledError):
+        await command
 
-    dial.assert_not_awaited()
+    assert lamp.dials == 1
     assert "the link is held (not primed yet)" in caplog.text
     assert "failed" not in caplog.text
 
@@ -4001,15 +3875,14 @@ async def test_a_connect_that_gets_no_link_is_still_called_a_failed_connect(
     named: str,
 ) -> None:
     """The deadline running out with nothing held is the failure it always was."""
-    coordinator, _ = _connected_coordinator(hass)
-    coordinator._client = None
+    coordinator, lamp = _at_a_lamp(hass)
     monkeypatch.setattr(link_module, "_CONNECT_TIMEOUT", 0.05)
-    lamp_of(coordinator).dials_through(_never_returns)
+    lamp.dials_through(_never_returns)
     caplog.set_level(logging.DEBUG)
 
-    await getattr(coordinator, connect)()
+    await getattr(link_of(coordinator), connect)()
 
-    assert coordinator._client is None
+    assert link_of(coordinator).diagnostics()["connected"] is False
     assert f"{named} AA:BB:CC:DD:EE:FF failed" in caplog.text
     assert "the link is held" not in caplog.text
 
@@ -4019,19 +3892,16 @@ async def test_a_connect_that_fails_on_a_held_link_keeps_the_error_it_failed_wit
     caplog: pytest.LogCaptureFixture,
 ) -> None:
     """Only running out of time is reworded: an error says what it was."""
-    coordinator, _ = _connected_coordinator(hass)
-    coordinator._client = None
-    client = _fresh_client()
-    _answers(coordinator, client, {KEY_POWER: True, KEY_ACTIVATED: True})
-    _dialling(coordinator, client)
+    coordinator, lamp = _at_a_lamp(hass)
+    lamp.answers({KEY_POWER: True, KEY_ACTIVATED: True})
     coordinator._async_sync_clock_if_needed = AsyncMock(
         side_effect=BleakError("the clock would not be set")
     )
     caplog.set_level(logging.DEBUG)
 
-    await coordinator._async_reconnect()
+    await link_of(coordinator).reconnect()
 
-    assert coordinator._client is client  # held all the same
+    assert link_of(coordinator).client is lamp.links[0]  # held all the same
     assert "Reconnect to AA:BB:CC:DD:EE:FF failed: the clock would not" in caplog.text
     assert "the link is held" not in caplog.text
 
@@ -4049,12 +3919,11 @@ async def test_a_connect_that_fails_without_a_word_is_called_by_its_name(
     ``TimeoutError`` carries no message: one night on the G7's host left 290
     lines that ended in "failed: " with nothing after it (2026-10-08).
     """
-    coordinator, _ = _connected_coordinator(hass)
-    coordinator._client = None
-    _dialling(coordinator).side_effect = TimeoutError()
+    coordinator, lamp = _at_a_lamp(hass)
+    lamp.dials_through(AsyncMock(side_effect=TimeoutError()))
     caplog.set_level(logging.DEBUG)
 
-    await getattr(coordinator, connect)()
+    await getattr(link_of(coordinator), connect)()
 
     assert f"{named} AA:BB:CC:DD:EE:FF failed: TimeoutError()" in caplog.text
 
@@ -4083,18 +3952,18 @@ async def test_an_exchange_that_fails_without_a_word_is_called_by_its_name(
     Priming that ran out its deadline and a read whose bus was closed under
     it said "failed: " and stopped there, as the connect did.
     """
-    coordinator, client = _connected_coordinator(hass)
+    coordinator, lamp, link = await _holding_a_link(hass)
     caplog.set_level(logging.DEBUG)
 
-    client.read_gatt_char = AsyncMock(side_effect=EOFError())
-    assert await coordinator._async_read_state(turn_over(coordinator, client)) == (
+    lamp.fails_reads(EOFError())
+    assert await coordinator._async_read_state(turn_over(coordinator, link)) == (
         False,
         frozenset(),
     )
     assert "AA:BB:CC:DD:EE:FF state read failed: EOFError()" in caplog.text
 
     coordinator._request_state = AsyncMock(side_effect=TimeoutError())
-    await coordinator._async_prime()
+    await link_of(coordinator).prime_held()
     assert "Priming state of AA:BB:CC:DD:EE:FF failed: TimeoutError()" in caplog.text
 
 
@@ -4112,29 +3981,29 @@ async def test_hanging_up_a_client_we_gave_up_on_leaves_the_one_we_hold(
     the hang-up exists to prevent - and leave the lamp's single slot taken by
     nobody.
     """
-    coordinator, first = _connected_coordinator(hass)
-    first.write_gatt_char = AsyncMock(side_effect=BleakError("Unlikely Error"))
-    second = _fresh_client()  # its write fails as well: the command fails
-    third = _fresh_client()
-    third.write_gatt_char = AsyncMock()  # the next command's link works
-    _dialling(coordinator, second, third)
+    coordinator, lamp, _first = await _holding_a_link(hass)
+    # Twice: on the link held, and on the one the retry makes. The command fails.
+    lamp.fails_writes(BleakError("Unlikely Error"), times=2)
     monkeypatch.setattr(link_module, "_CONFIRM_TIMEOUT", 0.2)
 
     failing = asyncio.create_task(coordinator.async_set_power(True))
     await asyncio.sleep(0)  # it has failed twice and now waits for a report
-    assert coordinator._client is None  # let go of at once, not after the wait
-    second.disconnect.assert_not_awaited()
+    second = lamp.links[1]
+    # Let go of at once, not after the wait.
+    assert link_of(coordinator).diagnostics()["connected"] is False
+    assert second.hang_ups == 0
 
     await coordinator.async_set_brightness(40)  # queued behind it; connects
-    assert coordinator._client is third
+    third = lamp.links[2]  # the next command's link works
+    assert link_of(coordinator).client is third
 
     with pytest.raises(HomeAssistantError):
         await failing
     await hass.async_block_till_done()
 
-    second.disconnect.assert_awaited_once()  # the abandoned client is closed
-    assert coordinator._client is third  # ...and the live one is still ours
-    third.disconnect.assert_not_awaited()
+    assert second.hung_up == 1  # the abandoned client is closed
+    assert link_of(coordinator).client is third  # ...and the live one is still ours
+    assert third.hang_ups == 0
 
 
 async def test_a_connect_does_not_wait_for_the_hang_up_it_started(
@@ -4147,54 +4016,40 @@ async def test_a_connect_does_not_wait_for_the_hang_up_it_started(
     confirm, and let the connect's deadline cancel the disconnect part-way -
     the leak again, by the route the fix closes for commands.
     """
-    coordinator, _ = _connected_coordinator(hass)
-    coordinator._client = None
-    client = _fresh_client()
+    coordinator, lamp = _at_a_lamp(hass)
+    lamp.fails_writes(BleakError("Not connected"))  # a link that answers nothing
     released = asyncio.Event()
-    finished: list[int] = []
-
-    async def _slow_hang_up() -> None:
-        await released.wait()
-        finished.append(1)
-
-    client.disconnect = AsyncMock(side_effect=_slow_hang_up)
-    _dialling(coordinator, client)
+    lamp.hangs_up_when(released)
 
     async with asyncio.timeout(1):
-        await coordinator._connect_locked()  # returns with the hang-up pending
+        await link_of(coordinator).connect()  # returns with the hang-up pending
 
-    client.disconnect.assert_awaited_once()
-    assert finished == []
+    link = lamp.links[0]
+    assert link.hang_ups == 1
+    assert not link.hung_up
     released.set()
     await hass.async_block_till_done()
-    assert finished == [1]
+    assert link.hung_up == 1
 
 
 async def test_the_poll_does_not_wait_for_the_hang_up_it_started(
     hass: HomeAssistant,
 ) -> None:
     """The same for priming, which the poll runs under the lock every tick."""
-    coordinator, client = _connected_coordinator(hass)
-    client.read_gatt_char = AsyncMock(side_effect=BleakError("Not connected"))
-    client.write_gatt_char = AsyncMock(side_effect=BleakError("Not connected"))
+    coordinator, lamp, link = await _holding_a_link(hass)
+    lamp.fails_writes(BleakError("Not connected"))  # and there is nothing to read
     released = asyncio.Event()
-    finished: list[int] = []
-
-    async def _slow_hang_up() -> None:
-        await released.wait()
-        finished.append(1)
-
-    client.disconnect = AsyncMock(side_effect=_slow_hang_up)
+    lamp.hangs_up_when(released)
 
     async with asyncio.timeout(1):
-        await coordinator._async_prime()  # returns with the hang-up pending
+        await link_of(coordinator).prime_held()  # returns with the hang-up pending
 
-    client.disconnect.assert_awaited_once()
-    assert not coordinator._lock.locked()
-    assert finished == []
+    assert link.hang_ups == 1
+    assert not link_of(coordinator).lock.locked()
+    assert not link.hung_up
     released.set()
     await hass.async_block_till_done()
-    assert finished == [1]
+    assert link.hung_up == 1
 
 
 async def test_a_retry_dials_only_after_a_half_made_connect_is_hung_up(
@@ -4210,30 +4065,23 @@ async def test_a_retry_dials_only_after_a_half_made_connect_is_hung_up(
     connected while answering nothing means a second attempt on the link the
     first one had just failed on.
     """
-    coordinator, _ = _connected_coordinator(hass)
-    coordinator._client = None
-    first = _fresh_client()
-    first.start_notify = AsyncMock(side_effect=BleakError("Not connected"))
-    second = _fresh_client()
-    second.write_gatt_char = AsyncMock()
-    clients = iter((first, second))
-    order: list[str] = []
+    coordinator, lamp = _at_a_lamp(hass)
+    lamp.subscription_fails(BleakError("Not connected"))
+    released = asyncio.Event()
+    lamp.hangs_up_when(released)  # a real disconnect is not instant either
 
-    async def _hang_up_slowly() -> None:
-        await asyncio.sleep(0.01)  # a real disconnect is not instant either
-        order.append("hung up")
+    command = asyncio.create_task(coordinator.async_set_power(True))
+    await asyncio.sleep(0.01)
+    first = lamp.links[0]
+    assert first.hang_ups == 1  # dialled, and being hung up...
+    assert lamp.dials == 1  # ...and not dialled again before that is through
+    lamp.subscription_fails(None)  # the next link subscribes
+    released.set()
+    await command
 
-    async def _dial(*_a: object, **_kw: object) -> MagicMock:
-        order.append("dialled")
-        return next(clients)
-
-    first.disconnect = AsyncMock(side_effect=_hang_up_slowly)
-    _dialling(coordinator).side_effect = _dial
-
-    await coordinator.async_set_power(True)
-
-    assert order == ["dialled", "hung up", "dialled"]
-    assert coordinator._client is second
+    assert first.hung_up == 1
+    assert lamp.dials == 2
+    assert link_of(coordinator).client is lamp.links[1]
 
 
 async def test_a_connect_cancelled_half_way_is_hung_up_but_not_waited_for(
@@ -4246,34 +4094,23 @@ async def test_a_connect_cancelled_half_way_is_hung_up_but_not_waited_for(
     BlueZ takes to close the link would hold the lock past the deadline for
     nobody's benefit.
     """
-    coordinator, _ = _connected_coordinator(hass)
-    coordinator._client = None
+    coordinator, lamp = _at_a_lamp(hass)
     monkeypatch.setattr(link_module, "_CONNECT_TIMEOUT", 0.05)
-    client = _fresh_client()
+    lamp.subscribes_when(asyncio.Event())  # never
     released = asyncio.Event()
-    finished: list[int] = []
-
-    async def _never(*_a: object) -> None:
-        await asyncio.Event().wait()
-
-    async def _slow_hang_up() -> None:
-        await released.wait()
-        finished.append(1)
-
-    client.start_notify = AsyncMock(side_effect=_never)
-    client.disconnect = AsyncMock(side_effect=_slow_hang_up)
-    _dialling(coordinator, client)
+    lamp.hangs_up_when(released)
 
     async with asyncio.timeout(0.5):
         with pytest.raises(TimeoutError):
-            await coordinator._async_ensure_connected()
+            await link_of(coordinator).connect()
 
-    client.disconnect.assert_awaited_once()
-    assert not coordinator._lock.locked()
-    assert finished == []
+    link = lamp.links[0]
+    assert link.hang_ups == 1
+    assert not link_of(coordinator).lock.locked()
+    assert not link.hung_up
     released.set()
     await hass.async_block_till_done()
-    assert finished == [1]
+    assert link.hung_up == 1
 
 
 async def test_a_reconnect_started_while_starting_belongs_to_the_entry(
@@ -4381,18 +4218,15 @@ async def test_a_connect_whose_reads_meet_a_closed_bus_just_drops_the_link(
     with a traceback: a link that answers nothing is dropped, and the poll
     builds another.
     """
-    coordinator, _ = _connected_coordinator(hass)
-    coordinator._client = None
-    client = _fresh_client()
-    client.read_gatt_char = AsyncMock(side_effect=failure)
-    client.write_gatt_char = AsyncMock(side_effect=failure)
-    _dialling(coordinator, client)
+    coordinator, lamp = _at_a_lamp(hass)
+    lamp.fails_writes(failure)
+    lamp.fails_reads(failure)
 
-    await coordinator._connect_locked()
+    await link_of(coordinator).connect()
     await hass.async_block_till_done()
 
-    assert coordinator._client is None
-    client.disconnect.assert_awaited_once()
+    assert link_of(coordinator).diagnostics()["connected"] is False
+    assert lamp.links[0].hung_up == 1
 
 
 @pytest.mark.parametrize("failure", _BUS_CLOSED, ids=["eof", "bad-fd"])
@@ -4405,12 +4239,11 @@ async def test_background_connects_that_meet_a_closed_bus_only_log_it(
     anybody: it ends up in the log as an exception with a traceback, on every
     poll tick for as long as the bus stays the way it is.
     """
-    coordinator, _ = _connected_coordinator(hass)
-    coordinator._client = None
-    _dialling(coordinator).side_effect = failure
+    coordinator, lamp = _at_a_lamp(hass)
+    lamp.dials_through(AsyncMock(side_effect=failure))
 
-    await coordinator._async_initial_connect()
-    await coordinator._async_reconnect()
+    await link_of(coordinator).initial_connect()
+    await link_of(coordinator).reconnect()
 
 
 @pytest.mark.parametrize("failure", _BUS_CLOSED, ids=["eof", "bad-fd"])
@@ -4421,13 +4254,13 @@ async def test_priming_that_meets_a_closed_bus_only_logs_it(
 
     Here the link goes after the read has answered, under the bring-up write.
     """
-    coordinator, client = _connected_coordinator(hass)
-    client.read_gatt_char = AsyncMock(return_value=cbor.encode({KEY_ACTIVATED: False}))
-    client.write_gatt_char = AsyncMock(side_effect=failure)
+    coordinator, lamp, _link = await _holding_a_link(hass)
+    lamp.readable(NOTIFY_UUID, cbor.encode({KEY_ACTIVATED: False}))
+    lamp.fails_writes(failure)
 
-    await coordinator._async_prime()
+    await link_of(coordinator).prime_held()
 
-    assert coordinator._primed_client is not client
+    assert link_of(coordinator).diagnostics()["primed"] is False
 
 
 async def test_stopping_lets_go_of_a_link_made_while_it_was_stopping(
@@ -4442,18 +4275,11 @@ async def test_stopping_lets_go_of_a_link_made_while_it_was_stopping(
     lamp whose link holds, that keeps the single slot for good: the
     coordinator a reload puts in its place cannot connect.
     """
-    coordinator, first = _connected_coordinator(hass)
-    first.write_gatt_char = AsyncMock(side_effect=BleakError("dropped"))
-    second = _fresh_client()
-    second.write_gatt_char = AsyncMock()
+    coordinator, lamp, _first = await _holding_a_link(hass)
+    lamp.fails_writes(BleakError("dropped"), times=1)
     monkeypatch.setattr(link_module, "_CONFIRM_TIMEOUT", 0.01)
     answered = asyncio.Event()
-
-    async def _dial_slowly(*_a: object, **_kw: object) -> MagicMock:
-        await answered.wait()
-        return second
-
-    _dialling(coordinator).side_effect = _dial_slowly
+    lamp.dials_when(answered)
 
     command = asyncio.create_task(coordinator.async_set_power(True))
     await asyncio.sleep(0)  # its write has failed; the retry is dialling
@@ -4466,8 +4292,8 @@ async def test_stopping_lets_go_of_a_link_made_while_it_was_stopping(
     await stopping
     await hass.async_block_till_done()
 
-    assert coordinator._client is None
-    second.disconnect.assert_awaited_once()
+    assert link_of(coordinator).diagnostics()["connected"] is False
+    assert lamp.links[1].hung_up == 1
 
 
 async def test_stopping_that_is_cancelled_still_lets_go_of_the_link(
@@ -4479,9 +4305,10 @@ async def test_stopping_that_is_cancelled_still_lets_go_of_the_link(
     wait dropped the only reference to a connected client - the leak, and the
     lamp's slot held by nobody.
     """
-    coordinator, client = _connected_coordinator(hass)
-
-    await coordinator._lock.acquire()  # a command in flight
+    coordinator, lamp, link = await _holding_a_link(hass)
+    lamp.never_acknowledges_a_write()
+    command = asyncio.create_task(coordinator.async_set_power(True))  # in flight
+    await asyncio.sleep(0)  # it holds the lock, in its write
     try:
         stopping = asyncio.create_task(coordinator.async_stop())
         await asyncio.sleep(0)
@@ -4489,11 +4316,13 @@ async def test_stopping_that_is_cancelled_still_lets_go_of_the_link(
         with pytest.raises(asyncio.CancelledError):
             await stopping
     finally:
-        coordinator._lock.release()
+        command.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await command
     await hass.async_block_till_done()
 
-    assert coordinator._client is None
-    client.disconnect.assert_awaited_once()
+    assert link_of(coordinator).diagnostics()["connected"] is False
+    assert link.hung_up == 1
 
 
 async def test_a_stopped_coordinator_does_not_dial(
@@ -4506,18 +4335,17 @@ async def test_a_stopped_coordinator_does_not_dial(
     and one that failed to give it back would end the same way fifteen seconds
     later, for a different reason.
     """
-    coordinator, _ = _connected_coordinator(hass)
-    dial = _dialling(coordinator, _fresh_client(), _fresh_client())
+    coordinator, lamp, _link = await _holding_a_link(hass)
     monkeypatch.setattr(link_module, "_CONFIRM_TIMEOUT", 0.01)
 
     await coordinator.async_stop()
-    assert not coordinator._lock.locked()
+    assert not link_of(coordinator).lock.locked()
     async with asyncio.timeout(1):
         with pytest.raises(HomeAssistantError):
             await coordinator.async_set_power(True)
 
-    dial.assert_not_awaited()
-    assert coordinator._client is None
+    assert lamp.dials == 1  # the link it was stopped with; none since
+    assert link_of(coordinator).diagnostics()["connected"] is False
 
 
 @pytest.mark.parametrize("stopped_by", ["an unload", "Home Assistant stopping"])
@@ -4532,8 +4360,7 @@ async def test_a_command_refused_because_it_has_stopped_says_so(
     is advice for something else. It is said as what it is - and once: a link
     that is refused on purpose is not asked for a second time.
     """
-    coordinator, _ = _connected_coordinator(hass)
-    dial = _dialling(coordinator, _fresh_client(), _fresh_client())
+    coordinator, lamp, _link = await _holding_a_link(hass)
     monkeypatch.setattr(link_module, "_CONFIRM_TIMEOUT", 0.01)
     asked = _counting_connects(coordinator)
     if stopped_by == "an unload":
@@ -4548,7 +4375,7 @@ async def test_a_command_refused_because_it_has_stopped_says_so(
     assert err.value.translation_key == "not_running"
     assert err.value.translation_placeholders == {"name": "Glowrium-G7"}
     assert len(asked) == 1
-    dial.assert_not_awaited()
+    assert lamp.dials == 1  # the link it was stopped with; none since
 
 
 async def test_a_command_overtaken_by_a_stop_says_so_too(
@@ -4559,23 +4386,14 @@ async def test_a_command_overtaken_by_a_stop_says_so_too(
     The link it then gets is not kept, and the command is told why - not
     sent round a second time to be refused at the door instead.
     """
-    coordinator, _ = _connected_coordinator(hass)
-    coordinator._client = None
-    client = _fresh_client()
-    subscribing, subscribed = asyncio.Event(), asyncio.Event()
-
-    async def _subscribe_slowly(*_a: object) -> None:
-        subscribing.set()
-        await subscribed.wait()
-
-    client.start_notify = AsyncMock(side_effect=_subscribe_slowly)
-    dial = _dialling(coordinator, client, _fresh_client())
+    coordinator, lamp = _at_a_lamp(hass)
+    subscribed = asyncio.Event()
+    lamp.subscribes_when(subscribed)
     monkeypatch.setattr(link_module, "_CONFIRM_TIMEOUT", 0.01)
     asked = _counting_connects(coordinator)
 
     command = asyncio.create_task(coordinator.async_set_power(True))
-    async with asyncio.timeout(1):
-        await subscribing.wait()  # dialled, and now waiting to be subscribed
+    await asyncio.sleep(0)  # dialled, and now waiting to be subscribed
     await coordinator.async_stop()  # nothing held: over at once
     subscribed.set()
 
@@ -4585,9 +4403,9 @@ async def test_a_command_overtaken_by_a_stop_says_so_too(
 
     assert err.value.translation_key == "not_running"
     assert len(asked) == 1
-    assert dial.await_count == 1
-    client.disconnect.assert_awaited_once()
-    assert coordinator._client is None
+    assert lamp.dials == 1
+    assert lamp.links[0].hung_up == 1
+    assert link_of(coordinator).diagnostics()["connected"] is False
 
 
 async def test_a_lamp_the_scanner_has_lost_is_still_said_to_be_out_of_range(
@@ -4623,23 +4441,18 @@ async def test_a_command_that_runs_out_of_time_inside_a_write_lets_go_of_the_lin
     probe, minutes later, finds it dead. Let go of, it is hung up, and the
     next command dials.
     """
-    coordinator, client = _connected_coordinator(hass)
+    coordinator, lamp, link = await _holding_a_link(hass)
     monkeypatch.setattr(link_module, "_COMMAND_TIMEOUT", 0.05)
     monkeypatch.setattr(link_module, "_CONFIRM_TIMEOUT", 0.01)
-    never = asyncio.Event()
-
-    async def _never_comes_back(*_a: object, **_kw: object) -> None:
-        await never.wait()
-
-    client.write_gatt_char = AsyncMock(side_effect=_never_comes_back)
+    lamp.never_acknowledges_a_write()
 
     with pytest.raises(HomeAssistantError) as err:
         await coordinator.async_set_power(True)
     await hass.async_block_till_done()
 
     assert err.value.translation_key == "cannot_connect"
-    assert coordinator._client is None
-    client.disconnect.assert_awaited_once()
+    assert link_of(coordinator).diagnostics()["connected"] is False
+    assert link.hung_up == 1
 
 
 async def test_a_link_reported_lost_while_a_write_waits_is_hung_up_once(
@@ -4651,23 +4464,18 @@ async def test_a_link_reported_lost_while_a_write_waits_is_hung_up_once(
     finds nothing of it left to take: one hang-up, not a second one for a
     client that is no longer the coordinator's.
     """
-    coordinator, client = _connected_coordinator(hass)
+    coordinator, lamp, link = await _holding_a_link(hass)
     monkeypatch.setattr(link_module, "_COMMAND_TIMEOUT", 0.05)
     monkeypatch.setattr(link_module, "_CONFIRM_TIMEOUT", 0.01)
-    never = asyncio.Event()
-
-    async def _dropped_and_never_back(*_a: object, **_kw: object) -> None:
-        coordinator._async_on_disconnect(client)
-        await never.wait()
-
-    client.write_gatt_char = AsyncMock(side_effect=_dropped_and_never_back)
+    lamp.never_acknowledges_a_write()
+    hass.loop.call_later(0.01, link.lose)  # dropped, while the write waits
 
     with pytest.raises(HomeAssistantError):
         await coordinator.async_set_power(True)
     await hass.async_block_till_done()
 
-    assert coordinator._client is None
-    client.disconnect.assert_awaited_once()
+    assert link_of(coordinator).diagnostics()["connected"] is False
+    assert link.hang_ups == 1
 
 
 async def test_shutting_down_does_not_hold_home_assistant_up(
@@ -4683,24 +4491,23 @@ async def test_shutting_down_does_not_hold_home_assistant_up(
     spend the whole grace period, and the rest of Home Assistant's shutdown
     with it. The bus is not worth waiting for either; the process is leaving.
     """
-    coordinator, client = _connected_coordinator(hass)
+    coordinator, lamp, link = await _holding_a_link(hass)
     monkeypatch.setattr(link_module, "_STOP_TIMEOUT", 0.05)
-
-    async def _never() -> None:
-        await asyncio.Event().wait()
-
-    client.disconnect = AsyncMock(side_effect=_never)
-
-    await coordinator._lock.acquire()  # a command in flight: not waited for
+    lamp.hangs_up_when(asyncio.Event())  # never
+    lamp.never_acknowledges_a_write()
+    command = asyncio.create_task(coordinator.async_set_power(True))  # in flight
+    await asyncio.sleep(0)  # it holds the lock: not waited for
     try:
         coordinator.async_shutdown()
 
-        assert coordinator._client is None
-        client.disconnect.assert_awaited_once()  # asked to drop it, already
+        assert link_of(coordinator).diagnostics()["connected"] is False
+        assert link.hang_ups == 1  # asked to drop it, already
         async with asyncio.timeout(1):  # nowhere near _HANG_UP_TIMEOUT
             await hass.async_block_till_done()
     finally:
-        coordinator._lock.release()
+        command.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await command
 
 
 async def test_shutting_down_stops_watching_and_takes_no_new_link(
@@ -4712,12 +4519,11 @@ async def test_shutting_down_stops_watching_and_takes_no_new_link(
     again - while Home Assistant is on its way out, and after the one hang-up
     it will get.
     """
-    coordinator, _ = _connected_coordinator(hass)
+    coordinator, lamp, _link = await _holding_a_link(hass)
     cancels = {name: MagicMock() for name in ("bluetooth", "unavailable", "poll")}
     coordinator._cancel_bluetooth = cancels["bluetooth"]
     coordinator._cancel_unavailable = cancels["unavailable"]
     coordinator._cancel_poll = cancels["poll"]
-    dial = _dialling(coordinator, _fresh_client(), _fresh_client())
     monkeypatch.setattr(link_module, "_CONFIRM_TIMEOUT", 0.01)
 
     coordinator.async_shutdown()
@@ -4727,7 +4533,7 @@ async def test_shutting_down_stops_watching_and_takes_no_new_link(
         assert cancel.call_count == 1, f"{name} watcher was left running"
     with pytest.raises(HomeAssistantError):
         await coordinator.async_set_power(True)
-    dial.assert_not_awaited()
+    assert lamp.dials == 1  # the link it was shut down with; none since
 
 
 async def test_shutting_down_says_so_in_the_log(
@@ -4740,15 +4546,14 @@ async def test_shutting_down_says_so_in_the_log(
     host where the phantom link has been seen, that is the first question.
     """
     caplog.set_level(logging.DEBUG, logger=coordinator_module.__name__)
-    coordinator, _ = _connected_coordinator(hass)
+    coordinator, _lamp, _link = await _holding_a_link(hass)
 
     coordinator.async_shutdown()
     await hass.async_block_till_done()
     assert "Home Assistant is stopping: hanging up" in caplog.text
 
     caplog.clear()
-    idle, _ = _connected_coordinator(hass)
-    idle._client = None
+    idle, _idle_lamp = _at_a_lamp(hass)
 
     idle.async_shutdown()
     assert "Home Assistant is stopping: no link held" in caplog.text
@@ -4765,15 +4570,17 @@ async def test_stopping_with_no_link_does_not_wait_for_a_busy_lock(
     back the reload that takes seconds for no reason, which a ceiling on that
     wait had been introduced to remove.
     """
-    coordinator, _ = _connected_coordinator(hass)
-    coordinator._client = None
-
-    await coordinator._lock.acquire()  # a command, dialling
+    coordinator, lamp = _at_a_lamp(hass)
+    lamp.dials_when(asyncio.Event())  # a command, dialling - for as long as it takes
+    command = asyncio.create_task(coordinator.async_set_power(True))
+    await asyncio.sleep(0)
     try:
         async with asyncio.timeout(0.5):  # _STOP_TIMEOUT is three seconds
             await coordinator.async_stop()
     finally:
-        coordinator._lock.release()
+        command.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await command
 
 
 async def test_a_hang_up_started_after_the_stop_began_is_as_short(
@@ -4787,22 +4594,17 @@ async def test_a_hang_up_started_after_the_stop_began_is_as_short(
     to stop. Left under the usual ten seconds, one link that will not confirm
     it has closed spends the whole grace period a container is given.
     """
-    coordinator, _ = _connected_coordinator(hass)
-    coordinator._client = None
+    coordinator, lamp = _at_a_lamp(hass)
     monkeypatch.setattr(link_module, "_STOP_TIMEOUT", 0.05)
-    late = _fresh_client()
-
-    async def _never() -> None:
-        await asyncio.Event().wait()
-
-    late.disconnect = AsyncMock(side_effect=_never)
+    lamp.hangs_up_when(asyncio.Event())  # never
+    late = await lamp.dial(MagicMock())  # a client let go of after the stop began
 
     coordinator.async_shutdown()
-    coordinator._hang_up(late)  # let go of after the stop began
+    link_of(coordinator).hang_up(late)
 
     async with asyncio.timeout(1):  # nowhere near _HANG_UP_TIMEOUT
         await hass.async_block_till_done()
-    late.disconnect.assert_awaited_once()
+    assert late.hang_ups == 1
 
 
 async def test_stopping_gives_the_lock_back_however_it_ends(
@@ -4815,27 +4617,21 @@ async def test_stopping_gives_the_lock_back_however_it_ends(
     matters - but one kept by a stop that was cancelled and may be tried again
     would hold up that.
     """
-    coordinator, client = _connected_coordinator(hass)
+    coordinator, lamp, link = await _holding_a_link(hass)
     released = asyncio.Event()
-    finished: list[int] = []
-
-    async def _slow_hang_up() -> None:
-        await released.wait()
-        finished.append(1)
-
-    client.disconnect = AsyncMock(side_effect=_slow_hang_up)
+    lamp.hangs_up_when(released)
 
     stopping = asyncio.create_task(coordinator.async_stop())
     await asyncio.sleep(0)  # it holds the lock and waits for the hang-up
-    assert coordinator._lock.locked()
+    assert link_of(coordinator).lock.locked()
     stopping.cancel()
     with pytest.raises(asyncio.CancelledError):
         await stopping
 
-    assert not coordinator._lock.locked()
+    assert not link_of(coordinator).lock.locked()
     released.set()
     await hass.async_block_till_done()
-    assert finished == [1]  # and the hang-up was not cancelled with it
+    assert link.hung_up == 1  # and the hang-up was not cancelled with it
 
 
 async def test_a_link_subscribed_while_the_coordinator_stopped_is_not_kept(
@@ -4848,22 +4644,11 @@ async def test_a_link_subscribed_while_the_coordinator_stopped_is_not_kept(
     and returns; checked any earlier, the connect would then commit its link
     to a coordinator that has already been stopped.
     """
-    coordinator, _ = _connected_coordinator(hass)
-    coordinator._client = None
-    client = _fresh_client()
+    coordinator, lamp = _at_a_lamp(hass)
     subscribed = asyncio.Event()
+    lamp.subscribes_when(subscribed)
 
-    async def _subscribe_slowly(*_a: object) -> None:
-        await subscribed.wait()
-
-    client.start_notify = AsyncMock(side_effect=_subscribe_slowly)
-    _dialling(coordinator, client)
-
-    async def _connect() -> None:
-        async with coordinator._lock:
-            await coordinator._connect_locked()
-
-    connecting = asyncio.create_task(_connect())
+    connecting = asyncio.create_task(link_of(coordinator).connect())
     await asyncio.sleep(0)  # dialled, and now waiting to be subscribed
     await coordinator.async_stop()  # nothing held: over at once
     subscribed.set()
@@ -4872,5 +4657,5 @@ async def test_a_link_subscribed_while_the_coordinator_stopped_is_not_kept(
         await connecting
     await hass.async_block_till_done()
 
-    assert coordinator._client is None
-    client.disconnect.assert_awaited_once()
+    assert link_of(coordinator).diagnostics()["connected"] is False
+    assert lamp.links[0].hung_up == 1

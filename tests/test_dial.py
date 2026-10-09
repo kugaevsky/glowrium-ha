@@ -338,6 +338,112 @@ async def test_a_lamp_may_be_slow_to_be_found() -> None:
     assert lamp.links == [link]
 
 
+async def test_a_lamp_may_be_slow_to_hang_up_or_fail_the_hang_up() -> None:
+    """``hangs_up_when`` holds a hang-up; ``fails_hang_ups`` fails it.
+
+    Either way the hang-up was asked for (``hang_ups``); only one that got
+    through has hung the link up. What is behind a link of the lamp is not
+    a bus, so a hang-up that failed leaves nothing for the link to close.
+    """
+    lamp = ScriptedLamp()
+    released = asyncio.Event()
+    lamp.hangs_up_when(released)
+    link = await lamp.dial(MagicMock())
+
+    hanging_up = asyncio.create_task(link.disconnect())
+    await asyncio.sleep(0.01)
+    assert link.hang_ups == 1
+    assert not link.hung_up
+    released.set()
+    await hanging_up
+    assert link.hung_up == 1
+
+    lamp.fails_hang_ups(BleakError("gone"))
+    other = await lamp.dial(MagicMock())
+    with pytest.raises(BleakError, match="gone"):
+        await other.disconnect()
+    assert other.hang_ups == 1
+    assert not other.hung_up
+    assert "bluezdbus" not in type(other._backend).__module__
+
+
+async def test_a_lamp_may_refuse_the_subscription() -> None:
+    """``subscription_fails``: the link is taken, and subscribing to it fails."""
+    lamp = ScriptedLamp()
+    lamp.subscription_fails(BleakError("subscribe failed"))
+    link = await lamp.dial(MagicMock())
+
+    with pytest.raises(BleakError, match="subscribe failed"):
+        await link.start_notify("any", MagicMock())
+    assert not link.subscribed
+
+
+async def test_a_lamp_may_fail_the_writes_to_one_characteristic_only() -> None:
+    """``of`` narrows ``fails_writes`` to one characteristic; the rest go through.
+
+    And a lamp told to answer no longer keeps writes waiting: ``answers``
+    undoes ``never_acknowledges_a_write``.
+    """
+    lamp = ScriptedLamp()
+    lamp.never_acknowledges_a_write()
+    lamp.answers()
+    lamp.fails_writes(BleakError("dropped"), of=WRITE_UUID)
+    link = await lamp.dial(MagicMock())
+    heard: list[bytes] = []
+    await link.start_notify("any", lambda _characteristic, data: heard.append(data))
+
+    await link.write_gatt_char(NOTIFY_UUID, bytes([KEY_POWER]))  # goes through
+    with pytest.raises(BleakError, match="dropped"):
+        await link.write_gatt_char(WRITE_UUID, b"\xa0")
+
+    assert [cbor.decode(frame) for frame in heard] == [{KEY_POWER: 0}]
+    assert lamp.written == [(NOTIFY_UUID, bytes([KEY_POWER])), (WRITE_UUID, b"\xa0")]
+
+
+async def test_a_lamp_may_fail_a_read_or_keep_it_waiting() -> None:
+    """``fails_reads`` fails every read; ``never_answers_a_read`` keeps it waiting.
+
+    The read was asked for all the same, and is noted as such.
+    """
+    lamp = ScriptedLamp()
+    lamp.readable(INFO_UUID, b"brand:x;;")
+    lamp.fails_reads(EOFError())
+    link = await lamp.dial(MagicMock())
+
+    with pytest.raises(EOFError):
+        await link.read_gatt_char(INFO_UUID)
+    assert lamp.read == [INFO_UUID]  # asked all the same
+
+    lamp.never_answers_a_read()
+    reading = asyncio.create_task(link.read_gatt_char(INFO_UUID))
+    await asyncio.sleep(0.01)
+    assert not reading.done()
+    reading.cancel()
+
+
+async def test_a_lamp_may_be_slow_to_subscribe_and_refuse_once() -> None:
+    """``subscribes_when`` holds a subscription; ``subscription_fails(None)`` lifts it.
+
+    The refusal is lifted for the next link, not for the one that met it.
+    """
+    lamp = ScriptedLamp()
+    lamp.subscription_fails(BleakError("refused"))
+    first = await lamp.dial(MagicMock())
+    with pytest.raises(BleakError, match="refused"):
+        await first.start_notify("any", MagicMock())
+
+    lamp.subscription_fails(None)
+    subscribed = asyncio.Event()
+    lamp.subscribes_when(subscribed)
+    second = await lamp.dial(MagicMock())
+    subscribing = asyncio.create_task(second.start_notify("any", MagicMock()))
+    await asyncio.sleep(0.01)
+    assert not subscribing.done()
+    subscribed.set()
+    await subscribing
+    assert second.subscribed
+
+
 def test_a_helper_given_the_coordinator_alone_finds_its_lamp(
     hass: HomeAssistant,
 ) -> None:
