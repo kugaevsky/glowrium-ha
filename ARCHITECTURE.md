@@ -1076,7 +1076,11 @@ ends. So it is not the state mirror minus a list of things to hide.
 
 **The file repeats nothing after the lamp.** The coordinator describes itself
 as it is (`GlowriumCoordinator.diagnostics`), and the diagnostics module
-rebuilds what leaves the host from what it can read:
+rebuilds what leaves the host from what it can read. Where the link stands is
+the link's own to say (`Link.diagnostics`): eight fields with none of the
+lamp's words in them, and of the client only what kind it is. The coordinator
+sets them beside the device half's five, in the order the block has always been
+written in:
 
 - Each property the integration knows is read the way the integration reads
   it, and written out from that reading: a schedule as its times and its
