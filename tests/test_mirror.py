@@ -387,6 +387,31 @@ _CURVE = bytes(range(0x40, 0x5C))  # 28 bytes of sunrise and sunset times
             "a1" + "1834" + "5b000000000000001c" + "xx" * 28,
             id="times that take eight bytes to say how long they are",
         ),
+        pytest.param(
+            "a1" + "0a" + "c1" * 4 + "fb" + _LATITUDE_HEX,
+            "a1" + "0a" + "c1" * 4 + "fb" + "xx" * 8,
+            id="a coordinate behind as many tags as are stepped over",
+        ),
+        pytest.param(
+            "a2" + "0a" + "c1" * 5 + "fb" + _LATITUDE_HEX + "06f5",
+            "a2" + "0a" + "xx" * (5 + 1 + 8 + 2),
+            id="behind more tags than are stepped over: what is left is blanked",
+        ),
+        pytest.param(
+            "a2" + "1834" + "5f" + "41aa" * 4 + "ff" + "06f5",
+            "a2" + "1834" + "5f" + "xx" * 8 + "ff" + "06f5",
+            id="a string in as many pieces as are stepped over",
+        ),
+        pytest.param(
+            "a2" + "1834" + "5f" + "41aa" * 5 + "ff" + "06f5",
+            "a2" + "1834" + "5f" + "xx" * (10 + 1 + 2),
+            id="in more pieces than are stepped over: what is left is blanked",
+        ),
+        pytest.param(
+            "1834" + "5f" * 500,
+            "1834" + "5f" + "xx" * 499,
+            id="a string in pieces inside another, five hundred deep",
+        ),
         pytest.param("a206f5081846", "a206f5081846", id="nothing of the kind"),
         pytest.param("", "", id="nothing at all"),
     ],
@@ -480,9 +505,9 @@ def test_no_line_of_the_mirror_carries_the_coordinates(
 ) -> None:
     """Every line that prints a frame prints it blanked, the second time too.
 
-    Two of them are warnings, written without debug logging and with a
-    request to post the frame. The request cannot rest on the reader blanking
-    hex by hand.
+    Each is a debug line: the warnings a frame can cause say where the frame
+    is and carry none of it. Whoever posts a debug log is asked to look a
+    frame over, and that cannot rest on blanking hex by hand.
     """
     mirror = _a_mirror()
     with caplog.at_level(logging.DEBUG, logger=_LOG):
@@ -579,9 +604,10 @@ def test_what_was_read_ahead_of_an_unreadable_item_is_kept_and_said_loudly(
 
     The properties ahead of it were read as from any other frame, and they
     are kept. That the rest was not is said once at a level somebody sees,
-    with the bytes it takes to add the missing reading and the caution that
-    goes with posting bytes - and at debug from then on, since a lamp that
-    sends one such frame sends them all day.
+    with where the frame is and the caution that goes with posting bytes. The
+    frame itself, with the bytes it takes to add the missing reading, is in
+    the debug log every time: a lamp that sends one such frame sends them all
+    day.
     """
     mirror = _a_mirror()
 
@@ -769,20 +795,31 @@ def _bytes_of(frame: bytes, text: str) -> bool:
 
 
 @pytest.mark.parametrize(
-    ("frame", "said"),
+    ("frame", "said", "room"),
     [
-        pytest.param("a106f50818466162636465", "trailing bytes", id="trailing bytes"),
         pytest.param(
-            "a406f508184609c0000d00", "cannot", id="an item that cannot be read"
+            "a106f50818466162636465", "trailing bytes", True, id="trailing bytes"
         ),
-        pytest.param("c006f50818461122", "Undecodable frame", id="undecodable"),
         pytest.param(
-            "8406f5081846", "nothing that can be used", id="not a map of properties"
+            "a406f508184609c0000d00", "cannot", True, id="an item that cannot be read"
+        ),
+        pytest.param("c006f50818461122", "Undecodable frame", True, id="undecodable"),
+        pytest.param(
+            "8406f5081846",
+            "nothing that can be used",
+            True,
+            id="not a map of properties",
+        ),
+        pytest.param(
+            "a3191770f5191771f5191772f5",
+            "none of them is kept",
+            False,
+            id="properties there is no room for",
         ),
     ],
 )
 def test_no_bytes_of_a_frame_are_logged_above_debug(
-    caplog: pytest.LogCaptureFixture, frame: str, said: str
+    caplog: pytest.LogCaptureFixture, frame: str, said: str, room: bool
 ) -> None:
     """A frame's bytes are in the debug log, and nowhere else.
 
@@ -790,11 +827,14 @@ def test_no_bytes_of_a_frame_are_logged_above_debug(
     integration, by people who are not thinking of it, and the bytes of a
     frame are the lamp's to choose. What is searched for in a printed frame
     is the lamp's place in the shapes seen so far - and a frame that is
-    printed is one that could not be read, as likely as any to hold a shape
+    printed is one that could not be used, as likely as any to hold a shape
     nobody has seen. So above debug the log says what was wrong and where the
-    frame is, and prints none of it.
+    frame is, and prints none of it. Five lines print a frame, and each is a
+    debug line.
     """
     mirror = _a_mirror()
+    if not room:
+        mirror.take(_ids_never_sent(1000, 64))  # all the room there is, taken
     raw = bytes.fromhex(frame)
     with caplog.at_level(logging.DEBUG, logger=_LOG):
         mirror.take(raw)
@@ -804,3 +844,99 @@ def test_no_bytes_of_a_frame_are_logged_above_debug(
     assert raw.hex() in caplog.text  # with debug logging on, the frame is there
     louder = [r.getMessage() for r in caplog.records if r.levelno >= logging.INFO]
     assert not [line for line in louder if _bytes_of(raw, line)]
+
+
+def test_a_frame_there_was_no_room_for_is_printed_without_the_place(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """The line for a frame of which nothing is kept blanks it like every other.
+
+    Such a frame decoded, and there was no room for what it carried. The
+    lamp's place can stand in it all the same: here inside the value of an
+    id nobody named.
+    """
+    mirror = _a_mirror()
+    mirror.take(_ids_never_sent(1000, 64))  # all the room there is, taken
+    # {5000: {0x0a: 12.3456}}
+    frame = bytes.fromhex("a1" + "191388" + "a1" + "0afb" + _LATITUDE_HEX)
+
+    with caplog.at_level(logging.DEBUG, logger=_LOG):
+        assert mirror.take(frame) == frozenset()
+
+    assert "none of them is kept" in caplog.text
+    assert "xx" * 8 in caplog.text
+    assert _LATITUDE_HEX not in caplog.text
+
+
+def test_a_line_that_says_how_much_was_kept_counts_what_was_kept(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """What a line says was kept is what the mirror took in, not what was read.
+
+    With no room left, the properties ahead of an item that cannot be read
+    are read and not kept, and a map that is split is kept in part. Both
+    lines counted what the decoder had read: the warning said that two
+    properties were kept of a frame that was no report (found in review,
+    2026-10-09).
+    """
+    mirror = _a_mirror(known=frozenset({KEY_POWER}))
+    mirror.take(_ids_never_sent(1000, 64))  # all the room there is, taken
+    # Two ids nobody named, and then a tag, which nothing here reads.
+    unreadable = bytes.fromhex("a3" + "191770f5" + "191771f5" + "09c000")
+    # A map that promises three: the power, and an id there is no room for.
+    split = bytes.fromhex("a3" + "06f5" + "191772f5")
+
+    with caplog.at_level(logging.DEBUG, logger=_LOG):
+        assert mirror.take(unreadable) == frozenset()
+        (said,) = [line for line in _warnings(caplog) if "cannot read" in line]
+        assert "The 0 properties ahead of it were kept" in said
+        assert "kept the 0 properties ahead of it" in caplog.text
+
+        caplog.clear()
+        assert mirror.take(split) == frozenset({KEY_POWER})
+        assert "split across frames; kept 1 of them" in caplog.text
+
+
+def test_a_frame_is_rendered_only_for_a_line_that_is_written(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """With debug logging off, a frame nobody will read is not rendered.
+
+    Rendering looks at every byte of a frame, and every line that prints one
+    is a debug line. A device that sends frames the integration cannot use
+    would otherwise be paid for each of them with work nobody sees, on the
+    event loop. The line is handed the frame, and renders it when it is
+    written.
+    """
+    rendered: list[bytes] = []
+    render = mirror_module._for_the_log
+
+    def _counted(frame: bytes) -> str:
+        rendered.append(frame)
+        return render(frame)
+
+    monkeypatch.setattr(mirror_module, "_for_the_log", _counted)
+    frames = [
+        bytes.fromhex(frame)
+        for frame in (
+            "a106f50818466162636465",  # trailing bytes
+            "a406f508184609c0000d00",  # an item that cannot be read
+            "c006f50818461122",  # undecodable
+            "8406f5081846",  # not a map of properties
+            "a3191770f5191771f5191772f5",  # properties there is no room for
+        )
+    ]
+
+    def _taken() -> None:
+        mirror = _a_mirror()
+        mirror.take(_ids_never_sent(1000, 64))  # all the room there is, taken
+        for frame in frames:
+            mirror.take(frame)
+
+    with caplog.at_level(logging.INFO, logger=_LOG):
+        _taken()
+    assert rendered == []
+
+    with caplog.at_level(logging.DEBUG, logger=_LOG):
+        _taken()
+    assert set(rendered) == set(frames)

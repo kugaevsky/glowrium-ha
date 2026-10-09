@@ -44,10 +44,11 @@ the keys.
   knows (`const.KNOWN_KEYS`: what the lamp is asked for, what only commands
   write, the curve) and every echo. Of the ids nobody named it keeps the
   first 64 a session brings and drops none of them to make room. A property
-  beyond that is counted (`Mirror.not_kept`) and not stored; it is in
-  nothing the mirror says of a report, and a frame of which nothing was kept
-  is no report. The first is said once a session at WARNING without a byte
-  of the frame, and the diagnostics give the count.
+  beyond that is not stored, and counted each time it is reported
+  (`Mirror.not_kept`); it is in nothing the mirror says of a report, and a
+  frame of which nothing was kept is no report. The first is said once a
+  session at WARNING without a byte of the frame, and the diagnostics say how
+  many times it happened.
 - One primitive for "what has the lamp reported since a mark":
   `reports` and `reported_since(n)`; and one wait, `next_report()`, which
   resolves on the first report after the call and never on an echo.

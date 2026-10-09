@@ -378,9 +378,9 @@ messages worth acting on, and two symptoms that come without one.
   is how the reading gets written.
 - **`reports more properties than this integration keeps`** — the lamp sent
   more properties the integration has no name for than it has room for. It
-  keeps the ones it knows and a fixed number of others, and counts the rest;
-  the diagnostics give the count. No lamp has been seen to do this: it is a
-  model nobody has met - please
+  keeps the ones it knows and a fixed number of others, and counts each time
+  another is reported; the diagnostics give that count. No lamp has been seen
+  to do this: it is a model nobody has met - please
   [report it](CONTRIBUTING.md#sending-protocol-data-for-a-device) - or
   something else answering at the lamp's address.
 - **A command fails with "out of range or the Bluetooth adapter busy"** — the

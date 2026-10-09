@@ -58,7 +58,15 @@ from custom_components.glowrium.coordinator import (
     _parse_device_info,
 )
 
-from .lamp import LampLink, ScriptedLamp, lamp_of, link_of, nothing_heard, turn_over
+from .lamp import (
+    LampLink,
+    ScriptedLamp,
+    flood,
+    lamp_of,
+    link_of,
+    nothing_heard,
+    turn_over,
+)
 
 
 def _at_a_lamp(
@@ -950,8 +958,7 @@ async def test_what_the_lamp_is_asked_for_is_kept_whatever_else_it_sent(
     whatever answers at the lamp's address can fill it.
     """
     coordinator, _lamp = _at_a_lamp(hass)
-    for first in range(1000, 1200, 50):
-        coordinator._ingest(cbor.encode(dict.fromkeys(range(first, first + 50), True)))
+    flood(coordinator._ingest)  # two hundred ids nobody named
 
     carried = coordinator._ingest(cbor.encode(dict.fromkeys(STATE_KEYS, 1)))
 
@@ -1002,8 +1009,7 @@ async def test_a_frame_of_which_nothing_was_kept_is_still_the_lamp_speaking(
     a frame the mirror had no room for is none.
     """
     coordinator, _lamp = _at_a_lamp(hass)
-    for first in range(1000, 1200, 50):
-        coordinator._ingest(cbor.encode(dict.fromkeys(range(first, first + 50), True)))
+    flood(coordinator._ingest)  # two hundred ids nobody named
     told: list[int] = []
     coordinator.async_add_listener(lambda: told.append(1))
     monkeypatch.setattr(link_module, "monotonic", lambda: 1000.0)
@@ -1158,9 +1164,9 @@ async def test_no_line_in_the_log_carries_the_coordinates(
 ) -> None:
     """Every line that prints a frame prints it blanked, the second time too.
 
-    Two of them are warnings, written without debug logging and with a
-    request to post the frame. The request cannot rest on the reader blanking
-    hex by hand.
+    Each is a debug line: the warnings a frame can cause say where the frame
+    is and carry none of it. Whoever posts a debug log is asked to look a
+    frame over, and that cannot rest on blanking hex by hand.
     """
     coordinator = GlowriumCoordinator(hass, "AA:BB:CC:DD:EE:FF", "Glowrium-G7")
 
@@ -2751,10 +2757,14 @@ async def test_only_an_application_level_refusal_silences_the_request(
         assert coordinator._state_request_failures == 0
 
 
-async def _the_three_warnings(
+async def _the_warnings_that_name_the_lamp(
     coordinator: GlowriumCoordinator, caplog: pytest.LogCaptureFixture
 ) -> list[str]:
-    """Draw each warning that names the lamp's model, and return what was said."""
+    """Draw each warning that names the lamp's model, and return what was said.
+
+    Four of them: a frame with trailing bytes, one with an item that cannot be
+    read, more properties than are kept, and a refused state request.
+    """
     lamp = lamp_of(coordinator)
     await coordinator.async_set_indicator(True)  # a link to be asked on
     link = lamp.links[-1]
@@ -2762,13 +2772,15 @@ async def _the_three_warnings(
     with caplog.at_level(logging.WARNING, logger=coordinator_module.__name__):
         lamp.say(bytes.fromhex("a106f5deadbeef"))  # trailing bytes
         lamp.say(_PARTLY_READABLE)
+        flood(lamp.say, ids=65)  # one more than there is room for
         for _ in range(coordinator_module._STATE_REQUEST_ATTEMPTS):
             await coordinator._request_state(turn_over(coordinator, link))
     said = [r.getMessage() for r in caplog.records if r.levelno == logging.WARNING]
-    assert len(said) == 3
+    assert len(said) == 4
     assert "trailing bytes" in said[0]
     assert "cannot read" in said[1]
-    assert "refused the batched state request" in said[2]
+    assert "reports more properties than" in said[2]
+    assert "refused the batched state request" in said[3]
     return said
 
 
@@ -2815,7 +2827,7 @@ async def test_a_warning_names_a_model_and_a_firmware_that_are_what_they_claim(
     Both come out of the device-info string, where the serial number and the
     address sit beside them, and where one field ends is only what the
     parser made of the string. A lamp that separates its fields differently
-    hands over one long field with the others inside it. Three warnings name
+    hands over one long field with the others inside it. Four warnings name
     the model and the firmware, and each of them asks to be reported: the
     log is held to the shapes the diagnostics file is held to. Until the
     lamp is read, its model is what an earlier session stored (``known_by``
@@ -2829,7 +2841,7 @@ async def test_a_warning_names_a_model_and_a_firmware_that_are_what_they_claim(
     for glued in hidden:  # the parser took it for the model, or the firmware
         assert glued in (coordinator.model_id or "") + (coordinator.sw_version or "")
 
-    for said in await _the_three_warnings(coordinator, caplog):
+    for said in await _the_warnings_that_name_the_lamp(coordinator, caplog):
         assert named in said
         for glued in hidden:
             assert glued not in said

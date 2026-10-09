@@ -34,10 +34,13 @@ each ends. A deny-list over the mirror would be a list of what one lamp sent.
 
 ## Decision
 
-- No log record above debug holds bytes of a frame. The two warnings a frame
-  can cause say what was wrong and that the frame is in the debug log; the
-  frame is printed at debug, the first one too. What the lamp chose is not
-  repeated where nobody asked for it: the log follows the diagnostics.
+- No log record above debug holds bytes of a frame. The warnings for a frame
+  with trailing bytes and for one with an item that cannot be read say what
+  was wrong and that the frame is in the debug log; the one for properties
+  there was no room for carries nothing of the frame either. A frame is
+  printed at debug, the first one too, and rendered only when that line is
+  written. What the lamp chose is not repeated where nobody asked for it: the
+  log follows the diagnostics.
 - Every frame that is printed goes through `mirror._for_the_log`: the
   coordinates, each a float, and the curve, a byte string, are found by their
   bytes at every offset independently and put down as `xx` - an id by its
@@ -45,6 +48,12 @@ each ends. A deny-list over the mirror would be a list of what one lamp sent.
   curve under every head a byte string can have, an indefinite length among
   them. The search does not skip past a match. A new line that prints a frame
   goes through the same function, and is a debug line.
+- The search is linear in the frame. No more than four tags, and no more than
+  four pieces of a string of indefinite length, are stepped over from one
+  offset; past that what is left of the frame is blanked. Every offset is
+  looked at, so a walk that could run to the end from each of them made a
+  frame built for it quadratic to render: 4 ms for 512 bytes where an
+  ordinary one takes a quarter of one (measured in review, 2026-10-09).
 - The diagnostics file is rebuilt from what the integration can read, never
   copied from the mirror: a known property is read the way the integration
   reads it and written out from that reading (a schedule as its times, a ramp
@@ -55,7 +64,7 @@ each ends. A deny-list over the mirror would be a list of what one lamp sent.
   the device-info fields are counted, and the model id and firmware are shown
   only in their strict shapes (`identity.as_model_id`, `identity.as_firmware`).
   No raw bytes, no hex, no serial number, no address.
-- The same two shapes gate the model and firmware in the three warnings that
+- The same two shapes gate the model and firmware in the four warnings that
   ask to be reported (`unknown` until read, `not as expected` otherwise): the
   device-info string carries the serial number beside them.
 - The repair for a stuck stack is filed by `entry_id`, not by the lamp's

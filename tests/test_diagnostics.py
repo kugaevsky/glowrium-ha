@@ -41,7 +41,7 @@ from custom_components.glowrium.const import (
 from custom_components.glowrium.coordinator import _parse_device_info
 from custom_components.glowrium.diagnostics import async_get_config_entry_diagnostics
 
-from .lamp import ScriptedLamp, in_range, link_of, nothing_heard, turn_over
+from .lamp import ScriptedLamp, flood, in_range, link_of, nothing_heard, turn_over
 
 ADDRESS = "AA:BB:CC:DD:EE:FF"
 TITLE = "Glowrium-G7_DDEEFF"
@@ -177,7 +177,9 @@ async def test_the_download_says_what_the_lamp_reported(hass: HomeAssistant) -> 
         "0x2f ramp": {"seconds": 3600},
         "0x35 daylight saving": {"enabled": True, "offset_seconds": 3600},
         "other_properties": 0,
-        "properties_not_kept": 0,
+        # In the file since the mirror was bounded: how many times a property
+        # had no room in it. A number, like the one above, and no more.
+        "times_a_property_was_not_kept": 0,
     }
     assert data["link"]["connected"] is False
     assert data["link"]["reports"] == 1
@@ -618,13 +620,12 @@ async def test_the_file_says_how_many_properties_were_not_kept(
     """
     entry = await _a_lamp_that_has_reported(hass)
     coordinator = entry.runtime_data
-    for first in range(1000, 1200, 50):
-        coordinator._ingest(cbor.encode(dict.fromkeys(range(first, first + 50), True)))
+    flood(coordinator._ingest)  # two hundred ids nobody named
 
     data = await _downloaded(hass, entry)
 
     assert data["state"]["other_properties"] == 64
-    assert data["state"]["properties_not_kept"] == 136
+    assert data["state"]["times_a_property_was_not_kept"] == 136
 
 
 async def test_a_lamp_that_has_reported_nothing_makes_a_file_all_the_same(
@@ -637,7 +638,12 @@ async def test_a_lamp_that_has_reported_nothing_makes_a_file_all_the_same(
 
     data = await _downloaded(hass, entry)
 
-    assert data["state"] == {"other_properties": 0, "properties_not_kept": 0}
+    # Both counts are in the file whatever was reported; the second came with
+    # the bound on the mirror.
+    assert data["state"] == {
+        "other_properties": 0,
+        "times_a_property_was_not_kept": 0,
+    }
     assert data["device"] == {
         "model": "Glowrium G7",  # remembered from an earlier session
         "model_id": "Glowrium-C051",

@@ -202,8 +202,9 @@ def _state(
 ) -> dict[str, Any]:
     """Read the state mirror out, property by property.
 
-    What has no name here is counted, and so is what the mirror had no room
-    for (``not_kept``): a number each, and nothing of the lamp's choosing.
+    What has no name here is counted, and so is every time the mirror had no
+    room for a property (``not_kept``): a number each, and nothing of the
+    lamp's choosing.
     """
     shown: dict[str, Any] = {}
     clock = ("clock", partial(_clock, heard_at=clock_heard_at))
@@ -219,7 +220,7 @@ def _state(
         shown[_WHERE_NAME] = REDACTED
         named += sum(key in reported for key in _WHERE)
     shown["other_properties"] = len(reported) - named
-    shown["properties_not_kept"] = not_kept
+    shown["times_a_property_was_not_kept"] = not_kept
     return dict(sorted(shown.items()))
 
 
@@ -254,6 +255,6 @@ async def async_get_config_entry_diagnostics(
         "state": _state(
             described["state"],
             described["clock_heard_at"],
-            described["properties_not_kept"],
+            described["not_kept"],
         ),
     }

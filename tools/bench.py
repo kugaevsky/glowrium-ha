@@ -59,6 +59,7 @@ from homeassistant.util import dt as dt_util
 from custom_components.glowrium import identity
 from custom_components.glowrium.const import (
     KEY_BRIGHTNESS,
+    KEY_CURVE,
     KEY_LATITUDE,
     KEY_LONGITUDE,
     KEY_POWER,
@@ -91,11 +92,9 @@ _KEY_NAMES = {
     0x35: "dst",
 }
 
-# The circadian curve the lamp computes for itself (see _curve).
-_CURVE_KEY = 0x34
 # What places the lamp: where it is, and the sunrise and sunset times it
 # works out from that.
-_PRIVATE_KEYS = frozenset({KEY_LATITUDE, KEY_LONGITUDE, _CURVE_KEY})
+_PRIVATE_KEYS = frozenset({KEY_LATITUDE, KEY_LONGITUDE, KEY_CURVE})
 _NOT_SHOWN = "not shown; --show-private prints it"
 
 
@@ -132,7 +131,7 @@ def _curve(raw: object) -> str:
 
 def _as_printed(key: int, raw: object) -> object:
     """Return the value under ``key`` as it is printed."""
-    if key == _CURVE_KEY:
+    if key == KEY_CURVE:
         return _curve(raw)
     if key in _PRIVATE_KEYS and not _PRIVACY.show:
         return f"({_NOT_SHOWN})"

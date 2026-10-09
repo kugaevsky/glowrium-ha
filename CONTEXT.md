@@ -23,8 +23,8 @@ One integer-keyed value of the lamp's state - power `0x06`, brightness `0x08`
 and so on; a frame is a map of them (`const.py`).
 
 **Report**:
-A frame from the lamp that decoded to at least one property, taken into the
-mirror and counted. A report, however partial, is the lamp answering
+A frame from the lamp of which at least one property was kept: taken into
+the mirror and counted. A report, however partial, is the lamp answering
 (`Mirror.take`, through `coordinator._ingest`).
 
 **State request**:
@@ -205,8 +205,9 @@ keeps every known property and every echo, and a bounded number of the rest
 **Known property**:
 A property the integration has a name for: what it asks the lamp for, what
 only its commands write, and the curve. The mirror always keeps these; of
-the properties nobody named it keeps the first sixty-four a session brings
-and counts the rest (`const.KNOWN_KEYS`, `Mirror.not_kept`).
+the properties nobody named it keeps the first sixty-four a session brings,
+and counts each time another is reported (`const.KNOWN_KEYS`,
+`Mirror.not_kept`).
 
 **Echo**:
 A command's payload reflected into the mirror after the lamp acknowledged the

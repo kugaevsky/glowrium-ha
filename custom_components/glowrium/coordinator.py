@@ -35,6 +35,8 @@ from .const import (
     KEY_LATITUDE,
     KEY_LIGHTING_MODE,
     KEY_LONGITUDE,
+    KEY_MODE_PARAM_2C,
+    KEY_MODE_PARAM_32,
     KEY_POWER,
     KEY_RAMP,
     KEY_SCHEDULE,
@@ -419,10 +421,11 @@ class GlowriumCoordinator:
     def diagnostics(self) -> dict[str, Any]:
         """Describe the lamp and the link, for a diagnostics download.
 
-        What the lamp said about itself, everything it has reported, and where
-        the connection stands - as it is, private or not. What of this may
-        leave the host is for the caller to choose, which is the one that
-        knows it is writing a file to be shared (see diagnostics.py).
+        What the lamp said about itself, what the mirror holds of what it
+        reported, and where the connection stands - as it is, private or not.
+        What of this may leave the host is for the caller to choose, which is
+        the one that knows it is writing a file to be shared (see
+        diagnostics.py).
         """
         link = self._link.diagnostics()
         return {
@@ -451,7 +454,7 @@ class GlowriumCoordinator:
             },
             "state": dict(self.state),
             "clock_heard_at": self._mirror.clock_heard_at,
-            "properties_not_kept": self._mirror.not_kept,
+            "not_kept": self._mirror.not_kept,
         }
 
     @callback
@@ -1171,9 +1174,9 @@ class GlowriumCoordinator:
         )
         return {
             KEY_LIGHTING_MODE: mode_value,
-            0x2C: MODE_PARAM_2C,
+            KEY_MODE_PARAM_2C: MODE_PARAM_2C,
             KEY_RAMP: ramp_value,
-            0x32: MODE_PARAM_32,
+            KEY_MODE_PARAM_32: MODE_PARAM_32,
         }
 
     async def async_set_lighting_mode(self, index: int) -> None:

@@ -419,3 +419,15 @@ def nothing_heard(coordinator: GlowriumCoordinator) -> None:
     the coordinator is handed a new one, built as it builds its own.
     """
     coordinator._mirror = coordinator._new_mirror()
+
+
+def flood(take: Callable[[bytes], object], ids: int = 200) -> None:
+    """Hand ``take`` frames that report ``ids`` ids never sent before, fifty a frame.
+
+    Ids from 1000 on, which nobody has a name for, and more of them than the
+    mirror has room for: what a device does that answers at the lamp's
+    address and is not a lamp.
+    """
+    for first in range(1000, 1000 + ids, 50):
+        last = min(first + 50, 1000 + ids)
+        take(cbor.encode(dict.fromkeys(range(first, last), True)))

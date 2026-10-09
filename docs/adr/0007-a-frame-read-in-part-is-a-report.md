@@ -63,8 +63,8 @@ callback, inside the Bluetooth stack's own message handler - catches exactly
   (a seeded corpus of noise, mutated real frames and deep nesting),
   `::test_an_item_that_cannot_be_read_says_what_was_read_ahead_of_it`,
   `::test_trailing_bytes_raise_their_own_type`;
-  `tests/test_coordinator.py::test_what_was_read_ahead_of_an_unreadable_item_is_kept_and_said_loudly`,
-  `::test_a_report_read_only_in_part_is_still_the_answer_to_the_request`.
+  `tests/test_mirror.py::test_what_was_read_ahead_of_an_unreadable_item_is_kept_and_said_loudly`;
+  `tests/test_coordinator.py::test_a_report_read_only_in_part_is_still_the_answer_to_the_request`.
 
 ## Revisit when
 

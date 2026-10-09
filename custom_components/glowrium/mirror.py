@@ -36,8 +36,9 @@ _LOGGER = logging.getLogger(f"{__package__}.coordinator")
 # the ids it reports, and whatever answers at the lamp's address is taken for
 # the lamp - the protocol has no pairing - so without a limit a device that
 # sends new ids in every frame grows the mirror for as long as it is let: by
-# up to 32 KiB a frame, measured (2026-10-09). A G7 reports no such id and a
-# read of a G8 brings thirteen.
+# up to 32 KiB a frame, measured (2026-10-09). A G7 that answers the state
+# request reports no such id; a read of the state, on a G7 or a G8, brings
+# eleven.
 _OTHERS_KEPT: Final = 64
 # Said where the log tells of a frame it could not use in full: where the
 # frame is, and what was done to it there (see _for_the_log). No line above
@@ -49,95 +50,107 @@ _IN_THE_DEBUG_LOG = (
     "and sunset times it works out from them, is shown as xx; look the frame "
     "over all the same before posting it"
 )
+# The ids of what places the lamp, each looked for by its last byte. An id
+# above 23 is written in two bytes or more - 18 34, 19 00 34 and longer - and a
+# decoder takes them all for the same id; the last byte is the one they share.
+_PLACE = frozenset({KEY_LATITUDE, KEY_LONGITUDE, KEY_CURVE})
 # How many bytes follow the head of a CBOR float: double, single, half.
 _FLOAT_BYTES = {b"\xfb": 8, b"\xfa": 4, b"\xf9": 2}
-# The head of a CBOR byte string. Up to 23 bytes the length is in the head
-# itself; 0x58 to 0x5b are followed by one, two, four and eight bytes of
-# length. 0x5f begins one of indefinite length: pieces, each a byte string
-# with a length of its own, up to a break.
-_BYTES_SHORT = range(0x40, 0x58)
-_BYTES_LONGER = {0x58: 1, 0x59: 2, 0x5A: 4, 0x5B: 8}
-_BYTES_INDEFINITE = 0x5F
-_BREAK = 0xFF
-# The head of a CBOR tag, which wraps the item after it. Up to 23 the tag's
-# number is in the head; 0xd8 to 0xdb are followed by one, two, four and
-# eight bytes of it.
-_TAGS_SHORT = range(0xC0, 0xD8)
-_TAGS_LONGER = {0xD8: 1, 0xD9: 2, 0xDA: 4, 0xDB: 8}
+# The head of a CBOR item (RFC 8949, 3). Its three high bits say what the item
+# is. Its five low bits are its argument - a tag's number, a string's length -
+# when that is up to 23; 24 to 27 put the argument in the next one, two, four
+# or eight bytes. 31 in a string's head makes its length indefinite: pieces,
+# each a string with a length of its own, up to a break.
+_TAG = 6
+_BYTE_STRING = 2
+_ARGUMENT_IN_THE_HEAD = range(24)
+_ARGUMENT_BYTES = {24: 1, 25: 2, 26: 4, 27: 8}
+_PIECES = b"\x5f"
+_BREAK = b"\xff"
+# How many tags, and how many pieces of a string, are stepped over from one
+# offset. Every offset of a frame is looked at on its own, so a walk that
+# could run to the end of the frame from each of them made rendering a frame
+# built for it quadratic: 4 ms for 512 bytes where an ordinary frame takes a
+# quarter of one, measured (2026-10-09). No lamp has been seen to write a tag,
+# or a string in pieces, at all. Past the limit what is left of the frame is
+# blanked: a false match can only blank more.
+_STEPS: Final = 4
 
 
-def _past_tags(frame: bytes, at: int) -> int:
+def _head_of(kind: int, frame: bytes, at: int) -> tuple[int, int]:
+    """Read the head of an item of ``kind`` at ``at``: its bytes, and its argument.
+
+    ``(0, 0)`` when no such head stands there whole - an item of another
+    kind, the end of the frame, a string of indefinite length.
+    """
+    if at >= len(frame) or frame[at] >> 5 != kind:
+        return 0, 0
+    argument = frame[at] & 0x1F
+    if argument in _ARGUMENT_IN_THE_HEAD:
+        return 1, argument
+    more = _ARGUMENT_BYTES.get(argument, 0)
+    following = frame[at + 1 : at + 1 + more]
+    if not more or len(following) < more:
+        return 0, 0
+    return 1 + more, int.from_bytes(following, "big")
+
+
+def _past_tags(frame: bytes, at: int) -> int | None:
     """Return where the item at ``at`` begins once the tags on it are stepped over.
 
     A tag wraps the item that follows it, and a decoder that does not read
     tags stops there: the value behind one is then in a frame that gets
-    printed, with nothing between its id and its head but the tag.
+    printed, with nothing between its id and its head but the tag. ``None``
+    when more tags stand there than are stepped over.
     """
-    while at < len(frame):
-        if frame[at] in _TAGS_SHORT:
-            at += 1
-        elif frame[at] in _TAGS_LONGER:
-            at += 1 + _TAGS_LONGER[frame[at]]
-        else:
-            break
-    return at
+    for _ in range(_STEPS + 1):
+        head, _number = _head_of(_TAG, frame, at)
+        if not head:
+            return at
+        at += head
+    return None
 
 
-def _byte_string_at(frame: bytes, at: int) -> tuple[int, int] | None:
+def _byte_string_at(frame: bytes, at: int) -> tuple[int, int]:
     """Size the byte string that begins at ``at``: its head, and its value.
 
-    ``None`` when no byte string begins there. One of indefinite length runs
-    up to its break, or to the end of the frame when there is none.
+    ``(0, 0)`` when none begins there. One of indefinite length runs up to
+    its break; to the end of the frame when no break is found within
+    ``_STEPS`` pieces, or what stands where a piece should is not one - a
+    string in pieces among them, so that nothing here calls itself. The
+    pieces are stepped over by their lengths: a byte of a piece that reads as
+    the break is not taken for it.
     """
-    head = frame[at : at + 1]
-    if not head:
-        return None
-    if head[0] in _BYTES_SHORT:
-        return 1, head[0] - _BYTES_SHORT.start
-    if head[0] == _BYTES_INDEFINITE:
-        return 1, _pieces_end(frame, at + 1) - at - 1
-    more = _BYTES_LONGER.get(head[0], 0)
-    length = frame[at + 1 : at + 1 + more]
-    if not more or len(length) < more:
-        return None
-    return 1 + more, int.from_bytes(length, "big")
-
-
-def _pieces_end(frame: bytes, at: int) -> int:
-    """Return where the pieces of a string of indefinite length end: at its break.
-
-    Or at the end of the frame, when there is no break or what stands where
-    a piece should is not one. The pieces are stepped over by their lengths,
-    so that a byte of a piece that reads as the break is not taken for it.
-    """
-    while at < len(frame) and frame[at] != _BREAK:
-        piece = None if frame[at] == _BYTES_INDEFINITE else _byte_string_at(frame, at)
-        if piece is None:
-            return len(frame)
-        at += sum(piece)
-    return min(at, len(frame))
+    if frame[at : at + 1] != _PIECES:
+        return _head_of(_BYTE_STRING, frame, at)
+    end = at + 1
+    for _ in range(_STEPS + 1):
+        if frame[end : end + 1] == _BREAK:
+            return 1, end - at - 1
+        head, length = _head_of(_BYTE_STRING, frame, end)
+        if not head:
+            break
+        end += head + length
+    return 1, len(frame) - at - 1
 
 
 def _private_at(frame: bytes, at: int) -> tuple[int, int]:
     """Tell whether a value that says where the lamp is starts at ``at``.
 
     ``(head, value)``: how many bytes name it - the id, any tags and the head
-    of the value - and how many the value itself takes. ``(1, 0)`` when
-    nothing of the kind starts here.
-
-    An id is looked for by its last byte. One above 23 is written in two
-    bytes or more - 18 34, 19 00 34 and longer - and a decoder takes them all
-    for the same id; the last byte is the one they share.
+    of the value - and how many the value itself takes: none, when nothing
+    of the kind starts here.
     """
-    if frame[at] in (KEY_LATITUDE, KEY_LONGITUDE):
-        value_at = _past_tags(frame, at + 1)
-        value = _FLOAT_BYTES.get(frame[value_at : value_at + 1])
-        return (value_at - at + 1, value) if value else (1, 0)
+    if frame[at] not in _PLACE:
+        return 1, 0
+    value_at = _past_tags(frame, at + 1)
+    if value_at is None:
+        return 1, len(frame)
     if frame[at] == KEY_CURVE:
-        value_at = _past_tags(frame, at + 1)
-        sized = _byte_string_at(frame, value_at)
-        return (value_at - at + sized[0], sized[1]) if sized else (1, 0)
-    return 1, 0
+        head, value = _byte_string_at(frame, value_at)
+    else:
+        head, value = 1, _FLOAT_BYTES.get(frame[value_at : value_at + 1], 0)
+    return value_at - at + head, value
 
 
 def _for_the_log(frame: bytes) -> str:
@@ -171,6 +184,25 @@ def _for_the_log(frame: bytes) -> str:
     )
 
 
+class _Printed:
+    """A frame as it is printed, worked out only if the line is written.
+
+    Rendering a frame looks at every byte of it, and a line below the level
+    the log is kept at is never written. The logger is handed this and not
+    the string, so that a frame nobody will read is not rendered.
+    """
+
+    __slots__ = ("_frame",)
+
+    def __init__(self, frame: bytes) -> None:
+        """Remember the frame; nothing is rendered yet."""
+        self._frame = frame
+
+    def __str__(self) -> str:
+        """Render the frame, blanked (``_for_the_log``)."""
+        return _for_the_log(self._frame)
+
+
 class Mirror(Mapping[int, Any]):
     """What the lamp has said, by property id; and what was written to it.
 
@@ -182,7 +214,8 @@ class Mirror(Mapping[int, Any]):
     The ids the integration knows are always kept, and so is every echo. Of
     the ids it has no name for, the first ``_OTHERS_KEPT`` a session brings
     are kept and none of them is ever dropped to make room; a property
-    beyond that is counted (``not_kept``) and not stored.
+    beyond that is not stored, and counted each time it is reported
+    (``not_kept``).
 
     A report is a frame of which at least one property was kept. They are
     numbered: ``reports`` is how many there have been, and
@@ -217,10 +250,10 @@ class Mirror(Mapping[int, Any]):
         self._described = described
         self._now = now
         self._values: dict[int, Any] = {}
-        # The ids taken from frames that nobody has a name for: no more than
-        # _OTHERS_KEPT of them, the first to come. And how many reported
-        # properties were not kept because there was no room left.
-        self._others: set[int] = set()
+        # How many ids nobody has a name for were taken from frames: no more
+        # than _OTHERS_KEPT, the first to come. And how many times a reported
+        # property was not kept because there was no room left.
+        self._others = 0
         self.not_kept = 0
         self._not_kept_warned = False
         # Monotonic counters, not values: vouching needs to know that a report
@@ -266,7 +299,7 @@ class Mirror(Mapping[int, Any]):
 
         Empty when the frame was no report: nothing in it could be read, or
         it was not a map of properties, or a map with nothing in it, or there
-        was room for none of what it carried (``_room_for``). Whatever
+        was room for none of what it carried (``_kept_of``). Whatever
         the bytes, nothing is raised: this runs inside the Bluetooth stack's
         own notify handler, and the decoder's promise that nothing but a
         ``ValueError`` leaves it is kept here.
@@ -277,12 +310,12 @@ class Mirror(Mapping[int, Any]):
         connect would fall back on reading, and on BlueZ a read ends the link.
         A frame of which nothing was read is still no report.
         """
-        short = said = False
+        short = False
+        unreadable: cbor.UnreadableItemError | None = None
         try:
             decoded, short = cbor.decode_frame(frame)
         except cbor.UnreadableItemError as err:
-            self._log_unreadable_item(frame, err)
-            decoded, said = err.ahead, True
+            decoded, unreadable = err.ahead, err
         except cbor.TrailingBytesError as err:
             # Reported apart from a merely malformed frame, and loudly the first
             # time: rejecting these is what changed in #5, and on a model whose
@@ -292,52 +325,62 @@ class Mirror(Mapping[int, Any]):
             self._log_trailing_bytes(frame, err.count)
             return frozenset()
         except ValueError as err:  # the decoder raises nothing else
-            _LOGGER.debug("Undecodable frame %s: %s", _for_the_log(frame), err)
+            _LOGGER.debug("Undecodable frame %s: %s", _Printed(frame), err)
             return frozenset()
-        if not isinstance(decoded, dict) or not decoded:
-            if not said:
-                # Decoded without a fault, and still of no use: every frame
-                # that is dropped is named, or nobody can ask what it was.
-                _LOGGER.debug(
-                    "%s: frame %s decodes to nothing that can be used: it is "
-                    "not a map of properties, or is one with nothing in it",
-                    self._address,
-                    _for_the_log(frame),
-                )
+        carried = decoded if isinstance(decoded, dict) else {}
+        kept = self._kept_of(carried)
+        if unreadable is not None:
+            # Said now that what was kept is known: the line counts it.
+            self._log_unreadable_item(frame, unreadable, len(kept))
+        elif not carried:
+            # Decoded without a fault, and still of no use: every frame that
+            # is dropped is named, or nobody can ask what it was.
+            _LOGGER.debug(
+                "%s: frame %s decodes to nothing that can be used: it is "
+                "not a map of properties, or is one with nothing in it",
+                self._address,
+                _Printed(frame),
+            )
+        elif not kept:
+            # There was room for none of it. Dropped, then, and named too.
+            _LOGGER.debug(
+                "%s: frame %s carries %d properties and none of them is kept",
+                self._address,
+                _Printed(frame),
+                len(carried),
+            )
+        if not kept:
             return frozenset()
         if short:
             _LOGGER.debug(
                 "%s: property map split across frames; kept %d of them",
                 self._address,
-                len(decoded),
+                len(kept),
             )
-        kept = {key: value for key, value in decoded.items() if self._room_for(key)}
-        if len(kept) < len(decoded):
-            self._note_not_kept(len(decoded) - len(kept))
-        if not kept:
-            # There was room for none of it. No report, then - and named,
-            # like every frame that is dropped.
-            _LOGGER.debug(
-                "%s: frame %s carries %d properties and none of them is kept",
-                self._address,
-                _for_the_log(frame),
-                len(decoded),
-            )
-            return frozenset()
         self._merge(kept)
         self.reports += 1
         self._reported_at.update(dict.fromkeys(kept, self.reports))
         self._wake()
         return frozenset(kept)
 
-    def _room_for(self, key: int) -> bool:
-        """Tell whether a reported id is kept, giving it a place if one is left."""
-        if key in self._known or key in self._values:
-            return True
-        if len(self._others) < _OTHERS_KEPT:
-            self._others.add(key)
-            return True
-        return False
+    def _kept_of(self, carried: Mapping[int, Any]) -> dict[int, Any]:
+        """Return what of a frame's properties is kept, and count what is not.
+
+        An id the integration knows is kept, and so is one the mirror holds
+        already. An id nobody named is given one of the places there are for
+        such ids, while one is left. What is not kept is counted, and said
+        the first time.
+        """
+        kept: dict[int, Any] = {}
+        for key, value in carried.items():
+            if key in self._known or key in self._values:
+                kept[key] = value
+            elif self._others < _OTHERS_KEPT:
+                self._others += 1
+                kept[key] = value
+        if len(kept) < len(carried):
+            self._note_not_kept(len(carried) - len(kept))
+        return kept
 
     def _note_not_kept(self, count: int) -> None:
         """Count properties there was no room for, and say so the first time.
@@ -353,8 +396,9 @@ class Mirror(Mapping[int, Any]):
         self._not_kept_warned = True
         _LOGGER.warning(
             "%s (%s) reports more properties than this integration keeps: it "
-            "keeps the ones it knows and %d others, and counts the rest. No "
-            "lamp has been seen to do this. Please report this model",
+            "keeps the ones it knows and %d others, and counts each time "
+            "another is reported. No lamp has been seen to do this. Please "
+            "report this model",
             self._address,
             self._described(),
             _OTHERS_KEPT,
@@ -402,7 +446,7 @@ class Mirror(Mapping[int, Any]):
         if KEY_TIME in values:
             self.clock_heard_at = self._now()
 
-    # --- the two warnings a frame can cause, and the frame at debug ------------
+    # --- the warnings a frame can cause, and the frame at debug ----------------
 
     def _log_trailing_bytes(self, data: bytes, count: int) -> None:
         """Report a frame rejected for trailing bytes: once loudly, each time at debug.
@@ -415,7 +459,7 @@ class Mirror(Mapping[int, Any]):
         _LOGGER.debug(
             "%s: frame %s carries %d trailing bytes and was dropped",
             self._address,
-            _for_the_log(data),
+            _Printed(data),
             count,
         )
         if self._trailing_warned:
@@ -432,20 +476,24 @@ class Mirror(Mapping[int, Any]):
             _IN_THE_DEBUG_LOG,
         )
 
-    def _log_unreadable_item(self, data: bytes, err: cbor.UnreadableItemError) -> None:
+    def _log_unreadable_item(
+        self, data: bytes, err: cbor.UnreadableItemError, kept: int
+    ) -> None:
         """Report a frame that was read only in part: once loudly, each time at debug.
 
         As with trailing bytes: a lamp that sends one such frame sends them
         all day, and the first is the one that has to be seen. The frame, with
         the bytes it takes to give the item a reading, is in the debug log.
+        ``kept`` is how many of the properties ahead of the item the mirror
+        took in, which is not always how many were read.
         """
         _LOGGER.debug(
             "%s: frame %s carries an item that cannot be read (%s); kept the %d "
             "properties ahead of it",
             self._address,
-            _for_the_log(data),
+            _Printed(data),
             err,
-            len(err.ahead),
+            kept,
         )
         if self._unreadable_warned:
             return
@@ -457,6 +505,6 @@ class Mirror(Mapping[int, Any]):
             self._address,
             self._described(),
             err,
-            len(err.ahead),
+            kept,
             _IN_THE_DEBUG_LOG,
         )

@@ -339,7 +339,10 @@ is (`mirror._for_the_log`). The coordinates and the times the lamp works out
 from them are found by their bytes and not by decoding, since these are the
 frames that could not be decoded to their end, and are put down as `xx`: an
 id by its last byte, so under every width it can be written in; behind any
-tags; the times under every head a byte string can have. A value in a form
+tags; the times under every head a byte string can have. No more than four
+tags or pieces of a string are stepped over from one offset, and past that
+what is left of the frame is blanked: every offset is looked at, and the
+search has to stay linear in a frame built to make it walk. A value in a form
 nobody has met, or one that stands without its id, is not found by looking
 for it - the lines say to look the frame over, and cannot rest on that alone.
 
@@ -386,9 +389,9 @@ The mirror is bounded. The device chooses the ids it reports, and whatever
 answers at the lamp's address is taken for the lamp, so the mirror is told
 which ids the integration knows (`const.KNOWN_KEYS`) and always keeps those,
 and every echo; of the ids nobody named it keeps the first 64 a session
-brings. A property beyond that is counted and not stored - the log says so
-once, and the diagnostics give the number - and a frame of which nothing was
-kept is no report.
+brings. A property beyond that is not stored, and counted each time it is
+reported - the log says so once, and the diagnostics say how many times -
+and a frame of which nothing was kept is no report.
 
 ### Property-key table
 
@@ -1176,6 +1179,10 @@ Unit tests live in `tests/` and **never touch real Bluetooth**:
 - `test_protocol.py` — the byte layouts behind the typed values, read and
   written: the `0x11` schedule slot, the `0x2f` ramp, the `0x35` daylight-saving
   slot and the `0x05` clock.
+- `test_mirror.py` — the state mirror alone, fed frames as hex: what a frame
+  carried and what was kept of it, what counts as a report, how much of what
+  nobody named is kept, and every line that prints a frame - blanked, and
+  at debug only.
 - `test_coordinator.py` — command encoding (power, brightness, lighting mode,
   operating mode, indicator, DST, schedule) checked against real device bytes,
   and the connection logic around it: priming by asking, the fallbacks to a
