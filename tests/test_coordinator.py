@@ -1615,30 +1615,6 @@ async def test_two_ticks_do_not_make_the_first_exchange_twice(
     assert len(lamp.asked) == 1
 
 
-async def test_unload_does_not_wait_out_a_connect(
-    hass: HomeAssistant, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """Stopping must not block on the lock a slow connect is holding.
-
-    Unload waiting behind a connect is what made reloading the integration take
-    the best part of ten seconds.
-    """
-    coordinator, lamp, link = await _holding_a_link(hass)
-    monkeypatch.setattr(link_module, "_STOP_TIMEOUT", 0.05)
-    lamp.never_acknowledges_a_write()  # the exchange on the held link hangs...
-    priming = asyncio.create_task(link_of(coordinator).prime_held())
-    await asyncio.sleep(0)  # ...holding the lock
-
-    try:
-        await coordinator.async_stop()  # must return, not hang
-    finally:
-        priming.cancel()
-        with contextlib.suppress(asyncio.CancelledError):
-            await priming
-    assert link.hung_up == 1
-    assert link_of(coordinator).diagnostics()["connected"] is False
-
-
 async def test_a_device_report_reaches_the_entities(hass: HomeAssistant) -> None:
     """Ingesting a frame must notify listeners, not just update the mirror.
 
@@ -2021,25 +1997,40 @@ async def test_advertisements_do_not_start_a_connect_storm(
     await hass.async_block_till_done()
 
 
-async def test_stopping_tears_everything_down(hass: HomeAssistant) -> None:
-    """Stopping cancels all three watchers and drops the link.
+@pytest.mark.parametrize("stopped_by", ["an unload", "Home Assistant stopping"])
+async def test_stopping_tears_everything_down(
+    hass: HomeAssistant, monkeypatch: pytest.MonkeyPatch, stopped_by: str
+) -> None:
+    """Stopping cancels all three watchers, drops the link, and takes no new one.
 
     Leaving any of them behind means a reload leaves the old coordinator
     reacting to advertisements and polling for reconnects alongside the new
-    one, both competing for the lamp's single connection.
+    one, both competing for the lamp's single connection. A coordinator shut
+    down with Home Assistant is as finished as one unloaded: left watching,
+    it would answer the next advertisement by dialling the lamp again -
+    while Home Assistant is on its way out, and after the one hang-up it
+    will get.
     """
-    coordinator, _lamp, link = await _holding_a_link(hass)
+    coordinator, lamp, link = await _holding_a_link(hass)
     cancels = {name: MagicMock() for name in ("bluetooth", "unavailable", "poll")}
     coordinator._cancel_bluetooth = cancels["bluetooth"]
     coordinator._cancel_unavailable = cancels["unavailable"]
     coordinator._cancel_poll = cancels["poll"]
+    monkeypatch.setattr(link_module, "_CONFIRM_TIMEOUT", 0.01)
 
-    await coordinator.async_stop()
+    if stopped_by == "an unload":
+        await coordinator.async_stop()
+    else:
+        coordinator.async_shutdown()
+    await hass.async_block_till_done()
 
     for name, cancel in cancels.items():
         assert cancel.call_count == 1, f"{name} watcher was left running"
     assert link.hung_up == 1
     assert link_of(coordinator).diagnostics()["connected"] is False
+    with pytest.raises(HomeAssistantError):
+        await coordinator.async_set_power(True)
+    assert lamp.dials == 1  # the link it was stopped with; none since
 
 
 async def test_a_write_on_a_turn_whose_link_is_gone_is_refused_not_dropped(
@@ -2661,11 +2652,13 @@ async def test_a_connect_that_fails_half_way_leaves_no_link_behind(
 async def test_stopping_hangs_up_even_when_the_lock_is_busy(
     hass: HomeAssistant, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """A busy lock must not mean the connection is simply abandoned.
+    """Stopping neither waits out the lock a slow exchange holds nor abandons the link.
 
-    Dropping the reference does not close a BLE link - bleak has no disconnect
-    on garbage collection - so the lamp's one slot stays taken and the next
-    coordinator cannot have it.
+    Unload waiting behind a connect is what made reloading the integration
+    take the best part of ten seconds. And a busy lock must not mean the
+    connection is simply abandoned: dropping the reference does not close a
+    BLE link - bleak has no disconnect on garbage collection - so the lamp's
+    one slot stays taken and the next coordinator cannot have it.
     """
     coordinator, lamp, link = await _holding_a_link(hass)
     monkeypatch.setattr(link_module, "_STOP_TIMEOUT", 0.05)
@@ -2674,13 +2667,14 @@ async def test_stopping_hangs_up_even_when_the_lock_is_busy(
     await asyncio.sleep(0)  # ...holding the lock
 
     try:
-        await coordinator.async_stop()
+        async with asyncio.timeout(0.4):  # must return, not hang
+            await coordinator.async_stop()
     finally:
         priming.cancel()
         with contextlib.suppress(asyncio.CancelledError):
             await priming
 
-    assert link.hung_up  # hung up anyway
+    assert link.hung_up == 1  # hung up anyway
     assert link_of(coordinator).diagnostics()["connected"] is False
 
 
@@ -2784,27 +2778,6 @@ def test_no_path_holds_the_lock_longer_than_a_command_will_wait() -> None:
     # the command leaves the retry no time to happen in exactly the case it is
     # for: a link that will not confirm it has closed.
     assert hang_up < command
-
-
-async def test_stopping_hangs_up_once_not_twice(
-    hass: HomeAssistant, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """A disconnect that hangs costs one ceiling, not two.
-
-    Measured on the real integration: reloading took 6.1 s, all of it in
-    unload, because a first bounded disconnect timed out and a fallback then
-    timed out again. The lock and the hang-up are separate problems and need
-    separate deadlines - the lock is best-effort, the disconnect is tried once.
-    """
-    coordinator, lamp, link = await _holding_a_link(hass)
-    monkeypatch.setattr(link_module, "_STOP_TIMEOUT", 0.05)
-    lamp.hangs_up_when(asyncio.Event())  # never
-
-    async with asyncio.timeout(0.4):  # comfortably under two ceilings plus slack
-        await coordinator.async_stop()
-
-    assert link.hang_ups == 1
-    assert link_of(coordinator).diagnostics()["connected"] is False
 
 
 @pytest.mark.parametrize("path", ["a background connect", "the poll"])
@@ -3495,25 +3468,32 @@ async def test_watching_the_lamp_needs_home_assistant() -> None:
 async def test_stopping_does_not_cut_the_hang_up_short(
     hass: HomeAssistant, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Unload stops waiting at its ceiling; the disconnect itself carries on.
+    """A disconnect that hangs costs the stop one ceiling, and is not cut short by it.
 
-    Stopping disconnected under its own ceiling of three seconds, and on the
-    real integration that ceiling has fired (see
-    test_stopping_hangs_up_once_not_twice). Run against bleak 3.0.2 with a bus
-    that never confirms: a disconnect cancelled at that ceiling has asked BlueZ
-    to drop the link and returns with the client's D-Bus connection still open.
-    That is the leak this fix is about, taken on every reload that meets a slow
-    link - and a reload is what one reaches for when Bluetooth misbehaves.
+    Measured on the real integration: reloading took 6.1 s, all of it in
+    unload, because a first bounded disconnect timed out and a fallback then
+    timed out again. The lock and the hang-up are separate problems and need
+    separate deadlines - the lock is best-effort, the disconnect is tried
+    once. And unload stops waiting at its ceiling; the disconnect itself
+    carries on. Stopping disconnected under its own ceiling of three seconds,
+    and on the real integration that ceiling has fired. Run against bleak
+    3.0.2 with a bus that never confirms: a disconnect cancelled at that
+    ceiling has asked BlueZ to drop the link and returns with the client's
+    D-Bus connection still open. That is the leak this fix is about, taken
+    on every reload that meets a slow link - and a reload is what one
+    reaches for when Bluetooth misbehaves.
     """
     coordinator, lamp, link = await _holding_a_link(hass)
     monkeypatch.setattr(link_module, "_STOP_TIMEOUT", 0.05)
     released = asyncio.Event()
     lamp.hangs_up_when(released)
 
-    async with asyncio.timeout(0.4):  # the unload itself is still bounded
+    async with asyncio.timeout(0.4):  # comfortably under two ceilings plus slack
         await coordinator.async_stop()
 
+    assert link.hang_ups == 1
     assert not link.hung_up
+    assert link_of(coordinator).diagnostics()["connected"] is False
     released.set()
     await hass.async_block_till_done()
     assert link.hung_up == 1  # the disconnect ran to the end, after the unload
@@ -4064,40 +4044,22 @@ async def test_stopping_that_is_cancelled_still_lets_go_of_the_link(
     assert link.hung_up == 1
 
 
-async def test_a_stopped_coordinator_does_not_dial(
-    hass: HomeAssistant, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """Once stopped, the coordinator takes no new link at all.
-
-    And says so at once. The deadline around the command is what tells a
-    refusal from a command that never got the lock: stopping takes the lock,
-    and one that failed to give it back would end the same way fifteen seconds
-    later, for a different reason.
-    """
-    coordinator, lamp, _link = await _holding_a_link(hass)
-    monkeypatch.setattr(link_module, "_CONFIRM_TIMEOUT", 0.01)
-
-    await coordinator.async_stop()
-    assert not link_of(coordinator).lock.locked()
-    async with asyncio.timeout(1):
-        with pytest.raises(HomeAssistantError):
-            await coordinator.async_set_power(True)
-
-    assert lamp.dials == 1  # the link it was stopped with; none since
-    assert link_of(coordinator).diagnostics()["connected"] is False
-
-
 @pytest.mark.parametrize("stopped_by", ["an unload", "Home Assistant stopping"])
 async def test_a_command_refused_because_it_has_stopped_says_so(
     hass: HomeAssistant, monkeypatch: pytest.MonkeyPatch, stopped_by: str
 ) -> None:
-    """A stopped coordinator does not send its user off to buy a Bluetooth proxy.
+    """A stopped coordinator takes no new link at all, says so, and says so at once.
 
-    The command is refused because the integration is being reloaded or Home
-    Assistant is going down. The radio did nothing, and "the device may be
-    out of range ... a Bluetooth proxy near the device usually fixes this"
-    is advice for something else. It is said as what it is - and once: a link
-    that is refused on purpose is not asked for a second time.
+    The command is refused because the integration is being reloaded or
+    Home Assistant is going down. The radio did nothing, and "the device may
+    be out of range ... a Bluetooth proxy near the device usually fixes
+    this" is advice for something else: a stopped coordinator does not send
+    its user off to buy a Bluetooth proxy. It is said as what it is - and
+    once: a link that is refused on purpose is not asked for a second time.
+    And at once: the deadline around the command is what tells a refusal
+    from a command that never got the lock - stopping takes the lock, and
+    one that failed to give it back would end the same way fifteen seconds
+    later, for a different reason.
     """
     coordinator, lamp, _link = await _holding_a_link(hass)
     monkeypatch.setattr(link_module, "_CONFIRM_TIMEOUT", 0.01)
@@ -4106,44 +4068,17 @@ async def test_a_command_refused_because_it_has_stopped_says_so(
         await coordinator.async_stop()
     else:
         coordinator.async_shutdown()
+    assert not link_of(coordinator).lock.locked()
 
-    with pytest.raises(HomeAssistantError) as err:
-        await coordinator.async_set_power(True)
+    async with asyncio.timeout(1):
+        with pytest.raises(HomeAssistantError) as err:
+            await coordinator.async_set_power(True)
     await hass.async_block_till_done()
 
     assert err.value.translation_key == "not_running"
     assert err.value.translation_placeholders == {"name": "Glowrium-G7"}
     assert len(asked) == 1
     assert lamp.dials == 1  # the link it was stopped with; none since
-
-
-async def test_a_command_overtaken_by_a_stop_says_so_too(
-    hass: HomeAssistant, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """The stop can come while the command's own connect is on its way.
-
-    The link it then gets is not kept, and the command is told why - not
-    sent round a second time to be refused at the door instead.
-    """
-    coordinator, lamp = _at_a_lamp(hass)
-    subscribed = asyncio.Event()
-    lamp.subscribes_when(subscribed)
-    monkeypatch.setattr(link_module, "_CONFIRM_TIMEOUT", 0.01)
-    asked = _counting_connects(coordinator)
-
-    command = asyncio.create_task(coordinator.async_set_power(True))
-    await asyncio.sleep(0)  # dialled, and now waiting to be subscribed
-    await coordinator.async_stop()  # nothing held: over at once
-    subscribed.set()
-
-    with pytest.raises(HomeAssistantError) as err:
-        await command
-    await hass.async_block_till_done()
-
-    assert err.value.translation_key == "not_running"
-    assert len(asked) == 1
-    assert lamp.dials == 1
-    assert lamp.links[0].hung_up == 1
     assert link_of(coordinator).diagnostics()["connected"] is False
 
 
@@ -4210,32 +4145,6 @@ async def test_shutting_down_does_not_hold_home_assistant_up(
         command.cancel()
         with contextlib.suppress(asyncio.CancelledError):
             await command
-
-
-async def test_shutting_down_stops_watching_and_takes_no_new_link(
-    hass: HomeAssistant, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """A coordinator shut down with Home Assistant is as finished as one unloaded.
-
-    Left watching, it would answer the next advertisement by dialling the lamp
-    again - while Home Assistant is on its way out, and after the one hang-up
-    it will get.
-    """
-    coordinator, lamp, _link = await _holding_a_link(hass)
-    cancels = {name: MagicMock() for name in ("bluetooth", "unavailable", "poll")}
-    coordinator._cancel_bluetooth = cancels["bluetooth"]
-    coordinator._cancel_unavailable = cancels["unavailable"]
-    coordinator._cancel_poll = cancels["poll"]
-    monkeypatch.setattr(link_module, "_CONFIRM_TIMEOUT", 0.01)
-
-    coordinator.async_shutdown()
-    await hass.async_block_till_done()
-
-    for name, cancel in cancels.items():
-        assert cancel.call_count == 1, f"{name} watcher was left running"
-    with pytest.raises(HomeAssistantError):
-        await coordinator.async_set_power(True)
-    assert lamp.dials == 1  # the link it was shut down with; none since
 
 
 async def test_shutting_down_says_so_in_the_log(
@@ -4336,28 +4245,43 @@ async def test_stopping_gives_the_lock_back_however_it_ends(
     assert link.hung_up == 1  # and the hang-up was not cancelled with it
 
 
+@pytest.mark.parametrize("asked_by", ["a command", "a background connect"])
 async def test_a_link_subscribed_while_the_coordinator_stopped_is_not_kept(
-    hass: HomeAssistant,
+    hass: HomeAssistant, monkeypatch: pytest.MonkeyPatch, asked_by: str
 ) -> None:
     """The check for a stop comes after the subscription, not before it.
 
     The subscription is the last thing a connect waits for before it commits
     the link. A stop that comes and goes during that wait finds nothing held
     and returns; checked any earlier, the connect would then commit its link
-    to a coordinator that has already been stopped.
+    to a coordinator that has already been stopped. A command whose own
+    connect was on its way is told why - not sent round a second time to be
+    refused at the door instead.
     """
     coordinator, lamp = _at_a_lamp(hass)
     subscribed = asyncio.Event()
     lamp.subscribes_when(subscribed)
+    monkeypatch.setattr(link_module, "_CONFIRM_TIMEOUT", 0.01)
+    asked = _counting_connects(coordinator)
 
-    connecting = asyncio.create_task(link_of(coordinator).connect())
+    if asked_by == "a command":
+        connecting = asyncio.create_task(coordinator.async_set_power(True))
+    else:
+        connecting = asyncio.create_task(link_of(coordinator).connect())
     await asyncio.sleep(0)  # dialled, and now waiting to be subscribed
     await coordinator.async_stop()  # nothing held: over at once
     subscribed.set()
 
-    with pytest.raises(link_module.NoNewLinkError):
-        await connecting
+    if asked_by == "a command":
+        with pytest.raises(HomeAssistantError) as err:
+            await connecting
+        assert err.value.translation_key == "not_running"
+    else:
+        with pytest.raises(link_module.NoNewLinkError):
+            await connecting
     await hass.async_block_till_done()
 
-    assert link_of(coordinator).diagnostics()["connected"] is False
+    assert len(asked) == 1
+    assert lamp.dials == 1
     assert lamp.links[0].hung_up == 1
+    assert link_of(coordinator).diagnostics()["connected"] is False
