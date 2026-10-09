@@ -1022,8 +1022,8 @@ async def test_a_frame_of_which_nothing_was_kept_is_still_the_lamp_speaking(
 
 async def test_split_notification_updates_state(hass: HomeAssistant) -> None:
     """A notification carrying a split map still updates the entities."""
-    coordinator = GlowriumCoordinator(hass, "AA:BB:CC:DD:EE:FF", "Glowrium-G8")
-    coordinator._on_notify(None, bytearray.fromhex("a306f5081846"))  # promises 3, has 2
+    coordinator, lamp, _link = await _holding_a_link(hass, "Glowrium-G8")
+    lamp.say(bytes.fromhex("a306f5081846"))  # promises 3, has 2
     assert coordinator.state[KEY_POWER] is True
     assert coordinator.state[KEY_BRIGHTNESS] == 70
 

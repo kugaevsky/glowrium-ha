@@ -321,6 +321,26 @@ async def test_a_lamp_that_never_acknowledges_keeps_a_write_waiting() -> None:
     writing.cancel()
 
 
+async def test_a_lamp_may_be_slow_to_acknowledge_a_write() -> None:
+    """``acknowledges_when`` holds every write until the event is set.
+
+    The write was put to the lamp all the same, and returns once it is let
+    go: a command that holds the link for a while, and then goes through.
+    """
+    lamp = ScriptedLamp()
+    let_go = asyncio.Event()
+    lamp.acknowledges_when(let_go)
+    link = await lamp.dial(MagicMock())
+
+    writing = asyncio.create_task(link.write_gatt_char(WRITE_UUID, b"\xa0"))
+    await asyncio.sleep(0.01)
+    assert not writing.done()
+    assert lamp.written == [(WRITE_UUID, b"\xa0")]  # it was put to the lamp
+
+    let_go.set()
+    await writing
+
+
 async def test_a_lamp_may_be_slow_to_be_found() -> None:
     """``dials_when`` holds every dial until the event is set: a slow connect."""
     lamp = ScriptedLamp()

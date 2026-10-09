@@ -140,6 +140,7 @@ class ScriptedLamp:
             | None
         ) = None
         self._never_acknowledges = False
+        self._acknowledges_when: asyncio.Event | None = None
         self._never_reads = False
         self._read_fails: Exception | None = None
         self._hang_up_released: asyncio.Event | None = None
@@ -192,6 +193,10 @@ class ScriptedLamp:
     def never_acknowledges_a_write(self) -> None:
         """Keep every write waiting: it neither returns nor fails."""
         self._never_acknowledges = True
+
+    def acknowledges_when(self, let_go: asyncio.Event) -> None:
+        """Hold every write until ``let_go`` is set: a lamp slow to acknowledge."""
+        self._acknowledges_when = let_go
 
     def never_answers_a_read(self) -> None:
         """Keep every read waiting: it neither returns nor fails."""
@@ -255,12 +260,15 @@ class ScriptedLamp:
     async def taken(self, link: LampLink, uuid: str, frame: bytes) -> None:
         """Note a write ``link`` was given, and do with it what the lamp is scripted to.
 
-        Fail it, answer it if it is the state request, or keep it waiting.
+        Fail it, answer it if it is the state request, or keep it waiting -
+        for ever, or until it is let go.
         """
         self.written.append((uuid, frame))
         self.exchanges.append(("write", uuid))
         if self._never_acknowledges:
             await asyncio.Event().wait()
+        if self._acknowledges_when is not None:
+            await self._acknowledges_when.wait()
         if self._failing is not None and self._failing[3] in (None, uuid):
             error, left, saying, of = self._failing
             if left is not None:
