@@ -114,7 +114,11 @@ be asked for its state, may never report it — the ramp control reports an
 error instead of quietly resetting the mode, and so does a switch to
 Circadian that would have to re-apply a ramp. Confirming the preset indices
 needs one btsnoop capture from the vendor app; see
-[CONTRIBUTING](CONTRIBUTING.md).
+[CONTRIBUTING](CONTRIBUTING.md). Home Assistant says as much itself: a lamp
+whose model has no entry gets a notice under *Settings → System → Repairs*
+that names the lamp and its model, says whose presets are on offer, and
+links to what would confirm them. It asks for nothing and can be ignored,
+and it goes once the model has an entry.
 
 One thing changed underneath the G8 in 0.3.0. A lamp is now asked for its
 state instead of being read, because on a Linux host a read turned out to end
@@ -335,8 +339,8 @@ What the integration cannot do, as distinct from what it gets wrong.
   cannot be set.
 - **The circadian presets are confirmed for one model, the G7.** A model
   without a profile of its own is offered the G7's presets and sends the G7's
-  indices until its own are known (see
-  [Supported devices](#supported-devices)).
+  indices until its own are known, and Home Assistant shows a notice that
+  says so (see [Supported devices](#supported-devices)).
 - **A Linux host, and the G8.** Both are described where they show, and not
   again here: what a read of the lamp costs on a Linux host is under
   [Troubleshooting](#troubleshooting), and what is and is not confirmed on a

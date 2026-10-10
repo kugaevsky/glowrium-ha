@@ -4,6 +4,23 @@ All notable changes to this project are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- **A notice for a lamp whose model has no profile**, under *Settings →
+  System → Repairs*. Such a lamp - a G8, today - is offered the G7's presets
+  under *Lighting mode* and is sent the G7's index for the one chosen, which
+  may select another preset on it or none, and the select shows the choice
+  either way. Until now only the README said so. The notice names the lamp
+  and its model, says whose presets these are, and links to what to send to
+  have them confirmed. It asks for nothing and can be ignored; one that was
+  ignored stays so through a reload and a restart. It appears once the lamp
+  has said what it is - a lamp being set up, a G7 included, sees nothing
+  before that - and goes when its model gets a profile or the lamp is
+  removed. The presets on offer and what is written for a choice are as they
+  were ([#31](https://github.com/kugaevsky/glowrium-ha/issues/31)).
+
 ## [0.4.0] - 2026-10-10
 
 The integration was taken apart inside. What holds the connection to the lamp

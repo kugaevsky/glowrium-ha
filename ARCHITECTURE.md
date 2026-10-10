@@ -54,7 +54,7 @@ stateless views over that coordinator.
 | `diagnostics.py` | The diagnostics download: what the coordinator knows, rebuilt from what it read, with nothing in it the lamp chose |
 | `entity.py` | `GlowriumEntity` base — `DeviceInfo`, availability, update fan-out |
 | `light.py` `select.py` `number.py` `switch.py` `button.py` `time.py` `sensor.py` `binary_sensor.py` | Platform entities |
-| `strings.json`, `translations/`, `icons.json` | UI text (entity and preset names, errors, the repair), and entity icons |
+| `strings.json`, `translations/`, `icons.json` | UI text (entity and preset names, errors, the repairs), and entity icons |
 | `manifest.json` | Domain, Bluetooth matcher (`local_name: Glowrium-*`), requirements |
 
 ---
@@ -1087,6 +1087,56 @@ not be.
 
 Only the **G7** (`Glowrium-C051`) is verified on hardware today.
 
+### A model without a profile
+
+`resolve_model` answers a model that has no entry and a lamp that has not yet
+said what it is with the same generic profile, so it cannot be asked which of
+the two it has before it. `has_profile(pkey)` is asked that, and of a model id
+only; the name `Glowrium` is not read for the answer.
+
+While a lamp's model id is known - read in this session, or remembered with
+the config entry - and has no profile, the coordinator keeps one **repair**
+open for the entry (`_async_review_presets_notice`). It says that the presets
+offered under *Lighting mode* are the G7's and unconfirmed for this model,
+that on it a name may select another preset or none, that the select shows
+what was chosen either way, and that a report or a capture from the vendor app
+settles it; its link goes to
+[CONTRIBUTING.md](CONTRIBUTING.md#sending-protocol-data-for-a-device). It is a
+warning with nothing to fix from its dialog, and it changes nothing about the
+select: the options, their names and what is written for a choice are what
+they are for any lamp (ADR 0014).
+
+- **Never while the model is not known.** A lamp set up for the first time has
+  no model id until its device-info string has been read, and is driven by
+  the same generic profile meanwhile. A G7 in that state is not told that its
+  presets are a guess.
+- **Raised in two places:** at start, from the model id the entry remembers -
+  the lamp may not be reached for hours - and where the device-info string is
+  published, so that a lamp set up today is told today.
+- **Left standing where the watching stops.** Home Assistant keeps "ignored"
+  with a repair and forgets it when the repair is deleted, so a notice taken
+  down at every unload would come back as new at every reload. It is raised
+  over itself at each start instead. It is not persistent: what Home
+  Assistant keeps of it across a restart is its id and whether it was
+  ignored, and that is shown to nobody until a loaded entry raises it again.
+- **Taken down in two places:** once the model id has a profile - an update
+  brought one, or the lamp names another model than was remembered - and when
+  the entry is removed (`async_remove_entry`): Home Assistant does not delete
+  an integration's repairs with its entry.
+- **A stopped coordinator raises none.** The device-info string is read last
+  on a link, and the entry can be unloaded while that read is on its way. What
+  was read is kept with the entry all the same, and the next start raises the
+  notice from it.
+- **What goes into its text is held to a shape.** Its id is built from the
+  config entry's id (`presets_issue_id`), as the other repair's is and for the
+  same reason (see [Diagnostics](#diagnostics)). The lamp's name passes
+  `identity.as_text`. The model id is printed only when it is one from end to
+  end (`identity.as_model_id`); for a lamp whose model id is not, the notice
+  has a second text that does without it - the value of a placeholder is not
+  translated, so no word could stand in its place in six languages.
+- It and the repair for a stack fault are raised and taken down apart: neither
+  is the other's to end.
+
 ### How to add a new model
 
 1. **Capture the vendor app.** Pair the device with the official
@@ -1111,7 +1161,9 @@ Only the **G7** (`Glowrium-C051`) is verified on hardware today.
 
 That's the whole change: **one `GlowriumModel` record**, and names for what is
 new in it. Everything else (transport, entities, activation, availability) is
-model-agnostic.
+model-agnostic. A lamp of that model that is already set up loses its notice
+about unconfirmed presets at its next start (see
+[above](#a-model-without-a-profile)).
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) and the README's *"Tested an unverified
 model?"* section for the full contributor workflow.
@@ -1167,9 +1219,10 @@ written in:
 That is a promise about what this module writes, not about the whole file.
 Home Assistant wraps it in a header of its own - version, installation type,
 the host's time zone, the names of the custom integrations - and adds the ids
-of the integration's open repairs. Which is why the repair for a wedged stack
-is filed under the config entry's id and not under the lamp's address
-(`_stack_issue_id`).
+of the integration's open repairs. Which is why both of its repairs - for a
+stack fault, and for presets that are unconfirmed - are filed under the config
+entry's id and not under the lamp's address (`_stack_issue_id`,
+`presets_issue_id`).
 
 The same reasoning is why CONTRIBUTING.md tells anyone posting raw frames to
 blank the coordinates first: a frame is the lamp's own bytes, and the debug

@@ -75,6 +75,14 @@ Raw protocol data from a lamp nobody here owns is worth more than a bug report,
 and it does not oblige anyone to write code — post it in an issue and it gets
 written down, whether or not anything comes of it immediately.
 
+**Sent here by the notice about unconfirmed presets?** Home Assistant shows it
+for a lamp whose model has no profile here. What settles it is the last item
+of the list below, a capture of the vendor app switching presets. Short of
+that, open an issue saying what each preset under *Lighting mode* does on your
+lamp - which of them change its light over the day, and how - and attach the
+diagnostics download (the first item). The notice goes once the model has a
+profile; until then it can be ignored.
+
 **Before you post bytes: they can say where you live.** The lamp stores the
 coordinates it was given for its circadian curve, and both a notify frame and
 a read of `facebd02` can carry them. In hex they are the ids `0a` and `0b`,
@@ -126,7 +134,9 @@ What is worth sending, roughly in order of usefulness:
    listed them.
 7. **A btsnoop capture of the vendor app** switching circadian presets. This is
    the one thing that cannot be substituted: it pins the preset indices, and
-   without it a model's entry in `models.py` would be a guess. See below.
+   without it a model's entry in `models.py` would be a guess. How to take
+   one is in [ARCHITECTURE.md](ARCHITECTURE.md#how-to-add-a-new-model),
+   steps 1 and 2.
 
 Please say which model and firmware the data came from, and whether it is one
 lamp or several — a value seen on one device is a datapoint, not a protocol

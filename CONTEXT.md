@@ -47,6 +47,14 @@ read once per session and last on a link
 What differs per model - the marketing name and the lighting-mode presets -
 looked up by the `pkey` of the device-info string; an unknown `pkey` gets the
 reference presets under the family name (`models.py`, `GlowriumModel`).
+Whether a model id has a profile of its own is asked apart (`has_profile`):
+the generic profile is also what a lamp not yet read is driven by.
+
+**Presets notice**:
+The repair that tells the owner of a lamp whose model id is known and has no
+profile that the presets on offer are the reference ones, unconfirmed for
+that model; one for a config entry, and left standing through an unload so
+that "ignored" is kept (`coordinator._async_review_presets_notice`, ADR 0014).
 
 **Lighting mode**:
 One circadian preset of the lamp, named by a key (`sunrise_sync`) that maps to
