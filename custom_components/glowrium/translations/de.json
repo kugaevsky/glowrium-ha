@@ -101,6 +101,9 @@
     "lighting_mode_not_read": {
       "message": "Änderung noch nicht möglich: {name} hat seinen aktuellen Lichtmodus noch nicht gemeldet. Er erscheint, sobald die Lampe verbunden ist."
     },
+    "lighting_mode_unusable": {
+      "message": "Änderung nicht möglich: {name} hat einen Lichtmodus gemeldet, den die Integration nicht verwenden kann, und die Änderung wird zusammen mit dem Modus geschrieben. Warten ändert daran nichts. Bitte melde das zusammen mit dem Diagnose-Download von der Seite der Integration."
+    },
     "link_not_released": {
       "message": "Der Befehl konnte nicht an {name} gesendet werden: Die vorherige Bluetooth-Verbindung zum Gerät ließ sich nicht schließen, und darüber wird keine neue geöffnet. Falls sich das nicht von selbst löst, Home Assistant neu starten; tritt es danach wieder auf, hält der Bluetooth-Stack des Hosts die Verbindung fest: den Bluetooth-Adapter des Hosts aus- und wieder einschalten."
     },
@@ -109,6 +112,9 @@
     },
     "schedule_not_read": {
       "message": "Änderung noch nicht möglich: {name} hat seinen aktuellen Zeitplan noch nicht gemeldet. Er erscheint, sobald die Lampe verbunden ist."
+    },
+    "schedule_unusable": {
+      "message": "Änderung nicht möglich: {name} hat einen Zeitplan gemeldet, den die Integration nicht verwenden kann, und ein einzelnes Feld wird geändert, indem der ganze Zeitplan geschrieben wird. Warten ändert daran nichts. Bitte melde das zusammen mit dem Diagnose-Download von der Seite der Integration."
     }
   },
   "issues": {

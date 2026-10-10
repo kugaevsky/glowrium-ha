@@ -101,6 +101,9 @@
     "lighting_mode_not_read": {
       "message": "Cannot change this yet: {name} has not reported its current lighting mode. It should populate once the lamp is connected."
     },
+    "lighting_mode_unusable": {
+      "message": "Cannot change this: {name} reported a lighting mode this integration cannot use, and the change is written together with the mode. It will not clear by waiting. Please report it, with the diagnostics download from the integration's page."
+    },
     "link_not_released": {
       "message": "Cannot send the command to {name}: the previous Bluetooth connection to it could not be closed, and no new one is opened on top of it. If this does not clear by itself, restart Home Assistant; if it comes back after that, the host's Bluetooth stack is holding on to the connection: power-cycle the Bluetooth adapter on the host."
     },
@@ -109,6 +112,9 @@
     },
     "schedule_not_read": {
       "message": "Cannot change this yet: {name} has not reported its current schedule. It should populate once the lamp is connected."
+    },
+    "schedule_unusable": {
+      "message": "Cannot change this: {name} reported a schedule this integration cannot use, and one field is changed by writing the whole schedule. It will not clear by waiting. Please report it, with the diagnostics download from the integration's page."
     }
   },
   "issues": {

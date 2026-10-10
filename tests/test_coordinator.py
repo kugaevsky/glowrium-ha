@@ -1064,6 +1064,181 @@ async def test_ramp_refuses_when_lighting_mode_unread(hass: HomeAssistant) -> No
     assert lamp.written == []
 
 
+# An array that holds a null, as the bytes of it: the encoder these tests
+# write frames with has no null to write, and the lamp's frames may hold one.
+_A_NULL_INSIDE = object()
+
+
+def _reporting(key: int, value: Any) -> bytes:
+    """Return the frame in which the lamp reports ``value`` under ``key``."""
+    if value is _A_NULL_INSIDE:
+        return b"\xa1" + cbor.encode(key) + bytes.fromhex("81f6")
+    return cbor.encode({key: value})
+
+
+_NO_RAMP = [
+    pytest.param(b"\xff" * 5, id="five bytes"),
+    pytest.param(bytes.fromhex("ffff"), id="eighteen hours"),
+    pytest.param("0708", id="text"),
+    pytest.param(_A_NULL_INSIDE, id="an array holding null"),
+]
+
+
+@pytest.mark.parametrize("no_ramp", _NO_RAMP)
+async def test_a_lighting_mode_is_not_written_with_a_ramp_that_cannot_be_used(
+    hass: HomeAssistant, no_ramp: Any
+) -> None:
+    """The command carries a ramp, and never one the lamp could not have meant.
+
+    Choosing a mode rewrites the ramp on the lamp, so the command sends one:
+    the ramp remembered, else the one reported, else the default. What was
+    reported went in as it came - five bytes of ``ff`` were written back
+    to the lamp - and an array holding a null could not be written at all:
+    the command ended in a TypeError. The frame is the one captured from
+    the vendor app, with the default hour.
+    """
+    coordinator, lamp = _at_a_lamp(hass)
+    coordinator._ingest(_reporting(KEY_RAMP, no_ramp))
+
+    await coordinator.async_set_lighting_mode(5)
+
+    assert lamp.written == [
+        (WRITE_UUID, bytes.fromhex("a4182b05182c4202d0182f420e10183242001e"))
+    ]
+
+
+@pytest.mark.parametrize("no_ramp", _NO_RAMP)
+async def test_a_ramp_that_cannot_be_used_is_not_the_one_remembered(
+    hass: HomeAssistant, no_ramp: Any
+) -> None:
+    """A ramp is remembered from a report only when it is a ramp.
+
+    The one remembered is re-applied after every switch to Circadian, and
+    goes into every choice of a lighting mode. Reported first, what is no
+    ramp is not remembered: the switch to Circadian has nothing to
+    re-apply. Reported after a ramp that is one, it does not take its place.
+    """
+    coordinator, lamp = _at_a_lamp(hass)
+    coordinator._ingest(_reporting(KEY_RAMP, no_ramp))
+
+    await coordinator.async_set_operating_mode("circadian")
+
+    assert [frame for _uuid, frame in lamp.written] == [
+        cbor.encode({KEY_SCHEDULE: False}),
+        cbor.encode({KEY_CIRCADIAN: True}),
+    ]
+
+    half_an_hour, lamp_too = _at_a_lamp(hass)
+    half_an_hour._ingest(cbor.encode({KEY_RAMP: bytes.fromhex("0708")}))
+    half_an_hour._ingest(_reporting(KEY_RAMP, no_ramp))
+
+    await half_an_hour.async_set_lighting_mode(5)
+
+    assert lamp_too.written == [
+        (WRITE_UUID, bytes.fromhex("a4182b05182c4202d0182f420708183242001e"))
+    ]
+
+
+@pytest.mark.parametrize(
+    "no_mode",
+    [
+        pytest.param("sun_sync", id="text"),
+        pytest.param(True, id="a flag"),
+        pytest.param(256, id="more than a byte"),
+        pytest.param(_A_NULL_INSIDE, id="an array holding null"),
+    ],
+)
+async def test_the_ramp_is_refused_while_the_lighting_mode_cannot_be_used(
+    hass: HomeAssistant, no_mode: Any
+) -> None:
+    """Setting the ramp rewrites the lighting mode, and has no mode to write.
+
+    It is refused as it is while no mode has been reported - and in other
+    words, since waiting will not bring one. What was reported used to be
+    written back: after a mode that was text, setting the ramp wrote the
+    text. So is the ramp that a switch to Circadian re-applies: the switch
+    is made, and then says what it could not do.
+    """
+    coordinator, lamp = _at_a_lamp(hass)
+    coordinator._ingest(cbor.encode({KEY_RAMP: bytes.fromhex("0708")}))
+    coordinator._ingest(_reporting(KEY_LIGHTING_MODE, no_mode))
+
+    with pytest.raises(HomeAssistantError) as refused:
+        await coordinator.async_set_ramp(30)
+
+    assert refused.value.translation_key == "lighting_mode_unusable"
+    assert lamp.written == []
+
+    with pytest.raises(HomeAssistantError) as refused:
+        await coordinator.async_set_operating_mode("circadian")
+
+    assert refused.value.translation_key == "lighting_mode_unusable"
+    assert [frame for _uuid, frame in lamp.written] == [
+        cbor.encode({KEY_SCHEDULE: False}),
+        cbor.encode({KEY_CIRCADIAN: True}),
+    ]
+
+
+@pytest.mark.parametrize(
+    "no_slot",
+    [
+        pytest.param(bytes.fromhex("0100000006001200640000") + b"\x00", id="twelve"),
+        pytest.param(b"\xff" * 40, id="forty bytes"),
+        pytest.param(bytes.fromhex("0100000019001200640000"), id="25 o'clock"),
+        pytest.param(_A_NULL_INSIDE, id="an array holding null"),
+    ],
+)
+async def test_a_schedule_field_is_refused_while_the_slot_cannot_be_used(
+    hass: HomeAssistant, no_slot: Any
+) -> None:
+    """One field is changed by writing the whole slot, and there is none to write.
+
+    After a schedule of forty bytes, changing its start wrote forty bytes;
+    a slot of twelve was edited in place and went back with the twelfth.
+    Each change is refused, as it is while no slot has been reported, and
+    says that what the lamp reported cannot be used.
+    """
+    coordinator, lamp = _at_a_lamp(hass)
+    coordinator._ingest(_reporting(KEY_TIMER, no_slot))
+
+    for change in (
+        coordinator.async_set_timer_start(7, 30),
+        coordinator.async_set_timer_end(19, 0),
+        coordinator.async_set_timer_brightness(80),
+        coordinator.async_set_timer_gradual(15),
+    ):
+        with pytest.raises(HomeAssistantError) as refused:
+            await change
+        assert refused.value.translation_key == "schedule_unusable"
+    assert lamp.written == []
+
+
+@pytest.mark.parametrize(
+    "no_slot",
+    [
+        pytest.param(b"\xff" * 5, id="five bytes of ff"),
+        pytest.param(bytes.fromhex("0200000e10"), id="neither on nor off"),
+        pytest.param(b"\x01", id="one byte"),
+        pytest.param(_A_NULL_INSIDE, id="an array holding null"),
+    ],
+)
+async def test_the_dst_switch_writes_the_hour_where_the_slot_cannot_be_used(
+    hass: HomeAssistant, no_slot: Any
+) -> None:
+    """The offset the lamp reported is carried into the write only when it is one.
+
+    After five bytes of ``ff`` the switch wrote ``01 ff ff ff ff``: the flag
+    it was asked for, and four of those bytes for an offset. The frame is
+    the captured one, with the hour.
+    """
+    coordinator, lamp = _at_a_lamp(hass)
+    coordinator._ingest(_reporting(KEY_DST, no_slot))
+
+    await coordinator.async_set_dst(True)
+
+    assert lamp.written == [(WRITE_UUID, bytes.fromhex("a11835450100000e10"))]
+
+
 @pytest.mark.parametrize("why", ["refused before it was built", "failed on the wire"])
 async def test_a_ramp_that_was_refused_is_not_remembered(
     hass: HomeAssistant, monkeypatch: pytest.MonkeyPatch, why: str

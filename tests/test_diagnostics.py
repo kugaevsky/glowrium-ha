@@ -21,6 +21,7 @@ from custom_components.glowrium import (
     coordinator as coordinator_module,
     diagnostics,
     link as link_module,
+    protocol,
 )
 from custom_components.glowrium.const import (
     DOMAIN,
@@ -274,7 +275,8 @@ def test_a_clock_with_no_record_of_when_it_came_is_not_guessed_at() -> None:
     No path of the integration makes one: the mirror dates every clock it
     takes or echoes. The reader is held to it all the same, on its own.
     """
-    assert diagnostics._clock(CLOCK, None) == {
+    shown = datetime(2026, 10, 5, 8, 15, 30)  # what CLOCK shows
+    assert diagnostics._clock(shown, None) == {
         "ahead_of_this_host_by_seconds": None,
         "as_of_seconds_ago": None,
     }
@@ -378,7 +380,6 @@ async def test_the_fields_of_the_device_info_string_are_only_counted(
     [
         (KEY_POWER, UNKNOWN_TEXT),
         (KEY_POWER, 1),
-        (KEY_BRIGHTNESS, LATITUDE),
         (KEY_BRIGHTNESS, 101),
         (KEY_BRIGHTNESS, True),
         (KEY_LIGHTING_MODE, 0xDDEEFF),
@@ -424,6 +425,106 @@ async def test_a_known_property_is_read_out_only_when_it_is_what_its_name_means(
 
     assert data["state"][NAMES[key]] == "not as expected"
     _nothing_private_in(data, UNKNOWN_TEXT, CURVE.hex(), "ddeeff", "eeff")
+
+
+async def test_a_level_that_is_not_whole_is_read_out_as_a_whole_one(
+    hass: HomeAssistant,
+) -> None:
+    """A brightness is a level, whole or not, in the file as on the device page.
+
+    The file used to call a level that was not a whole number "not as
+    expected" while the light showed it: the same value, read two ways. It
+    is read one way now, and written out as the whole level it is nearest
+    to - the file repeats no float of the lamp's choosing, and a number
+    with that many digits under this id may be anything.
+    """
+    entry = await _a_lamp_that_has_reported(hass)
+    entry.runtime_data._mirror.echo({KEY_BRIGHTNESS: LATITUDE})
+
+    data = await _downloaded(hass, entry)
+
+    assert data["state"][NAMES[KEY_BRIGHTNESS]] == 12
+    _nothing_private_in(data)
+
+
+# Kinds of value a lamp could put under an id, some of them what one id or
+# another means.
+_KINDS: tuple[Any, ...] = (
+    True,
+    False,
+    0,
+    1,
+    70,
+    100,
+    101,
+    255,
+    256,
+    -1,
+    12.5,
+    70.0,
+    float("inf"),
+    float("nan"),
+    None,
+    "",
+    "on",
+    b"",
+    b"\x01",
+    bytes.fromhex("0708"),
+    bytes.fromhex("ffff"),
+    bytes.fromhex("0100000e10"),
+    bytes.fromhex("0200000e10"),
+    CLOCK,
+    CLOCK + b"\x00",
+    bytes.fromhex("07ea0d05080f1e"),
+    SCHEDULE,
+    SCHEDULE + b"\x00",
+    b"\xff" * 11,
+    [],
+    [None],
+    {},
+    {1: None},
+)
+_READERS = {
+    KEY_TIME: protocol.device_time,
+    KEY_POWER: protocol.power,
+    KEY_BRIGHTNESS: protocol.brightness_percent,
+    KEY_CIRCADIAN: protocol.circadian_mode,
+    KEY_SCHEDULE: protocol.schedule_mode,
+    KEY_TIMER: protocol.schedule,
+    KEY_ACTIVATED: protocol.activated,
+    KEY_INDICATOR: protocol.indicator,
+    KEY_LIGHTING_MODE: protocol.lighting_mode,
+    KEY_RAMP: protocol.ramp_seconds,
+    KEY_DST: protocol.daylight_saving,
+}
+
+
+@pytest.mark.parametrize("key", NAMES, ids=lambda key: NAMES[key])
+async def test_the_file_calls_unusable_what_the_entities_are_shown_as_unusable(
+    hass: HomeAssistant, key: int
+) -> None:
+    """What a value is, is judged in one place for the file and the device page.
+
+    The file had strict readings of its own, and the entities looser ones:
+    the same report read as a ramp of 1092 minutes on the page and as "not
+    as expected" in the file. Whatever stands under an id, the file says
+    "not as expected" exactly where the reader the entities go through says
+    it cannot be used.
+    """
+    assert set(_READERS) == set(NAMES)
+    entry = await _a_lamp_that_has_reported(hass)
+    mirror = entry.runtime_data._mirror
+
+    for value in _KINDS:
+        with patch(
+            "custom_components.glowrium.coordinator.dt_util.now", return_value=HEARD_AT
+        ):
+            mirror.echo({key: value})
+        data = await _downloaded(hass, entry)
+
+        unusable = _READERS[key](mirror) is protocol.UNUSABLE
+        said = data["state"][NAMES[key]]
+        assert (said == "not as expected") is unusable, repr(value)
 
 
 @pytest.mark.parametrize(

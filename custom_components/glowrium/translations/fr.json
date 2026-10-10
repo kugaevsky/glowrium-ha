@@ -101,6 +101,9 @@
     "lighting_mode_not_read": {
       "message": "Modification impossible pour l'instant : {name} n'a pas encore signalé son mode d'éclairage actuel. Il apparaîtra une fois la lampe connectée."
     },
+    "lighting_mode_unusable": {
+      "message": "Modification impossible : {name} a signalé un mode d'éclairage que l'intégration ne peut pas utiliser, et la modification s'écrit avec le mode. Attendre n'y changera rien. Merci de le signaler, avec le téléchargement de diagnostic depuis la page de l'intégration."
+    },
     "link_not_released": {
       "message": "Impossible d'envoyer la commande à {name} : la connexion Bluetooth précédente avec l'appareil n'a pas pu être fermée, et aucune nouvelle n'est ouverte par-dessus. Si cela ne se résout pas tout seul, redémarrez Home Assistant ; si cela revient ensuite, la pile Bluetooth de l'hôte retient la connexion : éteignez puis rallumez l'adaptateur Bluetooth de l'hôte."
     },
@@ -109,6 +112,9 @@
     },
     "schedule_not_read": {
       "message": "Modification impossible pour l'instant : {name} n'a pas encore signalé sa programmation actuelle. Elle apparaîtra une fois la lampe connectée."
+    },
+    "schedule_unusable": {
+      "message": "Modification impossible : {name} a signalé une programmation que l'intégration ne peut pas utiliser, et un champ se modifie en écrivant la programmation entière. Attendre n'y changera rien. Merci de le signaler, avec le téléchargement de diagnostic depuis la page de l'intégration."
     }
   },
   "issues": {

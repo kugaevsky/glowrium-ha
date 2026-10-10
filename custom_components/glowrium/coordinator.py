@@ -8,7 +8,7 @@ from datetime import datetime, time
 from enum import Enum, auto
 import logging
 from time import monotonic
-from typing import Any
+from typing import Any, Final, NamedTuple
 
 from bleak.backends.device import BLEDevice
 from homeassistant.components import bluetooth
@@ -64,7 +64,7 @@ from .link import (
 )
 from .mirror import Mirror
 from .models import GlowriumModel, has_profile, resolve_model
-from .protocol import UNUSABLE, Unusable
+from .protocol import UNUSABLE, Unusable, known
 
 _LOGGER = logging.getLogger(__name__)
 # Where the repair for a Bluetooth stack that will not hang up sends the
@@ -130,6 +130,24 @@ def _parse_device_info(raw: bytes) -> dict[str, str]:
         if sep and key.strip():
             info[key.strip()] = value.strip()
     return info
+
+
+class _Refusal(NamedTuple):
+    """The two messages for a command that has nothing to build on.
+
+    A key for each setting and each reason, not one message with the
+    setting's name put in: the name of a setting is a noun to translate,
+    not a value.
+    """
+
+    # The lamp has not reported the setting yet: it will, and waiting helps.
+    not_read: str
+    # It has, and what it reported cannot be used: waiting will not.
+    unusable: str
+
+
+_NO_LIGHTING_MODE: Final = _Refusal("lighting_mode_not_read", "lighting_mode_unusable")
+_NO_SCHEDULE: Final = _Refusal("schedule_not_read", "schedule_unusable")
 
 
 def presets_issue_id(entry_id: str) -> str:
@@ -798,25 +816,28 @@ class GlowriumCoordinator:
             self.hass, self.address, connectable=True
         )
 
-    def _require_read(self, value: Any, translation_key: str) -> Any:
-        """Return ``value``, or raise if the device has not reported it yet.
+    def _require[T](self, reading: T | Unusable | None, refusal: _Refusal) -> T:
+        """Return ``reading`` when it is a value, or refuse what would build on it.
 
         The schedule slot and the lighting-mode frame are read-modify-write: one
         write carries several fields at once. Substituting a default to change a
         single field silently overwrites the rest with values the user never
         chose, so refuse instead and say why.
 
-        ``translation_key`` names the field in the user's own language. It is a
-        key per field rather than one message with the field name substituted in,
-        because a field name is a translatable noun, not a value.
+        There are two whys, and each has words of its own (``_Refusal``). A
+        setting the lamp has not reported yet will come, and the user is told
+        to wait. One it has reported as something that cannot be used will
+        not, and writing that back is what this refuses: the user is told so.
         """
-        if value is None or value == b"":
+        if reading is None or reading is UNUSABLE:
             raise HomeAssistantError(
                 translation_domain=DOMAIN,
-                translation_key=translation_key,
+                translation_key=(
+                    refusal.not_read if reading is None else refusal.unusable
+                ),
                 translation_placeholders={"name": self.name},
             )
-        return value
+        return reading
 
     async def _async_read_device_info(self, turn: Turn) -> None:
         """Read the device-info string - once, and after everything else.
@@ -1004,13 +1025,12 @@ class GlowriumCoordinator:
         if not carried:
             return carried
         # Seed the remembered ramp from the device the first time we see it, so
-        # it survives an HA restart (the device persists its own ramp). Guard on
-        # truthiness, not "is not None": an empty ramp would otherwise latch and
-        # block re-seeding forever, as protocol.ramp_minutes already assumes.
+        # it survives an HA restart (the device persists its own ramp). Only a
+        # ramp that is one: what is remembered is written back with every
+        # lighting mode and after every switch to Circadian, and an empty one,
+        # or five bytes, would latch and keep a later ramp from being taken.
         if self._desired_ramp is None:
-            ramp = self.state.get(KEY_RAMP)
-            if ramp and isinstance(ramp, (bytes, bytearray)):
-                self._desired_ramp = bytes(ramp)
+            self._desired_ramp = known(protocol.reported_ramp(self.state))
         self._async_notify_listeners()
         return carried
 
@@ -1269,18 +1289,21 @@ class GlowriumCoordinator:
         mode_value = (
             mode
             if mode is not None
-            else self._require_read(
-                self.state.get(KEY_LIGHTING_MODE), "lighting_mode_not_read"
-            )
+            else self._require(self.lighting_mode, _NO_LIGHTING_MODE)
         )
         # Ramp keeps its default. Setting a mode rewrites ramp on the device
         # regardless, so there is no "leave it alone" option here and falling
         # back is deliberate. The mode above is different: defaulting it there
         # silently *changes* a setting the caller never asked to touch.
+        #
+        # What the lamp reported goes back only when it is a ramp: whatever
+        # stood under the id used to, five bytes of it or a text.
         ramp_value = (
             ramp
             if ramp is not None
-            else self._desired_ramp or self.state.get(KEY_RAMP) or RAMP_DEFAULT
+            else self._desired_ramp
+            or known(protocol.reported_ramp(self.state))
+            or RAMP_DEFAULT
         )
         return {
             KEY_LIGHTING_MODE: mode_value,
@@ -1362,28 +1385,28 @@ class GlowriumCoordinator:
 
     async def async_set_timer_start(self, hour: int, minute: int) -> None:
         """Set the schedule start time."""
-        slot = self._require_read(
-            protocol.with_schedule_start(self.state, hour, minute), "schedule_not_read"
+        slot = self._require(
+            protocol.with_schedule_start(self.state, hour, minute), _NO_SCHEDULE
         )
         await self._async_write({KEY_TIMER: slot})
 
     async def async_set_timer_end(self, hour: int, minute: int) -> None:
         """Set the schedule end time."""
-        slot = self._require_read(
-            protocol.with_schedule_end(self.state, hour, minute), "schedule_not_read"
+        slot = self._require(
+            protocol.with_schedule_end(self.state, hour, minute), _NO_SCHEDULE
         )
         await self._async_write({KEY_TIMER: slot})
 
     async def async_set_timer_brightness(self, value: int) -> None:
         """Set the schedule brightness (0..100)."""
-        slot = self._require_read(
-            protocol.with_schedule_brightness(self.state, value), "schedule_not_read"
+        slot = self._require(
+            protocol.with_schedule_brightness(self.state, value), _NO_SCHEDULE
         )
         await self._async_write({KEY_TIMER: slot})
 
     async def async_set_timer_gradual(self, minutes: int) -> None:
         """Set the schedule gradual on/off fade duration in minutes."""
-        slot = self._require_read(
-            protocol.with_schedule_gradual(self.state, minutes), "schedule_not_read"
+        slot = self._require(
+            protocol.with_schedule_gradual(self.state, minutes), _NO_SCHEDULE
         )
         await self._async_write({KEY_TIMER: slot})

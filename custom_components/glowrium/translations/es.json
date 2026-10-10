@@ -101,6 +101,9 @@
     "lighting_mode_not_read": {
       "message": "Aún no se puede cambiar: {name} no ha informado de su modo de iluminación actual. Aparecerá cuando la lámpara se conecte."
     },
+    "lighting_mode_unusable": {
+      "message": "No se puede cambiar: {name} ha informado de un modo de iluminación que la integración no puede usar, y el cambio se escribe junto con el modo. Esperar no lo resolverá. Por favor, infórmalo adjuntando la descarga de diagnósticos de la página de la integración."
+    },
     "link_not_released": {
       "message": "No se pudo enviar el comando a {name}: la conexión Bluetooth anterior con el dispositivo no se pudo cerrar y no se abre otra encima de ella. Si no se resuelve por sí solo, reinicia Home Assistant; si vuelve a ocurrir después, la pila Bluetooth del host está reteniendo la conexión: apaga y vuelve a encender el adaptador Bluetooth del host."
     },
@@ -109,6 +112,9 @@
     },
     "schedule_not_read": {
       "message": "Aún no se puede cambiar: {name} no ha informado de su programación actual. Aparecerá cuando la lámpara se conecte."
+    },
+    "schedule_unusable": {
+      "message": "No se puede cambiar: {name} ha informado de una programación que la integración no puede usar, y un campo se cambia escribiendo la programación entera. Esperar no lo resolverá. Por favor, infórmalo adjuntando la descarga de diagnósticos de la página de la integración."
     }
   },
   "issues": {
