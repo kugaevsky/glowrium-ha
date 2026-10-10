@@ -9,9 +9,9 @@ from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 
 from . import GlowriumConfigEntry
-from .const import KEY_POWER
 from .coordinator import GlowriumCoordinator
 from .entity import GlowriumEntity
+from .protocol import known
 
 # Every command goes through the coordinator's one lock, so there is nothing
 # left for Home Assistant to queue here, and no entity is polled.
@@ -48,10 +48,10 @@ class GlowriumLight(GlowriumEntity, LightEntity):
         unread lamp used to claim it was off while it was physically on, and
         automations, scenes and ``light.toggle`` all reasoned from that. Return
         None so the state reads "unknown" instead, matching how the indicator
-        switch already handles it.
+        switch already handles it. And None for what is no flag at all: text
+        under the power id is true as any object is, and read as "on".
         """
-        value = self._coordinator.state.get(KEY_POWER)
-        return None if value is None else bool(value)
+        return known(self._coordinator.power)
 
     @property
     def brightness(self) -> int | None:
@@ -61,7 +61,7 @@ class GlowriumLight(GlowriumEntity, LightEntity):
         ``inf`` cannot be rounded, and 150 would come out as a brightness
         Home Assistant has no such thing as.
         """
-        level = self._coordinator.brightness_percent
+        level = known(self._coordinator.brightness_percent)
         return None if level is None else round(level * 255 / 100)
 
     async def async_turn_on(self, **kwargs: Any) -> None:

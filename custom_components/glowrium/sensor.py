@@ -2,15 +2,17 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
+
 from homeassistant.components.sensor import SensorEntity
 from homeassistant.const import EntityCategory
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 
 from . import GlowriumConfigEntry
-from .const import KEY_LATITUDE, KEY_LONGITUDE
 from .coordinator import GlowriumCoordinator
 from .entity import GlowriumEntity
+from .protocol import Unusable, known
 
 # Nothing here is polled and nothing takes a command: state is pushed by the
 # coordinator.
@@ -26,8 +28,12 @@ async def async_setup_entry(
     coordinator = entry.runtime_data
     async_add_entities(
         [
-            GlowriumCoordinateSensor(coordinator, KEY_LATITUDE, "latitude"),
-            GlowriumCoordinateSensor(coordinator, KEY_LONGITUDE, "longitude"),
+            GlowriumCoordinateSensor(
+                coordinator, "latitude", lambda: coordinator.latitude
+            ),
+            GlowriumCoordinateSensor(
+                coordinator, "longitude", lambda: coordinator.longitude
+            ),
         ]
     )
 
@@ -46,16 +52,19 @@ class GlowriumCoordinateSensor(GlowriumEntity, SensorEntity):
     _attr_entity_registry_enabled_default = False
 
     def __init__(
-        self, coordinator: GlowriumCoordinator, key: int, translation_key: str
+        self,
+        coordinator: GlowriumCoordinator,
+        translation_key: str,
+        read: Callable[[], float | Unusable | None],
     ) -> None:
-        """Initialize a coordinate sensor."""
+        """Initialize a coordinate sensor on the coordinate that ``read`` gives."""
         super().__init__(coordinator)
-        self._key = key
+        self._read = read
         self._attr_translation_key = translation_key
         self._attr_unique_id = f"{coordinator.address}_{translation_key}"
 
     @property
     def native_value(self) -> float | None:
         """Return the stored coordinate in degrees."""
-        value = self._coordinator.state.get(self._key)
-        return round(value, 5) if isinstance(value, float) else None
+        degrees = known(self._read())
+        return None if degrees is None else round(degrees, 5)

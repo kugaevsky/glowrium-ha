@@ -1757,6 +1757,40 @@ async def test_the_bring_up_is_attempted_once_per_session(
     assert lamp.written == []
 
 
+@pytest.mark.parametrize("reads_as_yes", [1, "yes", b"\x01", [True]])
+async def test_only_a_flag_that_says_yes_settles_the_bring_up(
+    hass: HomeAssistant, reads_as_yes: Any
+) -> None:
+    """A lamp is taken for brought up on the flag, not on what reads as true.
+
+    The question is settled once a session. A number or a text under the
+    id settled it as a yes would, and when the lamp then said no - a
+    factory reset in between - the bring-up never came.
+    """
+    coordinator, lamp, link = await _holding_a_link(hass)
+    coordinator._mirror.echo({KEY_ACTIVATED: reads_as_yes})
+    await coordinator._async_activate_if_needed(turn_over(coordinator, link))
+    assert lamp.written == []  # nothing there says no: no bring-up
+
+    coordinator._mirror.echo({KEY_ACTIVATED: False})
+    await coordinator._async_activate_if_needed(turn_over(coordinator, link))
+
+    assert len(lamp.written) == 3  # the question was still open
+
+
+@pytest.mark.parametrize("reads_as_no", [0, "", b"", b"\x00", [], None])
+async def test_only_a_flag_that_says_no_starts_the_bring_up(
+    hass: HomeAssistant, reads_as_no: Any
+) -> None:
+    """The bring-up rewrites the clock and the activation: only on a plain no."""
+    coordinator, lamp, link = await _holding_a_link(hass)
+    coordinator._mirror.echo({KEY_ACTIVATED: reads_as_no})
+
+    await coordinator._async_activate_if_needed(turn_over(coordinator, link))
+
+    assert lamp.written == []
+
+
 async def test_a_failed_reconnect_does_not_wedge_reconnection(
     hass: HomeAssistant,
 ) -> None:
@@ -2920,6 +2954,35 @@ async def test_a_clock_that_is_right_or_unread_is_left_alone(
         coordinator._mirror.echo({KEY_TIME: protocol.encode_device_time(dt_util.now())})
     else:
         assert KEY_TIME not in coordinator.state
+
+    await coordinator._async_sync_clock_if_needed(turn_over(coordinator, link))
+
+    assert lamp.written == []
+
+
+@pytest.mark.parametrize(
+    "kept",
+    [
+        pytest.param(bytes.fromhex("07ea0712151823") + b"\x00", id="a byte more"),
+        pytest.param(bytes.fromhex("07ea0712"), id="cut short"),
+        pytest.param("2026-07-18T21:24:35", id="as text"),
+        pytest.param(1784409875, id="as a number"),
+        pytest.param([None], id="an array holding null"),
+    ],
+)
+async def test_a_clock_kept_in_some_other_shape_is_not_written_over(
+    hass: HomeAssistant, kept: Any
+) -> None:
+    """Seven bytes written over a clock kept another way would be a guess.
+
+    A clock of seven bytes that shows no date is a clock that is wrong, and
+    is set right. Anything else under the id is not a clock this
+    integration knows how a lamp keeps: it is left alone, as a clock never
+    reported is. One of more than seven bytes used to be read by its first
+    seven, found months out, and written over.
+    """
+    coordinator, lamp, link = await _holding_a_link(hass)
+    coordinator._mirror.echo({KEY_TIME: kept})
 
     await coordinator._async_sync_clock_if_needed(turn_over(coordinator, link))
 

@@ -10,6 +10,7 @@ from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 from . import GlowriumConfigEntry
 from .coordinator import GlowriumCoordinator
 from .entity import GlowriumEntity
+from .protocol import known
 
 # Nothing here is polled and nothing takes a command: state is pushed by the
 # coordinator.
@@ -43,4 +44,4 @@ class GlowriumActivatedSensor(GlowriumEntity, BinarySensorEntity):
     @property
     def is_on(self) -> bool | None:
         """Return True when the device is activated/paired."""
-        return self._coordinator.activated
+        return known(self._coordinator.activated)

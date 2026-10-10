@@ -49,8 +49,9 @@ class GlowriumTimerStart(_GlowriumTimerTime):
     @property
     def native_value(self) -> datetime.time | None:
         """Return the schedule start time."""
-        value = self._coordinator.schedule_start
-        return value if value is not None else self._restored_time()
+        return self._or_remembered(
+            self._coordinator.schedule_start, self._restored_time
+        )
 
     async def async_set_value(self, value: datetime.time) -> None:
         """Set the schedule start time."""
@@ -70,8 +71,7 @@ class GlowriumTimerEnd(_GlowriumTimerTime):
     @property
     def native_value(self) -> datetime.time | None:
         """Return the schedule end time."""
-        value = self._coordinator.schedule_end
-        return value if value is not None else self._restored_time()
+        return self._or_remembered(self._coordinator.schedule_end, self._restored_time)
 
     async def async_set_value(self, value: datetime.time) -> None:
         """Set the schedule end time."""

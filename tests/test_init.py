@@ -1,10 +1,12 @@
 """Tests for setting up and tearing down the Glowrium config entry."""
 
+import ast
 import asyncio
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator, Mapping
 import contextlib
 import importlib
 import logging
+from pathlib import Path
 import re
 from typing import Any
 from unittest.mock import AsyncMock, PropertyMock, patch
@@ -41,7 +43,7 @@ from pytest_homeassistant_custom_component.common import (
     mock_restore_cache,
 )
 
-from custom_components.glowrium import _UNCLOSED, PLATFORMS, cbor, models
+from custom_components.glowrium import _UNCLOSED, PLATFORMS, cbor, models, protocol
 from custom_components.glowrium.const import (
     DOMAIN,
     INFO_UUID,
@@ -1296,6 +1298,52 @@ _ODD: tuple[Any, ...] = (
     {},
     {1: 2},
 )
+# And null, alone and held by an array or a map. As the bytes of each: the
+# encoder these tests write frames with has no null to write.
+_NULLS: tuple[bytes, ...] = (
+    bytes.fromhex("f6"),
+    bytes.fromhex("81f6"),
+    bytes.fromhex("8181f6"),
+    bytes.fromhex("a101f6"),
+)
+# What each entity shows a reading of. The lighting mode is not among them:
+# an index that can be used is still unknown where the model has no such preset.
+_SHOWS: dict[str, Callable[[Mapping[int, Any]], Any]] = {
+    "light.glowrium_g7_1234": protocol.power,
+    "binary_sensor.glowrium_g7_1234_activated": protocol.activated,
+    "switch.glowrium_g7_1234_indicator_light": protocol.indicator,
+    "switch.glowrium_g7_1234_daylight_saving_time": protocol.dst_enabled,
+    "select.glowrium_g7_1234_operating_mode": protocol.operating_mode,
+    "number.glowrium_g7_1234_ramp_time": protocol.ramp_minutes,
+    "number.glowrium_g7_1234_schedule_brightness": protocol.schedule_brightness,
+    "number.glowrium_g7_1234_schedule_gradual": protocol.schedule_gradual_minutes,
+    "time.glowrium_g7_1234_schedule_start": protocol.schedule_start,
+    "time.glowrium_g7_1234_schedule_end": protocol.schedule_end,
+    "sensor.glowrium_aa_bb_cc_dd_ee_ff_latitude": protocol.latitude,
+    "sensor.glowrium_aa_bb_cc_dd_ee_ff_longitude": protocol.longitude,
+}
+
+
+def _shown_otherwise(hass: HomeAssistant, reported: Mapping[int, Any]) -> list[str]:
+    """Name each entity that shows a value for none, or none for a value.
+
+    An entity of another mode than the lamp is in is unavailable, and says
+    nothing either way.
+    """
+    wrong = []
+    for entity, read in _SHOWS.items():
+        shown = hass.states.get(entity).state
+        reading = read(reported)
+        is_a_value = reading is not None and reading is not protocol.UNUSABLE
+        if shown != "unavailable" and is_a_value == (shown == "unknown"):
+            wrong.append(f"{entity} shows {shown!r} for {reading!r}")
+    select = hass.states.get("select.glowrium_g7_1234_lighting_mode").state
+    if protocol.lighting_mode(reported) is protocol.UNUSABLE and select not in (
+        "unknown",
+        "unavailable",
+    ):
+        wrong.append(f"the lighting mode shows {select!r} for no index")
+    return wrong
 
 
 async def test_no_value_under_an_id_makes_an_entity_raise(
@@ -1303,11 +1351,11 @@ async def test_no_value_under_an_id_makes_an_entity_raise(
 ) -> None:
     """Whatever the lamp puts under an id, every entity still says something.
 
-    Each entity reads the mirror its own way and guards for its own types; a
-    value none of them expected - a float where a flag belongs, a slot of the
-    wrong length, a map - has to come out as "unknown" at worst. One entity
-    raising used to keep the update from all the others, and still fills the
-    log.
+    And what it says is unknown, or what the value means: a value none of
+    them expected - a float where a flag belongs, a slot of the wrong
+    length, a map, a null - comes out as "unknown", and one that is what
+    its id means comes out as that. One entity raising used to keep the
+    update from all the others, and still fills the log.
     """
     entry = _entry()
     entry.add_to_hass(hass)
@@ -1316,25 +1364,31 @@ async def test_no_value_under_an_id_makes_an_entity_raise(
     coordinator = entry.runtime_data
     raised: list[str] = []
 
-    def _told(values: dict[int, Any]) -> None:
+    def _told(frame: bytes) -> None:
         caplog.clear()
         try:
-            coordinator._ingest(cbor.encode(values))
+            coordinator._ingest(frame)
         except Exception as err:  # collected, to name them all
-            raised.append(f"{values!r}: {err!r}")
+            raised.append(f"{frame.hex()}: {err!r}")
         raised.extend(
-            f"{values!r}: {record.getMessage()} ({record.exc_info[1]!r})"
+            f"{frame.hex()}: {record.getMessage()} ({record.exc_info[1]!r})"
             for record in caplog.records
             if record.levelno >= logging.ERROR and record.exc_info
+        )
+        raised.extend(
+            f"{frame.hex()}: {wrong}"
+            for wrong in _shown_otherwise(hass, coordinator.state)
         )
 
     with caplog.at_level(logging.ERROR):
         for mode in _MODES:
-            _told(_WELL | mode)
+            _told(cbor.encode(_WELL | mode))
             for key, well in (_WELL | mode).items():
                 for odd in _ODD:
-                    _told({key: odd})
-                _told({key: well})
+                    _told(cbor.encode({key: odd}))
+                for null in _NULLS:
+                    _told(b"\xa1" + cbor.encode(key) + null)
+                _told(cbor.encode({key: well}))
     await hass.async_block_till_done()
 
     assert not raised, "\n".join(sorted(set(raised)))
@@ -2080,3 +2134,233 @@ async def test_the_notice_has_words_for_what_it_brings(
 
     assert notice.translation_placeholders is not None
     assert set(re.findall(r"{(\w+)}", text)) == set(notice.translation_placeholders)
+
+
+# --- What cannot be used is unknown: not a guess, and not what was remembered ---
+
+_TWELVE = bytes.fromhex("0100000006001200640000") + b"\x00"  # a schedule, and a byte
+_LATITUDE = "sensor.glowrium_aa_bb_cc_dd_ee_ff_latitude"
+_LONGITUDE = "sensor.glowrium_aa_bb_cc_dd_ee_ff_longitude"
+# What each entity showed before the restart, where it remembers anything.
+_BEFORE = {
+    "select.glowrium_g7_1234_operating_mode": "schedule",
+    "switch.glowrium_g7_1234_indicator_light": "on",
+    "select.glowrium_g7_1234_lighting_mode": "balance",
+    "number.glowrium_g7_1234_ramp_time": "45",
+    "switch.glowrium_g7_1234_daylight_saving_time": "on",
+    "number.glowrium_g7_1234_schedule_brightness": "55",
+    "time.glowrium_g7_1234_schedule_start": "07:30:00",
+    "time.glowrium_g7_1234_schedule_end": "19:45:00",
+    "number.glowrium_g7_1234_schedule_gradual": "15",
+}
+
+
+async def _every_entity(hass: HomeAssistant) -> MockConfigEntry:
+    """Set the entry up with every entity enabled, the coordinate sensors too."""
+    entry = _entry()
+    entry.add_to_hass(hass)
+    _coordinate_sensors_from_before(hass, entry)
+    await _setup_without_bluetooth(hass, entry)
+    return entry
+
+
+@pytest.mark.parametrize(
+    ("entity", "reported"),
+    [
+        pytest.param(
+            "light.glowrium_g7_1234", {KEY_POWER: "on"}, id="text for the power"
+        ),
+        pytest.param(
+            "select.glowrium_g7_1234_operating_mode",
+            {KEY_CIRCADIAN: b"\x00", KEY_SCHEDULE: False},
+            id="a zero byte for the Circadian flag",
+        ),
+        pytest.param(
+            "switch.glowrium_g7_1234_indicator_light",
+            {KEY_INDICATOR: "on"},
+            id="text for the indicator",
+        ),
+        pytest.param(
+            "binary_sensor.glowrium_g7_1234_activated",
+            {KEY_ACTIVATED: "yes"},
+            id="text for the activation",
+        ),
+        pytest.param(
+            "select.glowrium_g7_1234_lighting_mode",
+            {KEY_LIGHTING_MODE: True},
+            id="a flag for the lighting mode",
+        ),
+        pytest.param(
+            "number.glowrium_g7_1234_ramp_time",
+            {KEY_RAMP: b"\xff" * 5},
+            id="five bytes for the ramp",
+        ),
+        pytest.param(
+            "switch.glowrium_g7_1234_daylight_saving_time",
+            {KEY_DST: b"\x01"},
+            id="one byte for daylight saving",
+        ),
+        pytest.param(
+            "number.glowrium_g7_1234_schedule_brightness",
+            {KEY_TIMER: b"\xff" * 40},
+            id="forty bytes for the schedule",
+        ),
+        pytest.param(
+            "time.glowrium_g7_1234_schedule_start",
+            {KEY_TIMER: _TWELVE},
+            id="twelve bytes for the schedule, its start",
+        ),
+        pytest.param(
+            "time.glowrium_g7_1234_schedule_end",
+            {KEY_TIMER: _TWELVE},
+            id="twelve bytes for the schedule, its end",
+        ),
+        pytest.param(
+            "number.glowrium_g7_1234_schedule_gradual",
+            {KEY_TIMER: _TWELVE},
+            id="twelve bytes for the schedule, its fade",
+        ),
+        pytest.param(_LATITUDE, {KEY_LATITUDE: float("inf")}, id="no latitude"),
+        pytest.param(_LONGITUDE, {KEY_LONGITUDE: 500.0}, id="500 degrees"),
+    ],
+)
+@pytest.mark.parametrize(
+    "remembers", [False, True], ids=["nothing remembered", "a value remembered"]
+)
+async def test_a_value_that_cannot_be_used_is_shown_as_unknown(
+    hass: HomeAssistant, entity: str, reported: dict[int, Any], remembers: bool
+) -> None:
+    """What a lamp reports under an id is not always what the id means.
+
+    Each of these was shown as something: text as "on", a zero byte as the
+    Circadian mode, a flag as the first preset, five bytes of ``ff`` as 1092
+    minutes, forty of them as 255 %, twelve bytes as the schedule in the
+    first eleven, ``inf`` as a latitude. And a setting with a value from
+    before the restart showed that one, as if the lamp had said nothing. It
+    has said something, and what it said cannot be used: that is unknown.
+    """
+    if remembers and entity in _BEFORE:
+        mock_restore_cache(hass, (State(entity, _BEFORE[entity]),))
+    entry = await _every_entity(hass)
+
+    entry.runtime_data._ingest(cbor.encode(reported))
+    await hass.async_block_till_done()
+
+    assert hass.states.get(entity).state == "unknown"
+
+
+@pytest.mark.parametrize(
+    ("entity", "usable", "shown", "unusable"),
+    [
+        pytest.param(
+            "number.glowrium_g7_1234_ramp_time",
+            {KEY_RAMP: bytes.fromhex("0708")},
+            "30",
+            {KEY_RAMP: b"\xff" * 5},
+            id="the ramp",
+        ),
+        pytest.param(
+            "switch.glowrium_g7_1234_daylight_saving_time",
+            {KEY_DST: bytes.fromhex("0000000e10")},
+            "off",
+            {KEY_DST: b"\x01"},
+            id="daylight saving",
+        ),
+        pytest.param(
+            "switch.glowrium_g7_1234_indicator_light",
+            {KEY_INDICATOR: False},
+            "off",
+            {KEY_INDICATOR: "on"},
+            id="the indicator",
+        ),
+        pytest.param(
+            "time.glowrium_g7_1234_schedule_start",
+            {KEY_TIMER: bytes.fromhex("01000000061e1200460258")},
+            "06:30:00",
+            {KEY_TIMER: _TWELVE},
+            id="the schedule's start",
+        ),
+        pytest.param(
+            "time.glowrium_g7_1234_schedule_end",
+            {KEY_TIMER: bytes.fromhex("01000000061e1200460258")},
+            "18:00:00",
+            {KEY_TIMER: _TWELVE},
+            id="the schedule's end",
+        ),
+        pytest.param(
+            "number.glowrium_g7_1234_schedule_gradual",
+            {KEY_TIMER: bytes.fromhex("01000000061e1200460258")},
+            "10",
+            {KEY_TIMER: _TWELVE},
+            id="the schedule's fade",
+        ),
+        pytest.param(
+            "number.glowrium_g7_1234_schedule_brightness",
+            {KEY_TIMER: bytes.fromhex("01000000061e1200460258")},
+            "70",
+            {KEY_TIMER: _TWELVE},
+            id="the schedule's brightness",
+        ),
+        pytest.param(
+            "select.glowrium_g7_1234_operating_mode",
+            {KEY_CIRCADIAN: True, KEY_SCHEDULE: False},
+            "circadian",
+            {KEY_CIRCADIAN: "on"},
+            id="the operating mode",
+        ),
+    ],
+)
+async def test_a_setting_shows_what_was_remembered_only_until_the_lamp_speaks(
+    hass: HomeAssistant,
+    entity: str,
+    usable: dict[int, Any],
+    shown: str,
+    unusable: dict[int, Any],
+) -> None:
+    """Remembered, then reported, then reported as something that cannot be used.
+
+    The value from before the restart stands in while the lamp has said
+    nothing. A report replaces it. A later report that cannot be used is
+    unknown - and not a step back to what was remembered, which Home
+    Assistant would record as the setting changing to a value nobody set.
+    """
+    mock_restore_cache(hass, (State(entity, _BEFORE[entity]),))
+    entry = await _every_entity(hass)
+    seen = [hass.states.get(entity).state]
+
+    for report in (usable, unusable):
+        entry.runtime_data._ingest(cbor.encode(report))
+        await hass.async_block_till_done()
+        seen.append(hass.states.get(entity).state)
+
+    assert (
+        float(seen[0]) == float(_BEFORE[entity])
+        if shown.isdigit()
+        else (seen[0] == _BEFORE[entity])
+    )
+    assert seen[1:] == [shown, "unknown"]
+
+
+_PLATFORMS_READ = sorted(
+    path
+    for path in (ROOT / "custom_components" / "glowrium").glob("*.py")
+    if path.stem in {platform.value for platform in PLATFORMS}
+)
+
+
+@pytest.mark.parametrize("path", _PLATFORMS_READ, ids=lambda path: path.stem)
+def test_no_platform_reads_the_state_mirror_itself(path: Path) -> None:
+    """An entity asks the coordinator what a property is, never what is under an id.
+
+    The mirror keeps what the lamp said, as it said it. What that is - a
+    flag, a level, a slot, or nothing that can be used - is answered in one
+    place, and an entity that looked under an id for itself would be a
+    second place, with an answer of its own.
+    """
+    reads = [
+        node.lineno
+        for node in ast.walk(ast.parse(path.read_text()))
+        if isinstance(node, ast.Attribute) and node.attr == "state"
+    ]
+
+    assert reads == [], f"{path.name} reads .state at lines {reads}"

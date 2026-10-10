@@ -43,7 +43,6 @@ from .const import (
     KEY_TIMER,
     KNOWN_KEYS,
     MODE_CIRCADIAN,
-    MODE_MANUAL,
     MODE_PARAM_2C,
     MODE_PARAM_32,
     MODE_SCHEDULE,
@@ -65,6 +64,7 @@ from .link import (
 )
 from .mirror import Mirror
 from .models import GlowriumModel, has_profile, resolve_model
+from .protocol import UNUSABLE, Unusable
 
 _LOGGER = logging.getLogger(__name__)
 # Where the repair for a Bluetooth stack that will not hang up sends the
@@ -261,9 +261,9 @@ class GlowriumCoordinator:
         return self._mirror
 
     @property
-    def activated(self) -> bool | None:
+    def activated(self) -> bool | Unusable | None:
         """Return the device's activation flag (False = needs pairing/bring-up)."""
-        return self.state.get(KEY_ACTIVATED)
+        return protocol.activated(self.state)
 
     @property
     def model(self) -> GlowriumModel:
@@ -372,68 +372,89 @@ class GlowriumCoordinator:
         return self._link.in_reach
 
     @property
-    def operating_mode(self) -> str | None:
-        """Return the active mode, or None if the state has not been read yet.
+    def operating_mode(self) -> str | Unusable | None:
+        """Return the active mode, read from the lamp's two mode flags.
 
-        None ("unknown") is distinct from Manual, which is only reported once
-        both mode flags have actually been read as off - so a device we cannot
-        reach yet does not look like it is in Manual.
+        None while it has not been reported, which is distinct from Manual:
+        Manual takes both flags read as off, so a device we cannot reach yet
+        does not look like it is in Manual (``protocol.operating_mode``).
         """
-        circadian = self.state.get(KEY_CIRCADIAN)
-        schedule = self.state.get(KEY_SCHEDULE)
-        if circadian:
-            return MODE_CIRCADIAN
-        if schedule:
-            return MODE_SCHEDULE
-        if circadian is None or schedule is None:
-            return None
-        return MODE_MANUAL
+        return protocol.operating_mode(self.state)
 
     def mode_allows(self, mode: str) -> bool:
-        """Return True if the device is in ``mode``, or its mode is unknown.
+        """Return True if the device is in ``mode``, or its mode is not known.
 
-        Keeps mode-specific entities available while the state is unknown,
-        instead of collapsing them to unavailable during a disconnect.
+        Keeps mode-specific entities available while the mode is unknown -
+        not reported yet, or reported as something that cannot be used -
+        instead of collapsing them to unavailable.
         """
         current = self.operating_mode
-        return current is None or current == mode
+        return current is None or current is UNUSABLE or current == mode
 
-    # Decoded read accessors - the byte layouts they wrap live in protocol.py,
-    # so entities read meaningful values instead of the raw state dict.
+    # What the platforms read: each property of the lamp by what it means. The
+    # layouts and the rules for what a value is live in protocol.py, and every
+    # one of these answers a value, None while the lamp has reported nothing
+    # under the id, or ``protocol.UNUSABLE`` for something that is there and
+    # is not what the id means. No platform looks under an id for itself.
 
     @property
-    def brightness_percent(self) -> float | None:
-        """Brightness as a level from 0 to 100, or None if not read or no level."""
+    def power(self) -> bool | Unusable | None:
+        """Whether the lamp is on."""
+        return protocol.power(self.state)
+
+    @property
+    def brightness_percent(self) -> float | Unusable | None:
+        """Brightness as a level from 0 to 100."""
         return protocol.brightness_percent(self.state)
 
     @property
-    def ramp_minutes(self) -> int | None:
-        """Circadian ramp duration in minutes (0x2f), or None if not yet read."""
+    def indicator(self) -> bool | Unusable | None:
+        """Whether the indicator light is on."""
+        return protocol.indicator(self.state)
+
+    @property
+    def lighting_mode(self) -> int | Unusable | None:
+        """The index of the lighting mode; which preset it is, the model says."""
+        return protocol.lighting_mode(self.state)
+
+    @property
+    def latitude(self) -> float | Unusable | None:
+        """The latitude the lamp works its circadian curve out from."""
+        return protocol.latitude(self.state)
+
+    @property
+    def longitude(self) -> float | Unusable | None:
+        """The longitude the lamp works its circadian curve out from."""
+        return protocol.longitude(self.state)
+
+    @property
+    def ramp_minutes(self) -> int | Unusable | None:
+        """Circadian ramp duration in minutes (0x2f)."""
         return protocol.ramp_minutes(self.state)
 
     @property
-    def schedule_start(self) -> time | None:
-        """Schedule on-time from the 0x11 slot, or None if not yet read."""
+    def schedule_start(self) -> time | Unusable | None:
+        """Schedule on-time from the 0x11 slot."""
         return protocol.schedule_start(self.state)
 
     @property
-    def schedule_end(self) -> time | None:
-        """Schedule off-time from the 0x11 slot, or None if not yet read."""
+    def schedule_end(self) -> time | Unusable | None:
+        """Schedule off-time from the 0x11 slot."""
         return protocol.schedule_end(self.state)
 
     @property
-    def schedule_brightness(self) -> int | None:
-        """Schedule target brightness (%) from the 0x11 slot, or None."""
+    def schedule_brightness(self) -> int | Unusable | None:
+        """Schedule target brightness (%) from the 0x11 slot."""
         return protocol.schedule_brightness(self.state)
 
     @property
-    def schedule_gradual_minutes(self) -> int | None:
-        """Schedule gradual-fade duration in minutes, or None if not yet read."""
+    def schedule_gradual_minutes(self) -> int | Unusable | None:
+        """Schedule gradual-fade duration in minutes."""
         return protocol.schedule_gradual_minutes(self.state)
 
     @property
-    def dst_enabled(self) -> bool | None:
-        """Whether daylight saving is on, or None if not yet read."""
+    def dst_enabled(self) -> bool | Unusable | None:
+        """Whether daylight saving is on."""
         return protocol.dst_enabled(self.state)
 
     def diagnostics(self) -> dict[str, Any]:
@@ -1131,9 +1152,12 @@ class GlowriumCoordinator:
             if KEY_ACTIVATED in self.state or not turn.up:
                 break
             await asyncio.sleep(0.25)
-        if self.state.get(KEY_ACTIVATED) is False:
+        # On the flag itself, both ways. Only a plain no is a lamp that has to
+        # be brought up, and only a plain yes settles the question for the
+        # session: a number or a text there reads as true and says neither.
+        if self.activated is False:
             await self._async_activate(turn)
-        if self.state.get(KEY_ACTIVATED):
+        if self.activated is True:
             self._activation_checked = True
 
     async def _async_sync_clock_if_needed(self, turn: Turn) -> None:
@@ -1141,15 +1165,20 @@ class GlowriumCoordinator:
 
         Runs on the priming path, where the clock has just been read. Silent
         when the lamp has not reported one: there is no drift to judge, and a
-        blind write would be guessing at what it currently believes.
+        blind write would be guessing at what it currently believes. Silent as
+        well for a clock kept in a shape nobody has seen, where seven bytes
+        written over it would be a guess of another kind.
         """
-        try:
-            reported = protocol.device_time(self.state)
-        except ValueError:  # a nonsense date is itself a reason to correct it
+        reported = protocol.device_time(self.state)
+        if reported is None:
+            return
+        if reported is UNUSABLE:
+            if not protocol.clock_is_no_date(self.state):
+                return
+            # Seven bytes with no date in them: a clock, and a wrong one. A
+            # nonsense date is itself a reason to correct it.
             _LOGGER.debug("%s reported an impossible clock; correcting", self.address)
         else:
-            if reported is None:
-                return
             # Naive, like the clock itself: the lamp keeps local wall-clock time.
             now = dt_util.now().replace(tzinfo=None)
             drift = abs((reported - now).total_seconds())

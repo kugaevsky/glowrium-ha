@@ -53,8 +53,9 @@ class GlowriumRampNumber(GlowriumSettingEntity, NumberEntity):
     @property
     def native_value(self) -> float | None:
         """Return the ramp time in minutes."""
-        value = self._coordinator.ramp_minutes
-        return value if value is not None else self._restored_number()
+        return self._or_remembered(
+            self._coordinator.ramp_minutes, self._restored_number
+        )
 
     async def async_set_native_value(self, value: float) -> None:
         """Set the ramp time in minutes."""
@@ -86,8 +87,9 @@ class GlowriumTimerGradual(_GlowriumTimerNumber):
     @property
     def native_value(self) -> float | None:
         """Return the gradual fade in minutes."""
-        value = self._coordinator.schedule_gradual_minutes
-        return value if value is not None else self._restored_number()
+        return self._or_remembered(
+            self._coordinator.schedule_gradual_minutes, self._restored_number
+        )
 
     async def async_set_native_value(self, value: float) -> None:
         """Set the gradual fade in minutes."""
@@ -112,8 +114,9 @@ class GlowriumTimerBrightness(_GlowriumTimerNumber):
     @property
     def native_value(self) -> float | None:
         """Return the schedule brightness percentage."""
-        value = self._coordinator.schedule_brightness
-        return value if value is not None else self._restored_number()
+        return self._or_remembered(
+            self._coordinator.schedule_brightness, self._restored_number
+        )
 
     async def async_set_native_value(self, value: float) -> None:
         """Set the schedule brightness percentage."""

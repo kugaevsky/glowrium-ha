@@ -10,13 +10,10 @@ from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 
 from . import GlowriumConfigEntry
-from .const import (
-    KEY_LIGHTING_MODE,
-    MODE_CIRCADIAN,
-    OPERATING_MODES,
-)
+from .const import MODE_CIRCADIAN, OPERATING_MODES
 from .coordinator import GlowriumCoordinator
 from .entity import GlowriumSettingEntity
+from .protocol import UNUSABLE
 
 # Every command goes through the coordinator's one lock, so there is nothing
 # left for Home Assistant to queue here, and no entity is polled.
@@ -52,10 +49,10 @@ class GlowriumOperatingModeSelect(GlowriumSettingEntity, SelectEntity):
     @property
     def current_option(self) -> str | None:
         """Return the active operating mode."""
-        mode = self._coordinator.operating_mode
-        if mode is None and self._restored in self.options:
-            return self._restored
-        return mode
+        return self._or_remembered(
+            self._coordinator.operating_mode,
+            lambda: self._restored if self._restored in self.options else None,
+        )
 
     async def async_select_option(self, option: str) -> None:
         """Switch operating mode."""
@@ -130,15 +127,17 @@ class GlowriumLightingModeSelect(GlowriumSettingEntity, SelectEntity):
         The mode remembered from the last run stands in only while the state
         mirror holds no index - none reported by the lamp and none written
         to it. Once there is one, the answer is the preset that index belongs
-        to - or none, when it belongs to no preset of this model. The
-        remembered mode is not an answer then: it is what the select showed
-        before the last restart, and the lamp has since said something else.
+        to - or none, when it belongs to no preset of this model, or is no
+        index at all. The remembered mode is not an answer then: it is what the
+        select showed before the last restart, and the lamp has since said
+        something else.
         """
-        state = self._coordinator.state
         modes = self._modes
-        if KEY_LIGHTING_MODE not in state:
+        index = self._coordinator.lighting_mode
+        if index is None:
             return self._restored if self._restored in modes else None
-        index = state[KEY_LIGHTING_MODE]
+        if index is UNUSABLE:
+            return None
         return next((key for key, value in modes.items() if value == index), None)
 
     async def async_select_option(self, option: str) -> None:

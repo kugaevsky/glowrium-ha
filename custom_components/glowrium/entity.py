@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from datetime import time
 
 from homeassistant.const import STATE_UNAVAILABLE, STATE_UNKNOWN
@@ -12,6 +13,7 @@ from homeassistant.helpers.entity import Entity
 from homeassistant.helpers.restore_state import RestoreEntity
 
 from .coordinator import GlowriumCoordinator
+from .protocol import UNUSABLE, Unusable
 
 
 class GlowriumEntity(Entity):
@@ -86,12 +88,24 @@ class GlowriumSettingEntity(GlowriumEntity, RestoreEntity):
     them rewrite a schedule slot from data that may be days old.
 
     It stands in for a setting that has not been read - not for one that has
-    been read and cannot be used. The lighting-mode select holds to that. The
-    other settings do not tell the two apart yet: their readers answer nothing
-    for a malformed value as for an absent one, and they fall back on both.
+    been read and cannot be used. That one the lamp has spoken of, and what it
+    said is unknown: showing the remembered value in its place would be
+    recorded as the setting changing to something nobody set.
     """
 
     _restored: str | None = None
+
+    def _or_remembered[T, R](
+        self, reading: T | Unusable | None, remembered: Callable[[], R | None]
+    ) -> T | R | None:
+        """Return what the setting shows for what was read of it.
+
+        Its value. What it showed before the restart, while the lamp has
+        reported nothing. Nothing, when what the lamp reported cannot be used.
+        """
+        if reading is None:
+            return remembered()
+        return None if reading is UNUSABLE else reading
 
     async def async_added_to_hass(self) -> None:
         """Subscribe to the coordinator and recover the last known value."""

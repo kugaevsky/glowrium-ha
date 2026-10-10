@@ -10,7 +10,6 @@ from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 
 from . import GlowriumConfigEntry
-from .const import KEY_INDICATOR
 from .coordinator import GlowriumCoordinator
 from .entity import GlowriumSettingEntity
 
@@ -49,10 +48,7 @@ class GlowriumIndicatorSwitch(GlowriumSettingEntity, SwitchEntity):
     @property
     def is_on(self) -> bool | None:
         """Return whether the indicator LED is on."""
-        value = self._coordinator.state.get(KEY_INDICATOR)
-        if value is None:
-            return self._restored_bool()
-        return bool(value)
+        return self._or_remembered(self._coordinator.indicator, self._restored_bool)
 
     async def async_turn_on(self, **kwargs: Any) -> None:
         """Turn the indicator LED on."""
@@ -82,8 +78,7 @@ class GlowriumDstSwitch(GlowriumSettingEntity, SwitchEntity):
     @property
     def is_on(self) -> bool | None:
         """Return whether DST is enabled."""
-        enabled = self._coordinator.dst_enabled
-        return enabled if enabled is not None else self._restored_bool()
+        return self._or_remembered(self._coordinator.dst_enabled, self._restored_bool)
 
     async def async_turn_on(self, **kwargs: Any) -> None:
         """Enable DST."""
