@@ -23,7 +23,7 @@ its repair under the config entry's id and not under the lamp's address.
 
 from __future__ import annotations
 
-from collections.abc import Callable, Mapping
+from collections.abc import Callable
 from datetime import datetime, timedelta
 from functools import partial
 from typing import Any, Final
@@ -121,23 +121,22 @@ def _dst(slot: protocol.DaylightSaving) -> dict[str, Any]:
     return {"enabled": slot.enabled, "offset_seconds": slot.offset_seconds}
 
 
-# The properties that are read out, under the id and the name each has here:
-# the reader that says what its value is - the one the entities and the
-# commands go through, so that the file and the device page cannot disagree
-# about a value - and how the file words what that reader returns. (The clock
-# is read too, and takes more than its value to word: see _state.)
-_Reader = Callable[[Mapping[int, Any]], Any]
-_READ: Final[dict[int, tuple[str, _Reader, Callable[[Any], Any]]]] = {
-    KEY_POWER: ("power", protocol.power, _as_it_is),
-    KEY_BRIGHTNESS: ("brightness", protocol.brightness_percent, _whole),
-    KEY_CIRCADIAN: ("circadian", protocol.circadian_mode, _as_it_is),
-    KEY_SCHEDULE: ("schedule mode", protocol.schedule_mode, _as_it_is),
-    KEY_TIMER: ("schedule", protocol.schedule, _schedule),
-    KEY_ACTIVATED: ("activated", protocol.activated, _as_it_is),
-    KEY_INDICATOR: ("indicator", protocol.indicator, _as_it_is),
-    KEY_LIGHTING_MODE: ("lighting mode", protocol.lighting_mode, _as_it_is),
-    KEY_RAMP: ("ramp", protocol.ramp_seconds, _ramp),
-    KEY_DST: ("daylight saving", protocol.daylight_saving, _dst),
+# The properties that are read out, by id, with how the file words the value
+# of each. What the property is called and what its value is are not said
+# here: both are ``protocol.PROPERTIES``, the table the entities and the log
+# go by, so that the file and the device page cannot disagree about a value.
+# (The clock is read too, and takes more than its value to word: see _state.)
+_READ: Final[dict[int, Callable[[Any], Any]]] = {
+    KEY_POWER: _as_it_is,
+    KEY_BRIGHTNESS: _whole,
+    KEY_CIRCADIAN: _as_it_is,
+    KEY_SCHEDULE: _as_it_is,
+    KEY_TIMER: _schedule,
+    KEY_ACTIVATED: _as_it_is,
+    KEY_INDICATOR: _as_it_is,
+    KEY_LIGHTING_MODE: _as_it_is,
+    KEY_RAMP: _ramp,
+    KEY_DST: _dst,
 }
 # Known by name and private: the home's coordinates, which the lamp keeps for
 # its circadian curve. Said to be there, so that it can be seen the lamp has
@@ -168,8 +167,9 @@ def _state(
     lamp's choosing.
     """
     shown: dict[str, Any] = {}
-    clock = ("clock", protocol.device_time, partial(_clock, heard_at=clock_heard_at))
-    for key, (name, read, word) in ({KEY_TIME: clock} | _READ).items():
+    clock = partial(_clock, heard_at=clock_heard_at)
+    for key, word in ({KEY_TIME: clock} | _READ).items():
+        name, read = protocol.PROPERTIES[key]
         reading = read(reported)
         if reading is None:  # nothing was reported under the id
             continue

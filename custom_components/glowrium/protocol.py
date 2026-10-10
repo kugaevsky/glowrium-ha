@@ -16,7 +16,7 @@ judges what the lamp sent rather than using it.)
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 import datetime
 import enum
@@ -550,3 +550,26 @@ def operating_mode(state: Mapping[int, Any]) -> str | Unusable | None:
     if circadian is UNUSABLE or scheduled is UNUSABLE:
         return UNUSABLE
     return None
+
+
+# --- every property the integration reads, by id ---
+
+# The name each goes by here - in the log and in the diagnostics download -
+# and the reader that says what its value is. One table, so that the warning
+# about a value that cannot be used, the file and the entities all mean the
+# same thing by it.
+PROPERTIES: Final[Mapping[int, tuple[str, Callable[[Mapping[int, Any]], Any]]]] = {
+    KEY_TIME: ("clock", device_time),
+    KEY_POWER: ("power", power),
+    KEY_BRIGHTNESS: ("brightness", brightness_percent),
+    KEY_CIRCADIAN: ("circadian", circadian_mode),
+    KEY_LATITUDE: ("latitude", latitude),
+    KEY_LONGITUDE: ("longitude", longitude),
+    KEY_SCHEDULE: ("schedule mode", schedule_mode),
+    KEY_TIMER: ("schedule", schedule),
+    KEY_ACTIVATED: ("activated", activated),
+    KEY_INDICATOR: ("indicator", indicator),
+    KEY_LIGHTING_MODE: ("lighting mode", lighting_mode),
+    KEY_RAMP: ("ramp", ramp_seconds),
+    KEY_DST: ("daylight saving", daylight_saving),
+}

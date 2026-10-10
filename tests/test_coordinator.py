@@ -33,6 +33,7 @@ from custom_components.glowrium.const import (
     KEY_BRIGHTNESS,
     KEY_CIRCADIAN,
     KEY_DST,
+    KEY_INDICATOR,
     KEY_LATITUDE,
     KEY_LIGHTING_MODE,
     KEY_LONGITUDE,
@@ -2970,8 +2971,9 @@ async def _the_warnings_that_name_the_lamp(
 ) -> list[str]:
     """Draw each warning that names the lamp's model, and return what was said.
 
-    Four of them: a frame with trailing bytes, one with an item that cannot be
-    read, more properties than are kept, and a refused state request.
+    Five of them: a frame with trailing bytes, one with an item that cannot be
+    read, more properties than are kept, a value that cannot be used, and a
+    refused state request.
     """
     lamp = lamp_of(coordinator)
     await coordinator.async_set_indicator(True)  # a link to be asked on
@@ -2981,14 +2983,16 @@ async def _the_warnings_that_name_the_lamp(
         lamp.say(bytes.fromhex("a106f5deadbeef"))  # trailing bytes
         lamp.say(_PARTLY_READABLE)
         flood(lamp.say, ids=65)  # one more than there is room for
+        lamp.say(cbor.encode({KEY_INDICATOR: "on"}))  # text where a flag belongs
         for _ in range(coordinator_module._STATE_REQUEST_ATTEMPTS):
             await coordinator._request_state(turn_over(coordinator, link))
     said = [r.getMessage() for r in caplog.records if r.levelno == logging.WARNING]
-    assert len(said) == 4
+    assert len(said) == 5
     assert "trailing bytes" in said[0]
     assert "cannot read" in said[1]
     assert "reports more properties than" in said[2]
-    assert "refused the batched state request" in said[3]
+    assert "cannot be used" in said[3]
+    assert "refused the batched state request" in said[4]
     return said
 
 
@@ -3053,6 +3057,58 @@ async def test_a_warning_names_a_model_and_a_firmware_that_are_what_they_claim(
         assert named in said
         for glued in hidden:
             assert glued not in said
+
+
+async def test_a_value_that_cannot_be_used_is_said_once_for_its_property(
+    hass: HomeAssistant, caplog: pytest.LogCaptureFixture
+) -> None:
+    """The owner of such a lamp sees `unknown`, and the log says why - once.
+
+    The first report that carries, under a property, something that is not
+    what the property means is said at warning level: the lamp, the
+    property by the name it has here, and what to send. Nothing of the
+    value - it is the lamp's to choose, and this is a line people post. The
+    lamp reports all day, so a second one under the same property is not
+    said; another property is said for itself.
+    """
+    coordinator = ScriptedLamp().coordinator(hass)
+    coordinator.device_info = _parse_device_info(
+        b"brand:INLEDCO;pkey:Glowrium-C051;devid:CST-0001;mac:x;version:4;;"
+    )
+    with caplog.at_level(logging.WARNING, logger=coordinator_module.__name__):
+        coordinator._ingest(cbor.encode({KEY_RAMP: b"\xab" * 5}))
+        coordinator._ingest(cbor.encode({KEY_RAMP: b"\xcd" * 6}))  # the ramp again
+        coordinator._ingest(cbor.encode({KEY_POWER: True}))  # a value
+        coordinator._ingest(cbor.encode({KEY_TIMER: "HomeNetwork-5G"}))
+        coordinator._ingest(cbor.encode({KEY_RAMP: bytes.fromhex("0708")}))
+
+    said = [r.getMessage() for r in caplog.records if r.levelno >= logging.WARNING]
+    assert len(said) == 2
+    assert "ramp" in said[0]
+    assert "schedule" in said[1]
+    for line in said:
+        assert "cannot be used" in line
+        assert "(model Glowrium-C051, firmware 4)" in line
+        assert "diagnostics" in line
+        for of_the_value in ("abab", "cdcd", "HomeNetwork", "CST-0001"):
+            assert of_the_value not in line
+
+
+async def test_what_was_written_and_not_reported_is_not_said_to_be_unusable(
+    hass: HomeAssistant, caplog: pytest.LogCaptureFixture
+) -> None:
+    """The warning is about what the lamp reports, and only when it reports it.
+
+    An echo of a write is the integration's own value. And a property that
+    could not be used once is not said again each time some other property
+    is reported: the lamp reports its brightness all day.
+    """
+    coordinator = ScriptedLamp().coordinator(hass)
+    with caplog.at_level(logging.WARNING, logger=coordinator_module.__name__):
+        coordinator._mirror.echo({KEY_DST: b"\x01"})  # not a report
+        coordinator._ingest(cbor.encode({KEY_BRIGHTNESS: 70}))
+
+    assert [r for r in caplog.records if r.levelno >= logging.WARNING] == []
 
 
 async def test_the_request_is_repeated_on_every_connect(hass: HomeAssistant) -> None:

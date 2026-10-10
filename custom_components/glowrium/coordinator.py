@@ -214,6 +214,9 @@ class GlowriumCoordinator:
         # Listeners whose last telling raised: each is named in the log once,
         # not on every report (see _async_notify_listeners).
         self._listeners_failing: set[Callable[[], None]] = set()
+        # The properties under which the lamp has reported something that
+        # cannot be used, and of which the log has said so (once each).
+        self._unusable_said: set[int] = set()
         self._cancel_bluetooth: Callable[[], None] | None = None
         self._cancel_unavailable: Callable[[], None] | None = None
         self._cancel_poll: Callable[[], None] | None = None
@@ -1010,6 +1013,31 @@ class GlowriumCoordinator:
         )
         return _Asked.SILENT
 
+    def _say_what_cannot_be_used(self, carried: frozenset[int]) -> None:
+        """Say, once for each property, that what the lamp reported cannot be used.
+
+        Such a property reads as unknown and no command builds on it, and
+        nothing else would say why: the owner sees an entity that never fills
+        in. Said for the property the first time a report carries it so - the
+        lamp reports all day - with its name here and nothing of the value,
+        which is the lamp's to choose, in a line that asks to be posted.
+        """
+        for key in sorted(carried & protocol.PROPERTIES.keys() - self._unusable_said):
+            name, read = protocol.PROPERTIES[key]
+            if read(self.state) is not UNUSABLE:
+                continue
+            self._unusable_said.add(key)
+            _LOGGER.warning(
+                "%s (%s): what the lamp reported as its %s (0x%02x) cannot be used "
+                "by this integration. It reads as unknown, and no command is built "
+                "on it. Said once for this property. Please report this, with a "
+                "diagnostics download from the integration's page",
+                self.address,
+                self._model_and_firmware(),
+                name,
+                key,
+            )
+
     def _ingest(self, data: bytes) -> frozenset[int]:
         """Take a frame from the lamp into the mirror; return the ids it carried.
 
@@ -1024,6 +1052,7 @@ class GlowriumCoordinator:
         carried = self._mirror.take(data)
         if not carried:
             return carried
+        self._say_what_cannot_be_used(carried)
         # Seed the remembered ramp from the device the first time we see it, so
         # it survives an HA restart (the device persists its own ramp). Only a
         # ramp that is one: what is remembered is written back with every
