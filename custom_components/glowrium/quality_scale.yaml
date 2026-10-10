@@ -136,7 +136,13 @@ rules:
     comment: |
       The only thing the flow asks is the lamp's address, which is the
       entry's unique id; changing it means a new entry.
-  repair-issues: done
+  repair-issues:
+    status: done
+    comment: |
+      Two. A Bluetooth stack that will not hang up, with what clears it. And
+      presets that are unconfirmed for a model without a profile: it says
+      what to send to have them confirmed, has nothing to fix from its
+      dialog, and can be ignored.
   stale-devices:
     status: exempt
     comment: One lamp per config entry; it goes with the entry.

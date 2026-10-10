@@ -76,7 +76,7 @@ from custom_components.glowrium.number import (
 from custom_components.glowrium.select import GlowriumLightingModeSelect
 from custom_components.glowrium.time import GlowriumTimerEnd, GlowriumTimerStart
 
-from .lamp import ScriptedLamp, in_range, link_of, turn_over
+from .lamp import ScriptedLamp, in_range, link_of
 
 ADDRESS = "AA:BB:CC:DD:EE:FF"
 G7_INFO = b"brand:INLEDCO;pkey:Glowrium-C051;devid:CST-0001;mac:x;version:4;;"
@@ -1561,8 +1561,15 @@ async def test_a_string_that_names_no_model_leaves_the_one_on_record(
 # --- A model without a profile: its owner is told ------------------------------
 
 
+def _slow_to_connect() -> ScriptedLamp:
+    """Return a lamp in range whose connect never comes: nothing is read of it."""
+    lamp = ScriptedLamp()
+    lamp.dials_when(asyncio.Event())
+    return lamp
+
+
 async def _started(hass: HomeAssistant, **data: str) -> MockConfigEntry:
-    """Set an entry up as the integration starts one, by a lamp that never connects.
+    """Set an entry up as the integration starts one, by a lamp slow to connect.
 
     The start is the real one - the entry taken, the watchers put up, the
     first connect on its way - and nothing is ever read: what is known of the
@@ -1570,7 +1577,7 @@ async def _started(hass: HomeAssistant, **data: str) -> MockConfigEntry:
     """
     entry = _entry(**data)
     entry.add_to_hass(hass)
-    with _a_lamp_that_never_connects():
+    with in_range(_slow_to_connect()):
         assert await hass.config_entries.async_setup(entry.entry_id)
         await hass.async_block_till_done()
     return entry
@@ -1687,7 +1694,7 @@ async def test_the_notice_goes_once_the_model_has_a_profile(
     )
     monkeypatch.setitem(models.MODELS, g8.pkey, g8)
 
-    with _a_lamp_that_never_connects():
+    with in_range(_slow_to_connect()):
         assert await hass.config_entries.async_reload(entry.entry_id)
         await hass.async_block_till_done()
 
@@ -1742,7 +1749,7 @@ async def test_a_notice_that_was_ignored_stays_ignored_through_a_reload(
     (notice,) = _notices(hass)
     ir.async_ignore_issue(hass, DOMAIN, notice.issue_id, True)
 
-    with _a_lamp_that_never_connects():
+    with in_range(_slow_to_connect()):
         assert await hass.config_entries.async_reload(entry.entry_id)
         await hass.async_block_till_done()
 
@@ -1787,7 +1794,7 @@ async def test_a_restart_brings_the_notice_back_for_a_loaded_entry_and_as_it_was
     assert not kept.active  # nothing is shown for an entry that is not loaded
     assert kept.dismissed_version is not None
 
-    with _a_lamp_that_never_connects():
+    with in_range(_slow_to_connect()):
         assert await hass.config_entries.async_setup(entry.entry_id)
         await hass.async_block_till_done()
 
@@ -1838,7 +1845,7 @@ async def test_the_notice_shows_the_lamps_name_as_text(
         data={CONF_ADDRESS: ADDRESS, CONF_MODEL_ID: "Glowrium-C064"},
     )
     entry.add_to_hass(hass)
-    with _a_lamp_that_never_connects():
+    with in_range(_slow_to_connect()):
         assert await hass.config_entries.async_setup(entry.entry_id)
         await hass.async_block_till_done()
 
@@ -1925,7 +1932,7 @@ async def test_one_lamps_notice_is_not_anothers(hass: HomeAssistant) -> None:
         data={CONF_ADDRESS: "11:22:33:44:55:66", CONF_MODEL_ID: "Glowrium-C064"},
     )
     other.add_to_hass(hass)
-    with _a_lamp_that_never_connects():
+    with in_range(_slow_to_connect()):
         assert await hass.config_entries.async_setup(other.entry_id)
         await hass.async_block_till_done()
     for _ in range(3):
@@ -1949,19 +1956,27 @@ async def test_a_coordinator_that_was_stopped_raises_no_notice(
 ) -> None:
     """What a stopped coordinator learns of the model is not its to say.
 
-    The device info is read last on a link, and the entry can be unloaded
-    while that read is on its way. A notice raised then would stand for an
-    entry that is not loaded. What was read is kept with the entry all the
-    same, and the next start raises the notice from that.
+    The device info is read last on a link, and Home Assistant can stop
+    while the answer to that read is on its way: the coordinator hangs up at
+    once, and the exchange is not cancelled with it. A notice raised then
+    would have nobody left to answer for it. What was read is kept with the
+    entry all the same, and the next start raises the notice from that.
     """
     entry = await _setup_without_bluetooth(hass)
-    coordinator = entry.runtime_data
     lamp = ScriptedLamp()
+    lamp.answers({KEY_ACTIVATED: True, KEY_CIRCADIAN: True})
     lamp.readable(INFO_UUID, _G8_INFO)
-    link = await lamp.dial(lambda _link: None)
-    await coordinator.async_stop()
+    answered = asyncio.Event()
+    lamp.answers_a_read_when(answered)
 
-    await coordinator._async_read_device_info(turn_over(coordinator, link))
+    with in_range(lamp):
+        connecting = asyncio.create_task(link_of(entry.runtime_data).connect())
+        await asyncio.sleep(0.01)
+        assert lamp.read == [INFO_UUID]  # the exchange is at its last step
+        hass.bus.async_fire(EVENT_HOMEASSISTANT_STOP)
+        await hass.async_block_till_done()
+        answered.set()
+        await connecting
 
     assert entry.data[CONF_MODEL_ID] == "Glowrium-C064"  # read, and kept
     assert _notices(hass) == []

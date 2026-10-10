@@ -71,7 +71,7 @@ def resolve_model(pkey: str | None) -> GlowriumModel:
     a generic profile - a generic ``Glowrium`` name with the reference presets -
     rather than masquerading as a specific, tested model.
     """
-    if pkey and pkey in MODELS:
+    if pkey and has_profile(pkey):
         return MODELS[pkey]
     return GlowriumModel(
         pkey=pkey or "",

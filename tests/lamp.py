@@ -142,6 +142,7 @@ class ScriptedLamp:
         self._never_acknowledges = False
         self._acknowledges_when: asyncio.Event | None = None
         self._never_reads = False
+        self._read_answered_when: asyncio.Event | None = None
         self._read_fails: Exception | None = None
         self._hang_up_released: asyncio.Event | None = None
         self._hang_up_fails: Exception | None = None
@@ -211,6 +212,10 @@ class ScriptedLamp:
     def never_answers_a_read(self) -> None:
         """Keep every read waiting: it neither returns nor fails."""
         self._never_reads = True
+
+    def answers_a_read_when(self, answered: asyncio.Event) -> None:
+        """Hold every read until ``answered`` is set: an answer slow to come."""
+        self._read_answered_when = answered
 
     def fails_reads(self, error: Exception) -> None:
         """Fail every read with ``error``, whatever the lamp was given to read."""
@@ -305,6 +310,8 @@ class ScriptedLamp:
         self.exchanges.append(("read", uuid))
         if self._never_reads:
             await asyncio.Event().wait()
+        if self._read_answered_when is not None:
+            await self._read_answered_when.wait()
         if self._read_fails is not None:
             raise self._read_fails
         if uuid in self._readable:

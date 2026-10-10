@@ -206,10 +206,11 @@ class GlowriumCoordinator:
         # for an owner that no longer exists. The one exception is a hang-up,
         # which has to outlive the entry - see Link.hang_up.
         self._entry: ConfigEntry | None = None
-        # Set where the watching ends. What is learnt of the lamp after that -
-        # a read that was on its way - is kept, and no longer said: a repair
-        # raised by a coordinator nobody is left to stop would stand for an
-        # entry that is not loaded (see _async_review_presets_notice).
+        # Set where the watching ends. What is learnt of the lamp after that
+        # is kept, and no longer said. An unload cancels the exchange on its
+        # way; Home Assistant stopping does not, so the answer to the read of
+        # the device info can come in to a coordinator that nobody is left to
+        # answer for (see _async_review_presets_notice).
         self._stopped = False
         # Tasks in flight when there is no hass to keep them: hang-ups, and
         # whatever the poll spawned (see _run_without_hass).

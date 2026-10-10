@@ -42,7 +42,7 @@ stateless views over that coordinator.
 
 | File (`custom_components/glowrium/…`) | Responsibility |
 | --- | --- |
-| `__init__.py` | `async_setup_entry` / `async_unload_entry`; builds the coordinator, stores it in `entry.runtime_data`, forwards platforms, has the coordinator hang up when Home Assistant stops, and keeps for each lamp what could not be closed |
+| `__init__.py` | `async_setup_entry` / `async_unload_entry` / `async_remove_entry`; builds the coordinator, stores it in `entry.runtime_data`, forwards platforms, has the coordinator hang up when Home Assistant stops, keeps for each lamp what could not be closed, and takes the notice about unconfirmed presets down when an entry is removed |
 | `config_flow.py` | Bluetooth auto-discovery + manual picker for `Glowrium-*` devices |
 | `coordinator.py` | The device: the intake of frames into the mirror, all command methods, the clock, activation, the telling of the entities - and what is said to the lamp: the first exchange on a link, the question for a silent one, each command. Home Assistant's watchers stand here and tell the link what they see |
 | `mirror.py` | The state mirror: what the lamp has said, frame by frame, and what was written to it, as a read-only mapping. Takes a frame - never raises; the decoder's outcomes, their log lines and the blanking of a printed frame are its - counts the reports and what each carried, dates the lamp's clock |
@@ -1124,9 +1124,9 @@ they are for any lamp (ADR 0014).
   the entry is removed (`async_remove_entry`): Home Assistant does not delete
   an integration's repairs with its entry.
 - **A stopped coordinator raises none.** The device-info string is read last
-  on a link, and the entry can be unloaded while that read is on its way. What
-  was read is kept with the entry all the same, and the next start raises the
-  notice from it.
+  on a link, and Home Assistant can stop while the answer is on its way: an
+  unload cancels the exchange, a stop does not. What was read is kept with
+  the entry all the same, and the next start raises the notice from it.
 - **What goes into its text is held to a shape.** Its id is built from the
   config entry's id (`presets_issue_id`), as the other repair's is and for the
   same reason (see [Diagnostics](#diagnostics)). The lamp's name passes

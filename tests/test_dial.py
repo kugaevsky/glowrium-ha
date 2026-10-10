@@ -421,6 +421,29 @@ async def test_a_lamp_may_fail_a_read_or_keep_it_waiting() -> None:
     reading.cancel()
 
 
+async def test_a_lamp_may_be_slow_to_answer_a_read() -> None:
+    """``answers_a_read_when`` holds every read until the event is set.
+
+    The read was asked for all the same, and brings what the lamp was given
+    to read once the event is set - on a link hung up meanwhile as well: the
+    answer was on its way.
+    """
+    lamp = ScriptedLamp()
+    lamp.readable(INFO_UUID, b"brand:x;;")
+    answered = asyncio.Event()
+    lamp.answers_a_read_when(answered)
+    link = await lamp.dial(MagicMock())
+
+    reading = asyncio.create_task(link.read_gatt_char(INFO_UUID))
+    await asyncio.sleep(0.01)
+    assert not reading.done()
+    assert lamp.read == [INFO_UUID]  # asked all the same
+    await link.disconnect()
+
+    answered.set()
+    assert await reading == b"brand:x;;"
+
+
 async def test_a_lamp_may_be_slow_to_subscribe_and_refuse_once() -> None:
     """``subscribes_when`` holds a subscription; ``subscription_fails(None)`` lifts it.
 
