@@ -48,7 +48,7 @@ stateless views over that coordinator.
 | `mirror.py` | The state mirror: what the lamp has said, frame by frame, and what was written to it, as a read-only mapping. Takes a frame - never raises; the decoder's outcomes, their log lines and the blanking of a printed frame are its - counts the reports and what each carried, dates the lamp's clock |
 | `link.py` | The link: the client and the lock around it, the dial, the hang-up and the closing of the client's bus, the stack that will not hang up, whether the lamp is in reach - and when the lamp is spoken to: the background connect, the first exchange, the question for a silent link, the delivery of a command with its one retry, and every deadline. No client leaves it. No Home Assistant in it and no protocol |
 | `cbor.py` | Minimal CBOR encoder/decoder (only the subset the device uses) — the *wire* format |
-| `protocol.py` | Semantic codec — byte layouts (`0x11` slot, `0x2f` ramp, `0x35` daylight saving, `0x05` clock) ↔ values, read and written; the coordinator's typed accessors and setters delegate here |
+| `protocol.py` | Semantic codec — one reader for each property, which says what its value is, or that nothing was reported, or that what was reported cannot be used; the byte layouts (`0x11` slot, `0x2f` ramp, `0x35` daylight saving, `0x05` clock) read and written; the coordinator's typed accessors and setters delegate here |
 | `const.py` | GATT UUIDs, CBOR property keys, byte-layout offsets, mode constants |
 | `models.py` | Per-model registry (name, lighting-mode presets) keyed by `pkey` |
 | `diagnostics.py` | The diagnostics download: what the coordinator knows, rebuilt from what it read, with nothing in it the lamp chose |
@@ -96,10 +96,12 @@ flowchart TD
    platform.
 3. **Each platform** reads `entry.runtime_data` (the coordinator) and registers
    its entities. Entities subclass `GlowriumEntity`.
-4. **Reads:** entity properties pull from the coordinator — simple flags straight
-   from `coordinator.state`, and decoded values (ramp minutes, schedule fields)
-   via typed accessors backed by `protocol.py`. **Writes:** entity commands call
-   `coordinator.async_set_*`, which CBOR-encodes a map and writes it to the lamp.
+4. **Reads:** an entity asks the coordinator for a property by what it means,
+   and never looks under an id for itself: each accessor is a reader of
+   `protocol.py` over the mirror, and answers a value, nothing, or that what
+   the lamp reported cannot be used (see [What a value is](#what-a-value-is)).
+   **Writes:** entity commands call `coordinator.async_set_*`, which
+   CBOR-encodes a map and writes it to the lamp.
 5. **Notifications** decoded from the lamp update `coordinator.state`; the
    coordinator then calls its listeners, and each entity re-renders via
    `async_write_ha_state()`.
@@ -393,6 +395,68 @@ brings. A property beyond that is not stored, and counted each time it is
 reported - the log says so once, and the diagnostics say how many times -
 and a frame of which nothing was kept is no report.
 
+### What a value is
+
+The mirror keeps what the lamp said under an id, as it said it. What that
+is - a flag, a level, a slot - is answered by a **reader** in `protocol.py`,
+one for each property, and by nothing else: the entities, the commands that
+build on a reported value and the diagnostics all go through it
+(`protocol.PROPERTIES` has them by id). A reader is handed the mirror and has
+one of three answers:
+
+- `None` - the lamp has reported nothing under the id;
+- the value, as what the id means;
+- `UNUSABLE` - something is there, and it is not what the id means.
+
+| Property | A value is |
+| --- | --- |
+| power, the two mode flags, activated, indicator | a boolean |
+| brightness | a number from 0 to 100, whole or not; not a boolean |
+| lighting mode | a whole number from 0 to 255, not a boolean. Which preset it is, if any, is the model profile's to say |
+| latitude, longitude | a finite float, within 90 and within 180 degrees |
+| ramp | two bytes: seconds, no more than two hours |
+| daylight saving | five bytes: a flag byte of 0 or 1, then an offset in seconds of no more than two hours |
+| schedule slot | eleven bytes: a flag byte of 0 or 1, a start and an end that are times of day, a brightness from 0 to 100, a fade in seconds of no more than two hours. The three bytes nobody has decoded may hold anything |
+| clock | seven bytes that are a date and a time |
+
+The check is made where a value is read, and not at the mirror's intake. A
+value turned away there could not be told from one never reported, and a
+known id with a bad value would stop counting as reported - which turns an
+answer to the state request into silence, and silence into a read (see
+[Priming state on connect](#priming-state-on-connect)).
+
+The two answers that are no value are kept apart, because what follows from
+them differs (ADR 0011, ADR 0015):
+
+- **An entity** shows a value; `unknown` for what cannot be used; and what it
+  showed before the last restart only while nothing has been reported - a
+  setting, that is: the light and the diagnostic entities show `unknown` for
+  both. The operating mode is the mode whose flag says yes, Manual when both
+  say no, and cannot be used where no flag says yes and one of them is no
+  flag; the entities of one mode stay available then, as they do while the
+  mode is not known. No platform reads `coordinator.state`: a test reads
+  them.
+- **A command** never writes back what cannot be used. Choosing a lighting
+  mode sends the ramp remembered, else the one reported if it is a ramp,
+  else the default. Setting the ramp, or a field of the schedule, is refused
+  - there is nothing to build the frame on - in words that do not promise
+  that waiting helps, as the refusal for a setting not yet reported does.
+  The daylight-saving switch writes the hour.
+- **The log** says it once a session for each property, at warning level:
+  the property by its name here, nothing of the value, and what to send.
+- **The diagnostics** say `not as expected` exactly where the reader says
+  the value cannot be used, and word what the reader returns.
+
+`UNUSABLE` cannot be taken for a value by leaving the check out. It is no
+number and no bytes, the type checker holds every caller to the three
+answers, and it refuses to be truth-tested: "true" is how a text under the
+power id used to read as on.
+
+No lamp has been seen to report a value of the wrong kind. A model whose
+layout differs from the table reads `unknown` where it differs, and the log
+says so: a new row, with the frame or the diagnostics download that shows
+it, is how that is mended.
+
 ### Property-key table
 
 Keys are defined in `const.py` and were verified against btsnoop captures and the
@@ -518,7 +582,11 @@ to be read. That makes correcting it cheap: the priming path compares what
 the lamp reports against local time and writes only when it is more than
 `_CLOCK_TOLERANCE` (60 s) out. A clock that is right costs no write at all,
 however often a link is made, and a lamp that has not reported one is left
-alone — a blind write would be guessing at what it believes.
+alone — a blind write would be guessing at what it believes. Seven bytes
+that show no date are a clock that is wrong, and are corrected. Anything
+else under the id - a clock of another length, a number, a text - is a
+clock kept in a way nobody has seen, and is left alone as well: seven bytes
+written over it would be a guess of another kind.
 
 Measured while settling how the DST flag interacts with this: toggling `0x35`
 does **not** move `0x05`. The lamp stores the clock verbatim, so writing local
@@ -567,6 +635,9 @@ Notes:
 - It is **idempotent**: a device already activated (by the app, or a previous HA
   run) reports `0x14 = True` and the sequence is skipped. Activation survives HA
   restarts; `0x14` only clears on a factory reset.
+- It goes by the flag itself, both ways. Only the boolean `False` is a lamp
+  to bring up, and only the boolean `True` settles the question for the
+  session: a number or a text under `0x14` reads as true and says neither.
 - The **Activated** `binary_sensor` (diagnostic) surfaces this flag so users can
   see provisioning status.
 
@@ -1187,10 +1258,12 @@ lamp's words in them, and of the client only what kind it is. The coordinator
 sets them beside the device half's five, in the order the block has always been
 written in:
 
-- Each property the integration knows is read the way the integration reads
-  it, and written out from that reading: a schedule as its times and its
-  brightness, a ramp as seconds, a flag as a flag. The bytes of a schedule
-  that nobody has decoded are therefore not in the file.
+- Each property the integration knows is read by the reader the entities and
+  the commands go through (see [What a value is](#what-a-value-is)), and
+  written out from that reading: a schedule as its times and its brightness,
+  a ramp as seconds, a flag as a flag, a brightness as the whole level it is
+  nearest to. The bytes of a schedule that nobody has decoded are therefore
+  not in the file, and neither is a float of the lamp's choosing.
 - The clock is given as how far it was from the host's, in seconds, at the
   moment it came into the mirror, and with how long ago that was. How far off
   it is is what a report needs, and it is a reading rather than a copy. The
@@ -1200,7 +1273,9 @@ written in:
   download, a clock that was exactly right read as slow by its own age.
 - A known property whose value does not read as what its name means - seven
   bytes that are not a date, a schedule whose hours are not hours - is said
-  to be there and `not as expected`. A length is not a check.
+  to be there and `not as expected`. A length is not a check. It is the
+  judgement the device page shows as `unknown`: the file has none of its
+  own.
 - The coordinates are marked as redacted, so that it can be seen the lamp has
   them.
 - Whatever has no name here is **counted**, and neither its value, its size
@@ -1235,9 +1310,11 @@ log prints the ones it could not use in full.
 Unit tests live in `tests/` and **never touch real Bluetooth**:
 
 - `test_cbor.py` — the codec, checked against exact bytes from btsnoop captures.
-- `test_protocol.py` — the byte layouts behind the typed values, read and
-  written: the `0x11` schedule slot, the `0x2f` ramp, the `0x35` daylight-saving
-  slot and the `0x05` clock.
+- `test_protocol.py` — the readers: what a value is for each property, row by
+  row of the table, and that each has one of its three answers for every kind
+  of value the decoder can hand over; and the byte layouts written: the
+  `0x11` schedule slot, the `0x2f` ramp, the `0x35` daylight-saving slot and
+  the `0x05` clock.
 - `test_mirror.py` — the state mirror alone, fed frames as hex: what a frame
   carried and what was kept of it, what counts as a report, how much of what
   nobody named is kept, and every line that prints a frame - blanked, and

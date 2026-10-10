@@ -2,7 +2,8 @@
 
 - **Status:** accepted
 - **Date:** 2026-08-25 (settings shown again after a restart, 0.2.1);
-  2026-10-07 (a lighting mode the model does not have is `unknown`, #30)
+  2026-10-07 (a lighting mode the model does not have is `unknown`, #30);
+  2026-10-10 (every setting tells the two apart, #23)
 
 ## Context
 
@@ -39,9 +40,9 @@ to act on (#30).
 
 ## Consequences
 
-- Today only the lighting-mode select tells "not read" from "read and
-  unusable". Ramp, DST, the indicator, the schedule and the operating mode do
-  not yet: that is the typed view of the mirror (#23), deferred.
+- Every setting tells "not read" from "read and unusable" since #23: the
+  readers answer the two apart, and a setting shows the remembered value for
+  the first only (ADR 0015). Until then only the lighting-mode select did.
 - A value remembered in a shape the entity no longer uses - a preset by its
   pre-0.3.0 English name - is converted where it can be and let go otherwise.
 - On a first start nothing is remembered and the settings read `unknown`.
@@ -54,13 +55,13 @@ to act on (#30).
   `::test_a_remembered_mode_the_lamp_does_not_have_is_not_shown`,
   `::test_an_index_the_model_does_not_have_is_not_the_remembered_mode`,
   `::test_a_report_of_nothing_is_a_report_and_the_remembered_mode_steps_back`,
-  `::test_a_value_remembered_in_a_shape_it_no_longer_has_is_let_go`;
+  `::test_a_value_remembered_in_a_shape_it_no_longer_has_is_let_go`,
+  `::test_a_value_that_cannot_be_used_is_shown_as_unknown`,
+  `::test_a_setting_shows_what_was_remembered_only_until_the_lamp_speaks`;
   `tests/test_coordinator.py::test_a_ramp_that_was_refused_is_not_remembered`,
   `::test_ramp_refuses_when_lighting_mode_unread`.
 
 ## Revisit when
 
-The state mirror becomes typed (#23), so that every setting can tell an unread
-value from an unusable one as the select does; or a model is found whose
-settings change while Home Assistant is away often enough that a remembered
-value misleads more than `unknown` would.
+A model is found whose settings change while Home Assistant is away often
+enough that a remembered value misleads more than `unknown` would.

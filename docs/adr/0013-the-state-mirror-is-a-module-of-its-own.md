@@ -80,7 +80,8 @@ the keys.
 - #23 wrote "keep nothing under an id nobody reads". The bound keeps 64 of
   them instead, by the maintainer's decision: the bound is of the same kind,
   and the bench goes on listing what a new model reports. What a value under
-  a known id may be, and how large, is still #23's.
+  a known id may be was #23's too, and is ADR 0015: judged where it is read,
+  with the mirror unchanged.
 
 ## Evidence
 

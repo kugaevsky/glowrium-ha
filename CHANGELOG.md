@@ -6,6 +6,62 @@ All notable changes to this project are documented here. The format is based on
 
 ## [Unreleased]
 
+### Fixed
+
+- **The bring-up of a factory-reset lamp is not settled by a value that
+  only reads as yes.** Whether a lamp has to be brought up is asked once a
+  session, and a number or a text under the activation flag settled it as
+  `true` would: a lamp that then reported `false` was not brought up. Only
+  the flag itself settles it now
+  ([#23](https://github.com/kugaevsky/glowrium-ha/issues/23)).
+- **A clock the lamp keeps in another shape is not written over.** A clock
+  of more than seven bytes was read by its first seven, found to be out, and
+  written over with seven bytes. A clock of seven bytes that shows no date
+  is still corrected; anything else under the id is left alone, as a clock
+  never reported is
+  ([#23](https://github.com/kugaevsky/glowrium-ha/issues/23)).
+- **A report that holds a null does not end a command in an error of
+  Python's.** A value with a null inside it could not be written back, and
+  the command that carried it failed with a `TypeError` in place of the
+  integration's own message
+  ([#23](https://github.com/kugaevsky/glowrium-ha/issues/23)).
+
+### Changed
+
+- **What a lamp reports under a property is shown only when it is what the
+  property means.** Each entity decided that for itself, and loosely: text
+  under the power id read as on, one zero byte under the Circadian flag as
+  Circadian mode, a flag as the first lighting mode, five bytes of `ff` as a
+  ramp of 1092 minutes, forty of them as a schedule at 255 %, a schedule of
+  twelve bytes as the one in its first eleven, `inf` as a latitude. A setting
+  whose report could not be read showed what it had shown before the last
+  restart, as one never reported does. Each property is read in one place
+  now - a flag is a boolean, a ramp two bytes of no more than two hours, a
+  schedule eleven bytes whose hours are hours - and a report of something
+  else reads `unknown`: not a guess, and not the remembered value. The log
+  says so once for the property, without the value. No lamp has been seen
+  to report any of this; a model that keeps a property another way loses a
+  reading it had, and that warning is how it will be found
+  ([#23](https://github.com/kugaevsky/glowrium-ha/issues/23)).
+- **A command is not built on a report that cannot be used.** After a ramp
+  of five bytes was reported, choosing a lighting mode wrote those five
+  bytes back to the lamp; after a lighting mode that was text, setting the
+  ramp wrote the text; changing the start of a schedule of forty bytes wrote
+  forty bytes. Choosing a lighting mode now sends the ramp remembered, else
+  the one reported if it is a ramp, else the default. Setting the ramp, or a
+  field of the schedule, is refused when what it has to be written together
+  with cannot be used - with a message of its own, in all six languages,
+  which does not say that it will come once the lamp is connected. The
+  daylight-saving switch writes the hour over a slot that is none
+  ([#23](https://github.com/kugaevsky/glowrium-ha/issues/23)).
+- **The diagnostics download and the device page read a value alike.** The
+  file had strict readings of its own, so the same report could be a ramp on
+  the device page and `not as expected` in the file. Both go through the
+  same reader. One reading changes with that: a brightness that is not a
+  whole number was `not as expected`, and is written out as the whole level
+  it is nearest to. For what a G7 reports the file is unchanged
+  ([#23](https://github.com/kugaevsky/glowrium-ha/issues/23)).
+
 ### Added
 
 - **A notice for a lamp whose model has no profile**, under *Settings →

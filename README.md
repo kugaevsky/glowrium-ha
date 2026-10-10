@@ -321,6 +321,13 @@ is only shown, never written from. Changing the ramp or a part of the schedule
 before the lamp has reported what the change builds on — its lighting mode,
 its schedule — is therefore refused, with a message that says so.
 
+What the lamp reports under a property is held to what the property means: a
+flag is a flag, a schedule is eleven bytes whose hours are hours. A report
+of something else is not shown as a guess and not replaced by the remembered
+value: that entity reads `unknown`, nothing is written back from it, and the
+log says so once (see
+`cannot be used by this integration` under [Troubleshooting](#troubleshooting)).
+
 ## Known limitations
 
 What the integration cannot do, as distinct from what it gets wrong.
@@ -387,6 +394,16 @@ messages worth acting on, and two symptoms that come without one.
   to do this: it is a model nobody has met - please
   [report it](CONTRIBUTING.md#sending-protocol-data-for-a-device) - or
   something else answering at the lamp's address.
+- **`what the lamp reported as its … cannot be used by this integration`** —
+  under a property the integration knows, the lamp reported something that is
+  not what the property means: a text where a flag belongs, a schedule of
+  another length. The entity reads `unknown` and no command is built on the
+  value; a change that would have to be - the ramp, on a lighting mode like
+  that - is refused with a message of its own. The rest of the lamp goes on
+  working. Said once for each property. No lamp has been seen to do this: it
+  is a model that keeps the property another way - please
+  [report it](CONTRIBUTING.md#sending-protocol-data-for-a-device), with the
+  diagnostics download - or something else answering at the lamp's address.
 - **A command fails with "out of range or the Bluetooth adapter busy"** — the
   write did not get through. Check that the vendor app is not connected (the
   lamp takes one connection at a time) and that an adapter or a proxy is

@@ -2341,6 +2341,44 @@ async def test_a_setting_shows_what_was_remembered_only_until_the_lamp_speaks(
     assert seen[1:] == [shown, "unknown"]
 
 
+@pytest.mark.parametrize(
+    "flags",
+    [
+        pytest.param({KEY_CIRCADIAN: "on", KEY_SCHEDULE: False}, id="text"),
+        pytest.param({KEY_CIRCADIAN: False, KEY_SCHEDULE: b"\x00"}, id="a byte"),
+        pytest.param({KEY_CIRCADIAN: 1}, id="a number, and one flag only"),
+    ],
+)
+async def test_nothing_goes_unavailable_for_a_mode_that_cannot_be_used(
+    hass: HomeAssistant, flags: dict[int, Any]
+) -> None:
+    """A mode that cannot be read is a mode that is not known, for availability.
+
+    The entities that belong to one mode are unavailable while the lamp is in
+    another, and available while its mode is not known - so that nothing
+    collapses before the lamp has spoken. A mode flag that is no flag leaves
+    the mode as unknown as that: the settings of both modes stay where they
+    are, and only the mode itself reads unknown.
+    """
+    entry = await _every_entity(hass)
+
+    entry.runtime_data._ingest(cbor.encode(flags))
+    await hass.async_block_till_done()
+
+    assert hass.states.get("select.glowrium_g7_1234_operating_mode").state == (
+        "unknown"
+    )
+    for of_a_mode in (
+        "select.glowrium_g7_1234_lighting_mode",
+        "number.glowrium_g7_1234_ramp_time",
+        "time.glowrium_g7_1234_schedule_start",
+        "time.glowrium_g7_1234_schedule_end",
+        "number.glowrium_g7_1234_schedule_gradual",
+        "number.glowrium_g7_1234_schedule_brightness",
+    ):
+        assert hass.states.get(of_a_mode).state != "unavailable", of_a_mode
+
+
 _PLATFORMS_READ = sorted(
     path
     for path in (ROOT / "custom_components" / "glowrium").glob("*.py")

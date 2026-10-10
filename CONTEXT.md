@@ -217,6 +217,20 @@ the properties nobody named it keeps the first sixty-four a session brings,
 and counts each time another is reported (`const.KNOWN_KEYS`,
 `Mirror.not_kept`).
 
+**Reader**:
+What says what a property's value is. Handed the state mirror, it answers a
+value, nothing - the lamp has reported nothing under the id - or that what
+is there is unusable. One for each property, for the entities, the commands
+and the diagnostics alike (`protocol.py`; `protocol.PROPERTIES`).
+
+**Unusable**:
+Of a value: reported by the lamp under a known property, and not what that
+property means - a text where a flag belongs, a slot of the wrong length, an
+hour of 25. Shown as unknown, never as what was remembered; never written
+back; said once a session for its property (`protocol.UNUSABLE`, ADR 0015).
+_Avoid_: "malformed", "invalid" - a frame is malformed; a value that cannot
+be used may be another model's layout, and right there.
+
 **Echo**:
 A command's payload reflected into the mirror after the lamp acknowledged the
 write. Our word, not the lamp's: no report, no count, no wake-up, no vouching
