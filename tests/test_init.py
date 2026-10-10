@@ -60,6 +60,7 @@ from custom_components.glowrium.const import (
     MODE_CIRCADIAN,
     MODE_SCHEDULE,
     OPERATING_MODES,
+    WRITE_UUID,
 )
 from custom_components.glowrium.coordinator import (
     GlowriumCoordinator,
@@ -76,6 +77,7 @@ from custom_components.glowrium.number import (
 from custom_components.glowrium.select import GlowriumLightingModeSelect
 from custom_components.glowrium.time import GlowriumTimerEnd, GlowriumTimerStart
 
+from .conftest import ROOT
 from .lamp import ScriptedLamp, in_range, link_of
 
 ADDRESS = "AA:BB:CC:DD:EE:FF"
@@ -1626,6 +1628,72 @@ async def test_a_model_without_a_profile_is_put_in_front_of_its_owner_at_start(
     assert address.replace(":", "") not in notice.issue_id.lower()
 
 
+def _anchors(markdown: str) -> set[str]:
+    """Return the anchors GitHub gives the headings of a Markdown document."""
+    titles = (
+        line.lstrip("#").strip().lower()
+        for line in markdown.splitlines()
+        if line.startswith("#")
+    )
+    return {re.sub(r"[^\w -]", "", title).replace(" ", "-") for title in titles}
+
+
+async def test_the_notice_links_to_a_heading_the_guide_has(
+    hass: HomeAssistant,
+) -> None:
+    """Where the notice sends its reader is a place that is there.
+
+    The link names a heading of the contributor guide by the anchor GitHub
+    makes of it. A heading reworded leaves the link opening the top of the
+    page, with nothing to say that it used to open somewhere.
+    """
+    await _started(hass, **{CONF_MODEL_ID: "Glowrium-C064"})
+    (notice,) = _notices(hass)
+
+    assert notice.learn_more_url is not None
+    page, _, anchor = notice.learn_more_url.partition("#")
+    assert page.endswith("/CONTRIBUTING.md")
+    assert anchor in _anchors((ROOT / "CONTRIBUTING.md").read_text())
+
+
+async def test_a_choice_is_written_for_a_model_without_a_profile_as_it_was(
+    hass: HomeAssistant,
+) -> None:
+    """The notice says what the presets are, and changes nothing about them.
+
+    A lamp whose model has no profile is offered the G7's eight presets by
+    their keys, and choosing one writes the G7's index for it: the frame is
+    the one captured from the vendor app making the same choice on a G7.
+    """
+    entry = _entry(**{CONF_MODEL_ID: "Glowrium-C064"})
+    entry.add_to_hass(hass)
+    await _setup_without_bluetooth(hass, entry)
+    select = "select.glowrium_g7_1234_lighting_mode"
+
+    assert hass.states.get(select).attributes["options"] == [
+        "sun_sync",
+        "before_sunrise",
+        "sunrise_sync",
+        "sunset_sync",
+        "after_sunset",
+        "two_phase",
+        "balance",
+        "enhanced_two_phase",
+    ]
+    lamp = ScriptedLamp()
+    with in_range(lamp):
+        await hass.services.async_call(
+            "select",
+            "select_option",
+            {"entity_id": select, "option": "sunrise_sync"},
+            blocking=True,
+        )
+
+    assert lamp.written == [
+        (WRITE_UUID, bytes.fromhex("a4182b05182c4202d0182f420e10183242001e"))
+    ]
+
+
 @pytest.mark.parametrize(
     "remembered",
     [
@@ -1776,16 +1844,21 @@ async def test_a_restart_brings_the_notice_back_for_a_loaded_entry_and_as_it_was
     entry = await _started(hass, **{CONF_MODEL_ID: "Glowrium-C064"})
     (notice,) = _notices(hass)
     ir.async_ignore_issue(hass, DOMAIN, notice.issue_id, True)
-    assert await hass.config_entries.async_unload(entry.entry_id)
+    # Home Assistant stops: nothing is unloaded, the integration hears the
+    # stop, and then the registry writes down what it holds.
+    hass.bus.async_fire(EVENT_HOMEASSISTANT_STOP)
     await hass.async_block_till_done()
     registry = ir.async_get(hass)
+    written = [issue.to_json() for issue in registry.issues.values()]
 
-    # The restart: the registry reads back what it writes down as it stops.
+    # The restart: no entry is loaded yet, and the registry reads that back.
+    assert await hass.config_entries.async_unload(entry.entry_id)
+    await hass.async_block_till_done()
     hass_storage[ir.STORAGE_KEY] = {
         "version": ir.STORAGE_VERSION_MAJOR,
         "minor_version": ir.STORAGE_VERSION_MINOR,
         "key": ir.STORAGE_KEY,
-        "data": {"issues": [issue.to_json() for issue in registry.issues.values()]},
+        "data": {"issues": written},
     }
     await registry.async_load()
 

@@ -136,3 +136,19 @@ def test_the_notice_says_whose_presets_they_are_in_every_language(path: Path) ->
 
     for key in NOTICES:
         assert "Glowrium G7" in said[f"issues.{key}.description"], key
+
+
+@pytest.mark.parametrize("path", TRANSLATIONS, ids=lambda path: path.stem)
+def test_the_notice_calls_the_select_what_its_language_calls_it(path: Path) -> None:
+    """The text points at a control, by the name that control is shown under.
+
+    Twice: where the presets are offered, and where the choice is shown
+    whether or not the lamp took it. In each language the select has a name
+    of its own, and a notice that used another would send its reader looking
+    for a control that is not there.
+    """
+    said = _leaves(json.loads(path.read_text()))
+    name = said["entity.select.lighting_mode.name"]
+
+    for key in NOTICES:
+        assert said[f"issues.{key}.description"].count(f"**{name}**") == 2, key

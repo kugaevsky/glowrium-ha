@@ -9,6 +9,7 @@ import pytest
 from custom_components.glowrium.models import (
     DEFAULT_MODEL,
     MODELS,
+    GlowriumModel,
     has_profile,
     resolve_model,
 )
@@ -72,3 +73,20 @@ def test_a_model_id_has_a_profile_of_its_own_or_has_none(
     unconfirmed for that model, is asked apart, and is not read off the name.
     """
     assert has_profile(pkey) is has_one
+
+
+def test_a_profile_is_a_profile_whatever_it_is_called(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Whether a model has a profile is not read off the name it goes by.
+
+    The generic profile is shown under the family's name. A model whose own
+    profile was given that name would have presets of its own all the same.
+    """
+    plain = GlowriumModel(
+        pkey="Glowrium-C099", name="Glowrium", lighting_modes={"sun_sync": 1}
+    )
+    monkeypatch.setitem(MODELS, plain.pkey, plain)
+
+    assert has_profile("Glowrium-C099")
+    assert resolve_model("Glowrium-C099") is plain
