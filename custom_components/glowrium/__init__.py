@@ -10,10 +10,11 @@ from homeassistant.const import (
     Platform,
 )
 from homeassistant.core import HomeAssistant
+from homeassistant.helpers import issue_registry as ir
 from homeassistant.util.hass_dict import HassKey
 
 from .const import DOMAIN
-from .coordinator import GlowriumCoordinator
+from .coordinator import GlowriumCoordinator, presets_issue_id
 from .link import Unclosed
 
 PLATFORMS: list[Platform] = [
@@ -80,3 +81,14 @@ async def async_unload_entry(hass: HomeAssistant, entry: GlowriumConfigEntry) ->
     # The coordinator is stopped by the async_on_unload callback registered in
     # async_setup_entry, which covers a failed setup as well as this path.
     return await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
+
+
+async def async_remove_entry(hass: HomeAssistant, entry: GlowriumConfigEntry) -> None:
+    """Take down what was said of a lamp that is no longer set up.
+
+    The notice that a lamp's presets are unconfirmed is left standing when
+    its entry is unloaded - a reload must not bring back one its owner has
+    ignored - so it is taken down here, where the entry goes for good. Home
+    Assistant does not delete an integration's repairs with its entry.
+    """
+    ir.async_delete_issue(hass, DOMAIN, presets_issue_id(entry.entry_id))

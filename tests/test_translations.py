@@ -93,3 +93,46 @@ def test_english_is_strings_json_word_for_word() -> None:
     english = json.loads((INTEGRATION / "translations" / "en.json").read_text())
 
     assert _leaves(english) == STRINGS
+
+
+REPAIRS = sorted(
+    key.split(".")[1]
+    for key in STRINGS
+    if key.startswith("issues.") and key.endswith(".title")
+)
+NOTICES = [key for key in REPAIRS if key.startswith("presets_unconfirmed")]
+
+
+@pytest.mark.parametrize("key", REPAIRS)
+def test_the_text_of_a_repair_is_one_the_integration_raises(key: str) -> None:
+    """A text no repair is raised under is a key misspelt at one end.
+
+    As with the messages of errors: the end that raises it then shows its
+    owner the key in place of the text.
+    """
+    assert f'"{key}"' in SOURCES
+
+
+def test_the_notice_about_presets_has_its_two_wordings() -> None:
+    """One names the model, and one does without a model id it cannot show."""
+    assert NOTICES == ["presets_unconfirmed", "presets_unconfirmed_unnamed_model"]
+    assert _placeholders(STRINGS["issues.presets_unconfirmed.description"]) == {
+        "name",
+        "model",
+    }
+    assert _placeholders(
+        STRINGS["issues.presets_unconfirmed_unnamed_model.description"]
+    ) == {"name"}
+
+
+@pytest.mark.parametrize("path", TRANSLATIONS, ids=lambda path: path.stem)
+def test_the_notice_says_whose_presets_they_are_in_every_language(path: Path) -> None:
+    """The one fact the notice is there for is not lost in a translation.
+
+    The presets on offer are those of the G7. A translation that kept its
+    placeholders and dropped that would pass every other test here.
+    """
+    said = _leaves(json.loads(path.read_text()))
+
+    for key in NOTICES:
+        assert "Glowrium G7" in said[f"issues.{key}.description"], key

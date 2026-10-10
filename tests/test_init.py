@@ -5,6 +5,7 @@ from collections.abc import Iterator
 import contextlib
 import importlib
 import logging
+import re
 from typing import Any
 from unittest.mock import AsyncMock, PropertyMock, patch
 
@@ -29,9 +30,11 @@ from homeassistant.helpers import (
     area_registry as ar,
     device_registry as dr,
     entity_registry as er,
+    issue_registry as ir,
 )
 from homeassistant.helpers.event import async_track_state_change_event
 from homeassistant.helpers.icon import async_get_icons
+from homeassistant.helpers.translation import async_get_translations
 import pytest
 from pytest_homeassistant_custom_component.common import (
     MockConfigEntry,
@@ -73,7 +76,7 @@ from custom_components.glowrium.number import (
 from custom_components.glowrium.select import GlowriumLightingModeSelect
 from custom_components.glowrium.time import GlowriumTimerEnd, GlowriumTimerStart
 
-from .lamp import ScriptedLamp, in_range, link_of
+from .lamp import ScriptedLamp, in_range, link_of, turn_over
 
 ADDRESS = "AA:BB:CC:DD:EE:FF"
 G7_INFO = b"brand:INLEDCO;pkey:Glowrium-C051;devid:CST-0001;mac:x;version:4;;"
@@ -1553,3 +1556,439 @@ async def test_a_string_that_names_no_model_leaves_the_one_on_record(
     await _reads_what_the_lamp_is(entry, b"brand:INLEDCO;version:7;;")
 
     assert _described(_device(hass)) == ("Glowrium G8", "Glowrium-C064", "7", None)
+
+
+# --- A model without a profile: its owner is told ------------------------------
+
+
+async def _started(hass: HomeAssistant, **data: str) -> MockConfigEntry:
+    """Set an entry up as the integration starts one, by a lamp that never connects.
+
+    The start is the real one - the entry taken, the watchers put up, the
+    first connect on its way - and nothing is ever read: what is known of the
+    lamp is what the entry remembers.
+    """
+    entry = _entry(**data)
+    entry.add_to_hass(hass)
+    with _a_lamp_that_never_connects():
+        assert await hass.config_entries.async_setup(entry.entry_id)
+        await hass.async_block_till_done()
+    return entry
+
+
+def _notices(hass: HomeAssistant) -> list[ir.IssueEntry]:
+    """Return the repairs that say a lamp's presets are unconfirmed."""
+    return [
+        issue
+        for (domain, _id), issue in ir.async_get(hass).issues.items()
+        if domain == DOMAIN and issue.translation_key.startswith("presets_unconfirmed")
+    ]
+
+
+async def test_a_model_without_a_profile_is_put_in_front_of_its_owner_at_start(
+    hass: HomeAssistant,
+) -> None:
+    """The presets of such a lamp are the G7's, and Home Assistant says so.
+
+    The select offers eight names and writes the G7's index for the one
+    chosen, whatever the lamp makes of it; until now only the README said
+    that this is a guess. The notice is raised from what the entry
+    remembers, before anything is read: the lamp may be out of reach for
+    hours. It asks for nothing that can be done from the dialog, links to
+    what would settle the question, and is named by the entry and not by the
+    lamp's address - Home Assistant lists the ids of open repairs in the
+    diagnostics download.
+    """
+    entry = await _started(hass, **{CONF_MODEL_ID: "Glowrium-C064"})
+
+    (notice,) = _notices(hass)
+    assert notice.translation_key == "presets_unconfirmed"
+    assert notice.translation_placeholders == {
+        "name": "Glowrium-G7_1234",
+        "model": "Glowrium-C064",
+    }
+    assert notice.severity is ir.IssueSeverity.WARNING
+    assert notice.is_fixable is False
+    assert notice.learn_more_url is not None
+    assert notice.learn_more_url.endswith(
+        "/CONTRIBUTING.md#sending-protocol-data-for-a-device"
+    )
+    assert entry.entry_id in notice.issue_id
+    address = ADDRESS.lower()
+    assert address not in notice.issue_id.lower()
+    assert address.replace(":", "") not in notice.issue_id.lower()
+
+
+@pytest.mark.parametrize(
+    "remembered",
+    [
+        pytest.param({CONF_MODEL_ID: "Glowrium-C051"}, id="a G7"),
+        pytest.param({}, id="a lamp that has never said what it is"),
+    ],
+)
+async def test_a_lamp_with_a_profile_or_one_not_yet_known_is_told_nothing(
+    hass: HomeAssistant, remembered: dict[str, str]
+) -> None:
+    """Not knowing the model is not the same as knowing it has no profile.
+
+    A lamp set up for the first time has no model id until its device-info
+    string has been read, and it is driven by the same generic profile
+    meanwhile. A G7 in that state must not be told that its presets are a
+    guess - nor at any time after.
+    """
+    await _started(hass, **remembered)
+
+    assert _notices(hass) == []
+
+
+_G8_INFO = b"brand:INLEDCO;pkey:Glowrium-C064;devid:CST-0009;mac:x;version:2;;"
+
+
+@pytest.mark.parametrize(
+    ("says", "told"),
+    [
+        pytest.param(_G8_INFO, True, id="a model without a profile"),
+        pytest.param(G7_INFO, False, id="a G7"),
+    ],
+)
+async def test_the_notice_comes_in_the_session_the_model_is_first_read_in(
+    hass: HomeAssistant, says: bytes, told: bool
+) -> None:
+    """A lamp set up today is told today, and not after the next restart.
+
+    Nothing is known of its model until its device-info string has been read,
+    which is the last thing the first exchange does. What it names is judged
+    there and then: a model without a profile raises the notice, and a G7
+    raises none - at that point or at any other.
+    """
+    entry = await _setup_without_bluetooth(hass)
+    assert _notices(hass) == []  # nothing is known of the lamp yet
+
+    await _reads_what_the_lamp_is(entry, says)
+
+    assert [notice.translation_placeholders for notice in _notices(hass)] == (
+        [{"name": "Glowrium-G7_1234", "model": "Glowrium-C064"}] if told else []
+    )
+
+
+async def test_the_notice_goes_once_the_model_has_a_profile(
+    hass: HomeAssistant, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An update that brings the model's profile ends what the notice said.
+
+    Its presets are its own from then on. The notice is taken down at the
+    next start, by the integration: left to itself it would stand until
+    somebody ignored it.
+    """
+    entry = await _started(hass, **{CONF_MODEL_ID: "Glowrium-C064"})
+    assert len(_notices(hass)) == 1
+    g8 = GlowriumModel(
+        pkey="Glowrium-C064", name="Glowrium G8", lighting_modes={"sun_sync": 1}
+    )
+    monkeypatch.setitem(models.MODELS, g8.pkey, g8)
+
+    with _a_lamp_that_never_connects():
+        assert await hass.config_entries.async_reload(entry.entry_id)
+        await hass.async_block_till_done()
+
+    assert _notices(hass) == []
+
+
+async def test_the_notice_goes_when_the_lamp_names_a_model_that_has_a_profile(
+    hass: HomeAssistant,
+) -> None:
+    """What the lamp says now outweighs what the entry remembered.
+
+    The notice at start is raised on a remembered model id. When the lamp is
+    then read and names a model with a profile, the presets on offer are that
+    model's, and the notice is taken down in the same session.
+    """
+    entry = _entry(**{CONF_MODEL_ID: "Glowrium-C064"})
+    entry.add_to_hass(hass)
+    lamp = ScriptedLamp()
+    lamp.answers({KEY_ACTIVATED: True, KEY_CIRCADIAN: True})
+    lamp.readable(INFO_UUID, G7_INFO)
+    found = asyncio.Event()
+    lamp.dials_when(found)
+
+    with in_range(lamp):
+        assert await hass.config_entries.async_setup(entry.entry_id)
+        await hass.async_block_till_done()
+        assert len(_notices(hass)) == 1  # as remembered, the lamp not reached yet
+
+        coordinator = entry.runtime_data
+        read = asyncio.Event()
+        coordinator.async_add_listener(
+            lambda: read.set() if coordinator.device_info else None
+        )
+        found.set()
+        await asyncio.wait_for(read.wait(), 2)  # told once the exchange is over
+
+    assert entry.data[CONF_MODEL_ID] == "Glowrium-C051"
+    assert _notices(hass) == []
+
+
+async def test_a_notice_that_was_ignored_stays_ignored_through_a_reload(
+    hass: HomeAssistant,
+) -> None:
+    """Its owner has read it once, and a reload does not show it again.
+
+    Home Assistant keeps "ignored" with the repair, so one that is deleted
+    and raised afresh comes back as new. An entry is reloaded for reasons
+    that have nothing to do with the lamp's model; the notice is left
+    standing through that, and raised over itself by the next start.
+    """
+    entry = await _started(hass, **{CONF_MODEL_ID: "Glowrium-C064"})
+    (notice,) = _notices(hass)
+    ir.async_ignore_issue(hass, DOMAIN, notice.issue_id, True)
+
+    with _a_lamp_that_never_connects():
+        assert await hass.config_entries.async_reload(entry.entry_id)
+        await hass.async_block_till_done()
+
+    (still,) = _notices(hass)
+    assert still.issue_id == notice.issue_id
+    assert still.dismissed_version is not None
+    assert still.active
+    # Not kept across a restart of Home Assistant: an entry that is not
+    # loaded then does not show it, and one that is raises it again.
+    assert still.is_persistent is False
+
+
+async def test_a_restart_brings_the_notice_back_for_a_loaded_entry_and_as_it_was_left(
+    hass: HomeAssistant, hass_storage: dict[str, Any]
+) -> None:
+    """Across a restart Home Assistant keeps only that the notice was ignored.
+
+    The integration stops watching as Home Assistant stops, and the notice is
+    left standing through that: what is written down of it then is its id and
+    whether it was ignored. Read back, it is shown to nobody - an entry that
+    is not loaded after the restart says nothing - until the entry starts and
+    raises it over what was kept, ignored as its owner left it.
+    """
+    entry = await _started(hass, **{CONF_MODEL_ID: "Glowrium-C064"})
+    (notice,) = _notices(hass)
+    ir.async_ignore_issue(hass, DOMAIN, notice.issue_id, True)
+    assert await hass.config_entries.async_unload(entry.entry_id)
+    await hass.async_block_till_done()
+    registry = ir.async_get(hass)
+
+    # The restart: the registry reads back what it writes down as it stops.
+    hass_storage[ir.STORAGE_KEY] = {
+        "version": ir.STORAGE_VERSION_MAJOR,
+        "minor_version": ir.STORAGE_VERSION_MINOR,
+        "key": ir.STORAGE_KEY,
+        "data": {"issues": [issue.to_json() for issue in registry.issues.values()]},
+    }
+    await registry.async_load()
+
+    kept = registry.async_get_issue(DOMAIN, notice.issue_id)
+    assert kept is not None
+    assert not kept.active  # nothing is shown for an entry that is not loaded
+    assert kept.dismissed_version is not None
+
+    with _a_lamp_that_never_connects():
+        assert await hass.config_entries.async_setup(entry.entry_id)
+        await hass.async_block_till_done()
+
+    (back,) = _notices(hass)
+    assert back.issue_id == notice.issue_id
+    assert back.active
+    assert back.dismissed_version == kept.dismissed_version
+
+
+async def test_the_notice_goes_with_the_entry(hass: HomeAssistant) -> None:
+    """A lamp that is no longer set up has nothing left to be said about.
+
+    Home Assistant does not take an integration's repairs away with its
+    entry, and by then there is no coordinator left to do it.
+    """
+    entry = await _started(hass, **{CONF_MODEL_ID: "Glowrium-C064"})
+    assert len(_notices(hass)) == 1
+
+    assert await hass.config_entries.async_remove(entry.entry_id)
+    await hass.async_block_till_done()
+
+    assert _notices(hass) == []
+
+
+@pytest.mark.parametrize(
+    ("title", "shown"),
+    [
+        (
+            "Glowrium-![x](http://evil.example/p.png)<img src=x>",
+            "Glowrium- x http evil example p png img src x",
+        ),
+        ("Glowrium-G7_DDEEFF (AA:BB:CC:DD:EE:FF)", "Glowrium-G7_DDEEFF"),
+    ],
+)
+async def test_the_notice_shows_the_lamps_name_as_text(
+    hass: HomeAssistant, title: str, shown: str
+) -> None:
+    """The name comes off the air, and a repair is rendered as Markdown.
+
+    As in the repair for a stack fault: what is shown of it is letters,
+    digits, spaces, dashes and underscores, and the address that a lamp
+    picked from the list is titled with is left out.
+    """
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        title=title,
+        unique_id=ADDRESS,
+        data={CONF_ADDRESS: ADDRESS, CONF_MODEL_ID: "Glowrium-C064"},
+    )
+    entry.add_to_hass(hass)
+    with _a_lamp_that_never_connects():
+        assert await hass.config_entries.async_setup(entry.entry_id)
+        await hass.async_block_till_done()
+
+    (notice,) = _notices(hass)
+    assert notice.translation_placeholders is not None
+    assert notice.translation_placeholders["name"] == shown
+
+
+@pytest.mark.parametrize(
+    "claimed",
+    [
+        pytest.param("Glowrium-C051,devid:CST-0001", id="the serial glued to it"),
+        pytest.param("Glowrium-C064 [x](http://evil.example)", id="Markdown in it"),
+    ],
+)
+async def test_a_model_id_that_is_not_shaped_like_one_is_not_printed(
+    hass: HomeAssistant, claimed: str
+) -> None:
+    """A lamp that separates its fields differently hands over one long field.
+
+    Its model id is then whatever the parser made of the device-info string,
+    the serial number or the address inside it. It names no profile, so the
+    notice is raised all the same - in words that do without the model id,
+    which goes into a text only when it is one from end to end.
+    """
+    await _started(hass, **{CONF_MODEL_ID: claimed})
+
+    (notice,) = _notices(hass)
+    assert notice.translation_key == "presets_unconfirmed_unnamed_model"
+    assert notice.translation_placeholders == {"name": "Glowrium-G7_1234"}
+
+
+def _open_repairs(hass: HomeAssistant) -> list[tuple[str, str]]:
+    """Return every repair of the integration: what it says, and under which id."""
+    return sorted(
+        (issue.translation_key, issue.issue_id)
+        for (domain, _id), issue in ir.async_get(hass).issues.items()
+        if domain == DOMAIN
+    )
+
+
+async def test_the_notice_and_the_repair_for_a_stack_fault_leave_each_other_alone(
+    hass: HomeAssistant,
+) -> None:
+    """Two things can be said of one lamp, and neither is the other's to end.
+
+    The repair for a stack fault is raised and taken down by what the link
+    sees; the notice by what is known of the model. Raising or clearing the
+    one leaves the other as it was, its owner's having ignored it included.
+    """
+    entry = await _started(hass, **{CONF_MODEL_ID: "Glowrium-C064"})
+    (notice,) = _notices(hass)
+    ir.async_ignore_issue(hass, DOMAIN, notice.issue_id, True)
+    (ignored,) = _notices(hass)
+    link = link_of(entry.runtime_data)
+
+    for _ in range(3):  # three hang-ups in a row left unanswered: a stack fault
+        link.note_stuck_hang_up()
+
+    assert [key for key, _id in _open_repairs(hass)] == [
+        "bluetooth_stack_stuck",
+        "presets_unconfirmed",
+    ]
+    assert _notices(hass) == [ignored]
+
+    link.note_answer()  # the lamp answers: the stack has let go
+
+    assert [key for key, _id in _open_repairs(hass)] == ["presets_unconfirmed"]
+    assert _notices(hass) == [ignored]
+
+
+async def test_one_lamps_notice_is_not_anothers(hass: HomeAssistant) -> None:
+    """Each entry has a notice of its own, and takes only its own away.
+
+    Two lamps of a model without a profile are two notices, named by their
+    entries. Removing one lamp leaves what is said of the other - its notice,
+    and the repair for a stack fault if it has one.
+    """
+    first = await _started(hass, **{CONF_MODEL_ID: "Glowrium-C064"})
+    other = MockConfigEntry(
+        domain=DOMAIN,
+        title="Glowrium-G8_5678",
+        unique_id="11:22:33:44:55:66",
+        data={CONF_ADDRESS: "11:22:33:44:55:66", CONF_MODEL_ID: "Glowrium-C064"},
+    )
+    other.add_to_hass(hass)
+    with _a_lamp_that_never_connects():
+        assert await hass.config_entries.async_setup(other.entry_id)
+        await hass.async_block_till_done()
+    for _ in range(3):
+        link_of(other.runtime_data).note_stuck_hang_up()
+    assert len(_notices(hass)) == 2
+    assert len(_open_repairs(hass)) == 3
+
+    assert await hass.config_entries.async_remove(first.entry_id)
+    await hass.async_block_till_done()
+
+    left = _open_repairs(hass)
+    assert [key for key, _id in left] == [
+        "bluetooth_stack_stuck",
+        "presets_unconfirmed",
+    ]
+    assert all(other.entry_id in issue_id for _key, issue_id in left)
+
+
+async def test_a_coordinator_that_was_stopped_raises_no_notice(
+    hass: HomeAssistant,
+) -> None:
+    """What a stopped coordinator learns of the model is not its to say.
+
+    The device info is read last on a link, and the entry can be unloaded
+    while that read is on its way. A notice raised then would stand for an
+    entry that is not loaded. What was read is kept with the entry all the
+    same, and the next start raises the notice from that.
+    """
+    entry = await _setup_without_bluetooth(hass)
+    coordinator = entry.runtime_data
+    lamp = ScriptedLamp()
+    lamp.readable(INFO_UUID, _G8_INFO)
+    link = await lamp.dial(lambda _link: None)
+    await coordinator.async_stop()
+
+    await coordinator._async_read_device_info(turn_over(coordinator, link))
+
+    assert entry.data[CONF_MODEL_ID] == "Glowrium-C064"  # read, and kept
+    assert _notices(hass) == []
+
+
+@pytest.mark.parametrize(
+    "claimed",
+    [
+        pytest.param("Glowrium-C064", id="a model id"),
+        pytest.param("Glowrium-C051,devid:CST-0001", id="not shaped like one"),
+    ],
+)
+async def test_the_notice_has_words_for_what_it_brings(
+    hass: HomeAssistant, claimed: str
+) -> None:
+    """The text Home Assistant serves for the notice takes what the notice gives.
+
+    A repair raised under a key that has no text shows its owner the key, and
+    a placeholder the text names and the repair does not bring is shown as a
+    brace. The words are asked of Home Assistant, as the frontend asks.
+    """
+    await _started(hass, **{CONF_MODEL_ID: claimed})
+    (notice,) = _notices(hass)
+
+    words = await async_get_translations(hass, "en", "issues", {DOMAIN})
+    key = f"component.{DOMAIN}.issues.{notice.translation_key}"
+    text = words[f"{key}.title"] + words[f"{key}.description"]
+
+    assert notice.translation_placeholders is not None
+    assert set(re.findall(r"{(\w+)}", text)) == set(notice.translation_placeholders)

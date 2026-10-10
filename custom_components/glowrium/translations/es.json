@@ -115,6 +115,14 @@
     "bluetooth_stack_stuck": {
       "title": "La pila Bluetooth del host retiene una conexión que ya no existe",
       "description": "Home Assistant pidió a la pila Bluetooth de este host que se desconectara de {name} {count} veces seguidas y no obtuvo respuesta. Eso indica que la pila retiene una conexión que ya no existe: no es un problema de la lámpara, y reiniciar Home Assistant no lo resuelve.\n\nApaga y vuelve a encender el adaptador Bluetooth del host (`bluetoothctl power off` y después `bluetoothctl power on`) o reinicia su servicio bluetooth. Hasta entonces se intentará contactar con la lámpara con menos frecuencia. Este aviso desaparecerá por sí solo en cuanto la lámpara vuelva a responder."
+    },
+    "presets_unconfirmed": {
+      "title": "{name}: los ajustes predefinidos del modo de iluminación no están confirmados para este modelo",
+      "description": "{name} indica el modelo `{model}`, y la integración no tiene perfil para ese modelo. Los ajustes predefinidos que se ofrecen en **Modo de iluminación** son los del modelo Glowrium G7.\n\nEn este modelo un nombre puede seleccionar un ajuste distinto del que indica, o ninguno. **Modo de iluminación** muestra en cualquier caso lo elegido, lo haya tomado la lámpara por ese ajuste o no.\n\nLo resuelve un informe de lo que hace cada ajuste en esta lámpara o, mejor, una captura de la aplicación del fabricante al cambiar de uno a otro: la guía enlazada abajo explica qué enviar y cómo. Hasta entonces los ajustes se siguen ofreciendo tal cual, y este aviso se puede ignorar."
+    },
+    "presets_unconfirmed_unnamed_model": {
+      "title": "{name}: los ajustes predefinidos del modo de iluminación no están confirmados para este modelo",
+      "description": "{name} indica su modelo de una forma que la integración no reconoce, así que no hay perfil para él. Los ajustes predefinidos que se ofrecen en **Modo de iluminación** son los del modelo Glowrium G7.\n\nEn este modelo un nombre puede seleccionar un ajuste distinto del que indica, o ninguno. **Modo de iluminación** muestra en cualquier caso lo elegido, lo haya tomado la lámpara por ese ajuste o no.\n\nLo resuelve un informe de lo que hace cada ajuste en esta lámpara o, mejor, una captura de la aplicación del fabricante al cambiar de uno a otro: la guía enlazada abajo explica qué enviar y cómo. Hasta entonces los ajustes se siguen ofreciendo tal cual, y este aviso se puede ignorar."
     }
   }
 }

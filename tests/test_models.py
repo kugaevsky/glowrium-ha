@@ -6,7 +6,12 @@ import re
 
 import pytest
 
-from custom_components.glowrium.models import DEFAULT_MODEL, MODELS, resolve_model
+from custom_components.glowrium.models import (
+    DEFAULT_MODEL,
+    MODELS,
+    has_profile,
+    resolve_model,
+)
 
 INTEGRATION = Path(__file__).parent.parent / "custom_components" / "glowrium"
 NAMED_IN = [
@@ -47,3 +52,23 @@ def test_an_unknown_model_gets_the_reference_presets_under_the_family_name() -> 
     assert unknown.name == "Glowrium"
     assert unknown.pkey == "Glowrium-C064"
     assert unknown.lighting_modes == DEFAULT_MODEL.lighting_modes
+
+
+@pytest.mark.parametrize(
+    ("pkey", "has_one"),
+    [
+        pytest.param("Glowrium-C051", True, id="the G7"),
+        pytest.param("Glowrium-C064", False, id="a model nobody has captured"),
+    ],
+)
+def test_a_model_id_has_a_profile_of_its_own_or_has_none(
+    pkey: str, has_one: bool
+) -> None:
+    """Whether its presets are a model's own is asked of the registry.
+
+    ``resolve_model`` answers every model id with a profile - a generic one,
+    under the family name, where the model has none of its own - so that the
+    lamp can be controlled. That the presets are then the G7's, and
+    unconfirmed for that model, is asked apart, and is not read off the name.
+    """
+    assert has_profile(pkey) is has_one

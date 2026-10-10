@@ -115,6 +115,14 @@
     "bluetooth_stack_stuck": {
       "title": "La pile Bluetooth de l'hôte retient une connexion qui n'existe plus",
       "description": "Home Assistant a demandé {count} fois de suite à la pile Bluetooth de cet hôte de se déconnecter de {name}, sans obtenir de réponse. Cela indique que la pile retient une connexion qui n'existe plus : la lampe n'est pas en cause, et redémarrer Home Assistant n'y change rien.\n\nÉteignez puis rallumez l'adaptateur Bluetooth de l'hôte (`bluetoothctl power off`, puis `bluetoothctl power on`) ou redémarrez son service bluetooth. D'ici là, la lampe est sollicitée moins souvent. Ce message disparaîtra de lui-même dès que la lampe répondra à nouveau."
+    },
+    "presets_unconfirmed": {
+      "title": "{name} : les préréglages du mode d'éclairage ne sont pas confirmés pour ce modèle",
+      "description": "{name} indique le modèle `{model}`, et l'intégration n'a pas de profil pour ce modèle. Les préréglages proposés sous **Mode d'éclairage** sont ceux du modèle Glowrium G7.\n\nSur ce modèle, un nom peut sélectionner un autre préréglage que celui qu'il annonce, ou aucun. **Mode d'éclairage** affiche dans tous les cas ce qui a été choisi, que la lampe l'ait pris pour ce préréglage ou non.\n\nPour trancher, il faut un compte rendu de ce que fait chaque préréglage sur cette lampe ou, mieux, une capture de l'application du fabricant pendant qu'elle passe de l'un à l'autre : le guide en lien ci-dessous dit quoi envoyer et comment. D'ici là, les préréglages restent proposés tels quels, et ce message peut être ignoré."
+    },
+    "presets_unconfirmed_unnamed_model": {
+      "title": "{name} : les préréglages du mode d'éclairage ne sont pas confirmés pour ce modèle",
+      "description": "{name} indique son modèle sous une forme que l'intégration ne reconnaît pas ; il n'y a donc pas de profil pour lui. Les préréglages proposés sous **Mode d'éclairage** sont ceux du modèle Glowrium G7.\n\nSur ce modèle, un nom peut sélectionner un autre préréglage que celui qu'il annonce, ou aucun. **Mode d'éclairage** affiche dans tous les cas ce qui a été choisi, que la lampe l'ait pris pour ce préréglage ou non.\n\nPour trancher, il faut un compte rendu de ce que fait chaque préréglage sur cette lampe ou, mieux, une capture de l'application du fabricant pendant qu'elle passe de l'un à l'autre : le guide en lien ci-dessous dit quoi envoyer et comment. D'ici là, les préréglages restent proposés tels quels, et ce message peut être ignoré."
     }
   }
 }

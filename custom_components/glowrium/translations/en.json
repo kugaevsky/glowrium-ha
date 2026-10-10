@@ -115,6 +115,14 @@
     "bluetooth_stack_stuck": {
       "title": "The host's Bluetooth stack is holding on to a dead link",
       "description": "Home Assistant asked the Bluetooth stack on this host to disconnect {name} {count} times in a row and was never answered. That points at the stack holding on to a link that no longer exists - not at the lamp, and not at anything a restart of Home Assistant clears.\n\nPower-cycle the Bluetooth adapter on the host (`bluetoothctl power off`, then `bluetoothctl power on`) or restart its bluetooth service. Until then the lamp is tried less often. This goes away by itself as soon as the lamp answers again."
+    },
+    "presets_unconfirmed": {
+      "title": "{name}: the lighting-mode presets are unconfirmed for this model",
+      "description": "{name} names its model as `{model}`, and this integration has no profile for that model. The presets offered under **Lighting mode** are those of the Glowrium G7.\n\nOn this model a name may select another preset than it says, or none at all. **Lighting mode** shows what was chosen either way, whether or not the lamp took it as that preset.\n\nWhat settles it is a report of what each preset does on this lamp, or better a capture of the vendor app switching between them: the guide linked below says what to send and how. Until then the presets stay on offer as they are, and this notice can be ignored."
+    },
+    "presets_unconfirmed_unnamed_model": {
+      "title": "{name}: the lighting-mode presets are unconfirmed for this model",
+      "description": "{name} names its model in a form this integration does not recognise, so there is no profile for it. The presets offered under **Lighting mode** are those of the Glowrium G7.\n\nOn this model a name may select another preset than it says, or none at all. **Lighting mode** shows what was chosen either way, whether or not the lamp took it as that preset.\n\nWhat settles it is a report of what each preset does on this lamp, or better a capture of the vendor app switching between them: the guide linked below says what to send and how. Until then the presets stay on offer as they are, and this notice can be ignored."
     }
   }
 }

@@ -64,12 +64,18 @@ from .link import (
     dial_by_bluetooth,
 )
 from .mirror import Mirror
-from .models import GlowriumModel, resolve_model
+from .models import GlowriumModel, has_profile, resolve_model
 
 _LOGGER = logging.getLogger(__name__)
 # Where the repair for a Bluetooth stack that will not hang up sends the
 # reader for what to do.
 _TROUBLESHOOTING_URL = "https://github.com/kugaevsky/glowrium-ha#troubleshooting"
+# What to send of a lamp nobody here owns, and how: where the notice about
+# unconfirmed presets points.
+_PROTOCOL_DATA_URL = (
+    "https://github.com/kugaevsky/glowrium-ha/blob/main/"
+    "CONTRIBUTING.md#sending-protocol-data-for-a-device"
+)
 # How long the lamp gets to report once it has acknowledged the state request.
 # On a G7 the report arrives inside the write call itself. The wait is for a
 # model that splits its map across notifications, and with the dial before it
@@ -124,6 +130,17 @@ def _parse_device_info(raw: bytes) -> dict[str, str]:
         if sep and key.strip():
             info[key.strip()] = value.strip()
     return info
+
+
+def presets_issue_id(entry_id: str) -> str:
+    """Name the repair about unconfirmed presets by the config entry.
+
+    Never by the lamp's address: Home Assistant lists the ids of an
+    integration's open repairs in its diagnostics download, which is a file
+    people post. A function of the module, and not of the coordinator: the
+    repair goes when the entry is removed, and no coordinator is left then.
+    """
+    return f"presets_unconfirmed_{entry_id}"
 
 
 class GlowriumCoordinator:
@@ -189,6 +206,11 @@ class GlowriumCoordinator:
         # for an owner that no longer exists. The one exception is a hang-up,
         # which has to outlive the entry - see Link.hang_up.
         self._entry: ConfigEntry | None = None
+        # Set where the watching ends. What is learnt of the lamp after that -
+        # a read that was on its way - is kept, and no longer said: a repair
+        # raised by a coordinator nobody is left to stop would stand for an
+        # entry that is not loaded (see _async_review_presets_notice).
+        self._stopped = False
         # Tasks in flight when there is no hass to keep them: hang-ups, and
         # whatever the poll spawned (see _run_without_hass).
         self._kept_tasks: set[asyncio.Task[None]] = set()
@@ -534,6 +556,8 @@ class GlowriumCoordinator:
         # time - and the reconnect that callback starts needs the entry to be
         # put on. Without it the task lands on hass and outlives the unload.
         self._entry = entry
+        # From what the entry remembers: the lamp may not be heard for hours.
+        self._async_review_presets_notice(hass, entry)
         self._cancel_bluetooth = bluetooth.async_register_callback(
             hass,
             self._async_on_advertisement,
@@ -588,6 +612,7 @@ class GlowriumCoordinator:
     @callback
     def _async_stop_watching(self) -> None:
         """Stop reacting to the lamp, and take no new link from here on."""
+        self._stopped = True
         # Said to the link before anything else: a command may be in flight
         # and outlast this, and from here on it is refused a new link.
         self._link.halt()
@@ -668,6 +693,63 @@ class GlowriumCoordinator:
         if self.hass is None:
             return
         ir.async_delete_issue(self.hass, DOMAIN, self._stack_issue_id)
+
+    @callback
+    def _async_review_presets_notice(
+        self, hass: HomeAssistant, entry: ConfigEntry
+    ) -> None:
+        """Say that the presets are unconfirmed for this lamp's model, or unsay it.
+
+        A model without a profile is driven by the reference presets - the
+        G7's - and the select shows what was chosen whether or not the lamp
+        took it as that preset. Its owner is told, in a repair that asks for
+        nothing and points at what would settle it.
+
+        Only while the model is known: a lamp that has not named itself yet
+        is driven by the same presets, and may well be a G7.
+
+        Raised at every start and over itself, and not taken down where the
+        watching stops: Home Assistant keeps "ignored" with the repair, and one
+        that is deleted and raised afresh comes back as new - on every reload,
+        and on every restart. It is taken down in two places only: here, once
+        the model has a profile, and where the entry is removed
+        (``async_remove_entry``). Not kept across a restart of Home Assistant,
+        so an entry that is not loaded then shows nothing.
+
+        Called by whoever has the entry in hand: the bench has neither an
+        entry nor a Home Assistant, and does not come here.
+        """
+        model_id = self.model_id
+        if self._stopped or not model_id:
+            return
+        issue_id = presets_issue_id(entry.entry_id)
+        if has_profile(model_id):
+            # Its presets are its own: by an update that brought the profile,
+            # or because the lamp names another model than was remembered.
+            ir.async_delete_issue(hass, DOMAIN, issue_id)
+            return
+        # As text: the description is rendered as Markdown, and the name comes
+        # off the air.
+        said = {"name": identity.as_text(self._plain_name)}
+        key = "presets_unconfirmed_unnamed_model"
+        # The model id only when it is one from end to end: what the parser
+        # made of a device-info string can have the serial number inside it.
+        # A placeholder is not translated, so nothing can stand in for it:
+        # the text that does without the model id is a text of its own.
+        if (model := identity.as_model_id(model_id)) is not None:
+            said["model"] = model
+            key = "presets_unconfirmed"
+        ir.async_create_issue(
+            hass,
+            DOMAIN,
+            issue_id,
+            is_fixable=False,
+            is_persistent=False,
+            severity=ir.IssueSeverity.WARNING,
+            learn_more_url=_PROTOCOL_DATA_URL,
+            translation_key=key,
+            translation_placeholders=said,
+        )
 
     @callback
     def _async_on_advertisement(
@@ -770,6 +852,8 @@ class GlowriumCoordinator:
             self.hass.config_entries.async_update_entry(
                 entry, data={**entry.data, CONF_MODEL_ID: model_id}
             )
+        # The model is known from here on, in this session and not the next.
+        self._async_review_presets_notice(self.hass, entry)
 
     async def _request_state(self, turn: Turn) -> bool:
         """Prime the state mirror: ask the lamp to report, read only if it will not.

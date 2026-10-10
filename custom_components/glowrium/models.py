@@ -49,6 +49,21 @@ MODELS: Final[dict[str, GlowriumModel]] = {G7.pkey: G7}
 DEFAULT_MODEL: Final = G7
 
 
+def has_profile(pkey: str) -> bool:
+    """Tell whether the model named by ``pkey`` has a profile of its own.
+
+    ``resolve_model`` gives every lamp a profile to be driven by, and for a
+    model that has none of its own that is the reference presets - the G7's,
+    unconfirmed for it. This is what tells the two apart; the name of the
+    generic profile is not.
+
+    Asked of a model id, and so of a lamp that has named its model. One that
+    has not is driven by the same reference presets, and nothing is known of
+    it yet: that is not a question for here, and is not answered with "no".
+    """
+    return pkey in MODELS
+
+
 def resolve_model(pkey: str | None) -> GlowriumModel:
     """Return the model profile for a device-info ``pkey``.
 

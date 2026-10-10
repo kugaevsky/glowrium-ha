@@ -115,6 +115,14 @@
     "bluetooth_stack_stuck": {
       "title": "Der Bluetooth-Stack des Hosts hält eine tote Verbindung fest",
       "description": "Home Assistant hat den Bluetooth-Stack dieses Hosts {count}-mal in Folge aufgefordert, die Verbindung zu {name} zu trennen, und keine Antwort erhalten. Das deutet darauf hin, dass der Stack an einer Verbindung festhält, die es nicht mehr gibt - es liegt nicht an der Lampe, und ein Neustart von Home Assistant behebt es nicht.\n\nSchalte den Bluetooth-Adapter des Hosts aus und wieder ein (`bluetoothctl power off`, dann `bluetoothctl power on`) oder starte dessen Bluetooth-Dienst neu. Bis dahin wird die Lampe seltener angesprochen. Diese Meldung verschwindet von selbst, sobald die Lampe wieder antwortet."
+    },
+    "presets_unconfirmed": {
+      "title": "{name}: Die Voreinstellungen des Beleuchtungsmodus sind für dieses Modell nicht bestätigt",
+      "description": "{name} gibt als Modell `{model}` an, und für dieses Modell hat die Integration kein Profil. Die Voreinstellungen, die unter **Beleuchtungsmodus** angeboten werden, sind die des Modells Glowrium G7.\n\nBei diesem Modell kann ein Name eine andere Voreinstellung wählen als die genannte, oder gar keine. **Beleuchtungsmodus** zeigt in jedem Fall das Gewählte an, ob die Lampe es als diese Voreinstellung übernommen hat oder nicht.\n\nKlären lässt sich das mit einem Bericht darüber, was jede Voreinstellung an dieser Lampe bewirkt, oder besser mit einem Mitschnitt der Hersteller-App beim Umschalten zwischen ihnen: Die unten verlinkte Anleitung beschreibt, was zu schicken ist und wie. Bis dahin werden die Voreinstellungen unverändert angeboten, und diese Meldung kann ignoriert werden."
+    },
+    "presets_unconfirmed_unnamed_model": {
+      "title": "{name}: Die Voreinstellungen des Beleuchtungsmodus sind für dieses Modell nicht bestätigt",
+      "description": "{name} gibt das Modell in einer Form an, die die Integration nicht erkennt; ein Profil gibt es dafür deshalb nicht. Die Voreinstellungen, die unter **Beleuchtungsmodus** angeboten werden, sind die des Modells Glowrium G7.\n\nBei diesem Modell kann ein Name eine andere Voreinstellung wählen als die genannte, oder gar keine. **Beleuchtungsmodus** zeigt in jedem Fall das Gewählte an, ob die Lampe es als diese Voreinstellung übernommen hat oder nicht.\n\nKlären lässt sich das mit einem Bericht darüber, was jede Voreinstellung an dieser Lampe bewirkt, oder besser mit einem Mitschnitt der Hersteller-App beim Umschalten zwischen ihnen: Die unten verlinkte Anleitung beschreibt, was zu schicken ist und wie. Bis dahin werden die Voreinstellungen unverändert angeboten, und diese Meldung kann ignoriert werden."
     }
   }
 }
