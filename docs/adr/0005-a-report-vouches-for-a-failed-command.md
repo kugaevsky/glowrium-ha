@@ -55,7 +55,7 @@ A command vouched for is delivered, and the mirror is not echoed for it.
 ## Evidence
 
 - ARCHITECTURE.md, "Reconnect": "A failed write is checked against what the
-  device reports"; CHANGELOG 0.2.0, 0.3.0 and the unreleased entry for #21.
+  device reports"; CHANGELOG 0.2.0, 0.3.0 and 0.4.0 (#21).
 - `tests/test_coordinator.py::test_lost_acknowledgement_is_not_reported_as_failure`,
   `::test_a_stale_mirror_does_not_vouch_for_a_failed_write` (a report from
   before the command is its case "by a report, some time ago"),

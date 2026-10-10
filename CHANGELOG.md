@@ -4,7 +4,15 @@ All notable changes to this project are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.4.0] - 2026-10-10
+
+The integration was taken apart inside. What holds the connection to the lamp
+is a module of its own, and so is what the lamp has said; the part that knows
+the lamp speaks to it only on a turn the first hands it. Nothing a user sees
+was meant to change with that, and what did change on the way is listed here.
+The rest is about a lamp - or anything answering at its address - that
+reports what no lamp has: how much of it is kept, and how much of it reaches
+the log. How the modules meet is in [ARCHITECTURE.md](ARCHITECTURE.md).
 
 ### Fixed
 
@@ -549,6 +557,7 @@ Initial public release.
 - Automatic Bluetooth discovery of `Glowrium-*` devices.
 - Translations: en, ru, zh-Hans, es, de, fr.
 
+[0.4.0]: https://github.com/kugaevsky/glowrium-ha/releases/tag/v0.4.0
 [0.3.1]: https://github.com/kugaevsky/glowrium-ha/releases/tag/v0.3.1
 [0.3.0]: https://github.com/kugaevsky/glowrium-ha/releases/tag/v0.3.0
 [0.2.1]: https://github.com/kugaevsky/glowrium-ha/releases/tag/v0.2.1
