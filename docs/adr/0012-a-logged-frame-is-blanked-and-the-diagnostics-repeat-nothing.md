@@ -64,7 +64,7 @@ each ends. A deny-list over the mirror would be a list of what one lamp sent.
   the device-info fields are counted, and the model id and firmware are shown
   only in their strict shapes (`identity.as_model_id`, `identity.as_firmware`).
   No raw bytes, no hex, no serial number, no address.
-- The same two shapes gate the model and firmware in the four warnings that
+- The same two shapes gate the model and firmware in the five warnings that
   ask to be reported (`unknown` until read, `not as expected` otherwise): the
   device-info string carries the serial number beside them.
 - The repair for a stuck stack is filed by `entry_id`, not by the lamp's

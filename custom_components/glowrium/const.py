@@ -98,7 +98,7 @@ TIMER_END_H: Final = 6
 TIMER_END_M: Final = 7
 TIMER_BRIGHTNESS: Final = 8
 TIMER_GRADUAL: Final = 9  # 2-byte big-endian seconds at [9:11]
-TIMER_SLOT_LENGTH: Final = 11  # a shorter value under 0x11 is not read as a slot
+TIMER_SLOT_LENGTH: Final = 11  # a value of any other length under 0x11 is no slot
 
 # A lighting-mode command is {mode, 0x2c, ramp(0x2f), 0x32} in this key order.
 # 0x2c/0x32 are constant; 0x2f is the ramp time and is preserved from state.

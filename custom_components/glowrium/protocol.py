@@ -1,17 +1,23 @@
 """Semantic codec for the Glowrium property protocol.
 
 ``cbor.py`` owns the *wire* format (bytes <-> Python primitives); this module
-owns the *meaning* of those values: it converts the device's raw property map
-(int key -> value, as mirrored in ``GlowriumCoordinator.state``) to and from the
-units the entities use.
+owns the *meaning* of those values: it reads the device's raw property map
+(int key -> value, as mirrored in ``GlowriumCoordinator.state``) as what each
+property means, and writes the layouts back.
+
+There is one reader for each property, and whatever wants its value goes
+through it: the entities, by way of the coordinator's accessors; the commands
+that build on what the lamp reported; the diagnostics; the log. A reader has
+three answers - the value; ``None``, while the lamp has reported nothing
+under the id; ``UNUSABLE``, when what it reported is not what the id means.
+What a value is, for each property, is said here and nowhere else, and
+``PROPERTIES`` has the readers by id.
 
 Keeping every byte offset and minute/second conversion here means the layout of
 the 0x11 schedule slot, the 0x2f ramp, the 0x35 daylight-saving slot and the
 0x05 clock is read and written in one place, instead of being re-derived in
-each platform and again in the coordinator. The coordinator exposes thin typed
-accessors and setters that delegate here, and the platforms go through those.
-(``diagnostics.py`` keeps readers of its own, stricter and on purpose: it
-judges what the lamp sent rather than using it.)
+each platform, in the coordinator and again in ``diagnostics.py`` - which
+keeps only how the file words a value.
 """
 
 from __future__ import annotations
@@ -81,13 +87,26 @@ class Unusable(enum.Enum):
 UNUSABLE: Final = Unusable.UNUSABLE
 
 
-def known[T](reading: T | Unusable | None) -> T | None:
+def usable[T](reading: T | Unusable | None) -> T | None:
     """Return ``reading`` when it is a value, and nothing when it is not.
 
     For whoever has the same thing to show for both answers that are no
     value - the light and the diagnostic entities, which say unknown.
     """
     return None if reading is None or reading is UNUSABLE else reading
+
+
+def _of[T, R](
+    reading: T | Unusable | None, part: Callable[[T], R]
+) -> R | Unusable | None:
+    """Return a part of a reading that is a value; hand on either that is none.
+
+    For a reader of one field of what another reader has read: the start of
+    a schedule is not reported, or cannot be used, exactly when the slot is.
+    """
+    if reading is None or reading is UNUSABLE:
+        return reading
+    return part(reading)
 
 
 # --- flags: power (0x06), the two modes (0x09, 0x0d), activated (0x14), ---
@@ -244,18 +263,12 @@ def reported_ramp(state: Mapping[int, Any]) -> bytes | Unusable | None:
 
 def ramp_seconds(state: Mapping[int, Any]) -> int | Unusable | None:
     """Read the circadian ramp (0x2f) in seconds."""
-    raw = reported_ramp(state)
-    if raw is None or raw is UNUSABLE:
-        return raw
-    return int.from_bytes(raw, "big")
+    return _of(reported_ramp(state), lambda raw: int.from_bytes(raw, "big"))
 
 
 def ramp_minutes(state: Mapping[int, Any]) -> int | Unusable | None:
     """Read the circadian ramp (0x2f) in minutes."""
-    seconds = ramp_seconds(state)
-    if seconds is None or seconds is UNUSABLE:
-        return seconds
-    return seconds // 60
+    return _of(ramp_seconds(state), lambda seconds: seconds // 60)
 
 
 # --- schedule slot (0x11) ---
@@ -308,18 +321,12 @@ def timer_slot(state: Mapping[int, Any]) -> bytes | Unusable | None:
     Eleven bytes and no more: a longer value read by its first eleven would
     be edited in place and written back with the rest attached.
     """
-    slot = _slot(state)
-    if slot is None or slot is UNUSABLE:
-        return slot
-    return slot[0]
+    return _of(_slot(state), lambda slot: slot[0])
 
 
 def schedule(state: Mapping[int, Any]) -> Schedule | Unusable | None:
     """Read the schedule slot (0x11) into its fields."""
-    slot = _slot(state)
-    if slot is None or slot is UNUSABLE:
-        return slot
-    return slot[1]
+    return _of(_slot(state), lambda slot: slot[1])
 
 
 def editable_timer_slot(state: Mapping[int, Any]) -> bytearray | Unusable | None:
@@ -331,42 +338,27 @@ def editable_timer_slot(state: Mapping[int, Any]) -> bytearray | Unusable | None
     the user never chose (and forces enabled=1). Callers must refuse instead -
     for a slot never reported, and for one that cannot be used.
     """
-    slot = timer_slot(state)
-    if slot is None or slot is UNUSABLE:
-        return slot
-    return bytearray(slot)
+    return _of(timer_slot(state), bytearray)
 
 
 def schedule_start(state: Mapping[int, Any]) -> datetime.time | Unusable | None:
     """Read the schedule start (on) time from the 0x11 slot."""
-    slot = schedule(state)
-    if slot is None or slot is UNUSABLE:
-        return slot
-    return slot.start
+    return _of(schedule(state), lambda slot: slot.start)
 
 
 def schedule_end(state: Mapping[int, Any]) -> datetime.time | Unusable | None:
     """Read the schedule end (off) time from the 0x11 slot."""
-    slot = schedule(state)
-    if slot is None or slot is UNUSABLE:
-        return slot
-    return slot.end
+    return _of(schedule(state), lambda slot: slot.end)
 
 
 def schedule_brightness(state: Mapping[int, Any]) -> int | Unusable | None:
     """Read the schedule target brightness (%) from the 0x11 slot."""
-    slot = schedule(state)
-    if slot is None or slot is UNUSABLE:
-        return slot
-    return slot.brightness
+    return _of(schedule(state), lambda slot: slot.brightness)
 
 
 def schedule_gradual_minutes(state: Mapping[int, Any]) -> int | Unusable | None:
     """Read the schedule gradual-fade duration (minutes) from the 0x11 slot."""
-    slot = schedule(state)
-    if slot is None or slot is UNUSABLE:
-        return slot
-    return slot.fade_seconds // 60
+    return _of(schedule(state), lambda slot: slot.fade_seconds // 60)
 
 
 def _slot_with(
@@ -438,10 +430,7 @@ def daylight_saving(state: Mapping[int, Any]) -> DaylightSaving | Unusable | Non
 
 def dst_enabled(state: Mapping[int, Any]) -> bool | Unusable | None:
     """Read whether daylight saving is on."""
-    slot = daylight_saving(state)
-    if slot is None or slot is UNUSABLE:
-        return slot
-    return slot.enabled
+    return _of(daylight_saving(state), lambda slot: slot.enabled)
 
 
 def with_dst(state: Mapping[int, Any], enabled: bool) -> bytes:
@@ -558,7 +547,7 @@ def operating_mode(state: Mapping[int, Any]) -> str | Unusable | None:
 # and the reader that says what its value is. One table, so that the warning
 # about a value that cannot be used, the file and the entities all mean the
 # same thing by it.
-PROPERTIES: Final[Mapping[int, tuple[str, Callable[[Mapping[int, Any]], Any]]]] = {
+PROPERTIES: Final[Mapping[int, tuple[str, Callable[[Mapping[int, Any]], object]]]] = {
     KEY_TIME: ("clock", device_time),
     KEY_POWER: ("power", power),
     KEY_BRIGHTNESS: ("brightness", brightness_percent),

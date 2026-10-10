@@ -400,7 +400,8 @@ messages worth acting on, and two symptoms that come without one.
   another length. The entity reads `unknown` and no command is built on the
   value; a change that would have to be - the ramp, on a lighting mode like
   that - is refused with a message of its own. The rest of the lamp goes on
-  working. Said once for each property. No lamp has been seen to do this: it
+  working. Said once for each property; a clock that merely shows no date is
+  set right without a word. No lamp has been seen to do this: it
   is a model that keeps the property another way - please
   [report it](CONTRIBUTING.md#sending-protocol-data-for-a-device), with the
   diagnostics download - or something else answering at the lamp's address.

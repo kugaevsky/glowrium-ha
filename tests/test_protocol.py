@@ -95,9 +95,9 @@ def test_schedule_fields_none_when_absent() -> None:
 
 
 def test_schedule_time_tolerates_a_malformed_slot() -> None:
-    """A malformed hour/minute cannot be used, and raises nothing."""
+    """An hour of 25 is no time of day: the slot cannot be used, nothing raises."""
     slot = bytearray(_A_SLOT)
-    slot[4] = 25  # invalid hour
+    slot[4] = 25  # no such hour
     assert protocol.schedule_start({KEY_TIMER: bytes(slot)}) is protocol.UNUSABLE
 
 
@@ -526,6 +526,8 @@ def test_a_schedule_is_eleven_bytes_and_each_is_what_its_place_means() -> None:
         _A_SLOT[:-1],
         bytes.fromhex("0200000006001200640000"),  # neither on nor off
         bytes.fromhex("0100000018001200640000"),  # starts at 24:00
+        bytes.fromhex("01000000063c1200640000"),  # starts at 06:60
+        bytes.fromhex("0100000006001800640000"),  # ends at 24:00
         bytes.fromhex("010000000600123c640000"),  # ends at 18:60
         bytes.fromhex("0100000006001200650000"),  # 101 %
         bytes.fromhex("0100000006001200641c21"),  # a fade a second over two hours
@@ -560,7 +562,16 @@ def test_a_clock_is_seven_bytes_that_are_a_date_and_a_time() -> None:
         bytes.fromhex("07ea0712181823"),  # hour 24
         bytes.fromhex("00000000000000"),  # the year nought, and no month
     )
-    no_clock = (shown + b"\x00", shown[:-1], b"", shown.hex(), [7, 234], 20260718, None)
+    no_clock = (
+        shown + b"\x00",
+        no_date[0] + b"\x00",  # no date in its first seven, and one byte more
+        shown[:-1],
+        b"",
+        shown.hex(),
+        [7, 234],
+        20260718,
+        None,
+    )
     for odd in (*no_date, *no_clock):
         assert protocol.device_time({KEY_TIME: odd}) is UNUSABLE, repr(odd)
     # Seven bytes that are no date are a clock that is wrong, which a write

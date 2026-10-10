@@ -54,7 +54,8 @@ and unusable, and named the other settings as owed.
   `True`. A clock of seven bytes that shows no date is corrected; a clock in
   any other shape draws no write.
 - The first value that cannot be used under a property is said in the log,
-  once a session for that property, without the value.
+  once a session for that property, without the value. Not a clock of seven
+  bytes that shows no date: it is known what that is, and it is mended.
 - The answer that is no value cannot be taken for one: it is not a number
   and not bytes, the type checker holds every caller to the three answers,
   and it refuses to be truth-tested.
@@ -68,6 +69,10 @@ and unusable, and named the other settings as owed.
   shows it - is how it is mended.
 - A reported null is a report. "Not reported" is the id being absent from
   the mirror, never a value of nothing under it.
+- The bring-up of a lamp that reports itself not activated still writes the
+  clock, whatever stands under its id: the vendor app's sequence is replayed
+  whole. A model that keeps its clock another way and has to be brought up
+  has not been met, and that sequence would be the first thing to look at.
 - The diagnostics keep how the file words a value and nothing else. A
   brightness that is not whole is written as the whole level it is nearest
   to, so the file still repeats no float of the lamp's choosing.
@@ -93,7 +98,8 @@ and unusable, and named the other settings as owed.
 - `tests/test_init.py::test_a_value_that_cannot_be_used_is_shown_as_unknown`,
   `::test_a_setting_shows_what_was_remembered_only_until_the_lamp_speaks`,
   `::test_no_value_under_an_id_makes_an_entity_raise`,
-  `::test_no_platform_reads_the_state_mirror_itself`.
+  `::test_no_platform_reads_the_state_mirror_itself`,
+  `::test_nothing_goes_unavailable_for_a_mode_that_cannot_be_used`.
 - `tests/test_coordinator.py::test_a_lighting_mode_is_not_written_with_a_ramp_that_cannot_be_used`,
   `::test_a_ramp_that_cannot_be_used_is_not_the_one_remembered`,
   `::test_the_ramp_is_refused_while_the_lighting_mode_cannot_be_used`,
@@ -102,7 +108,9 @@ and unusable, and named the other settings as owed.
   `::test_only_a_flag_that_says_yes_settles_the_bring_up`,
   `::test_only_a_flag_that_says_no_starts_the_bring_up`,
   `::test_a_clock_kept_in_some_other_shape_is_not_written_over`,
-  `::test_a_value_that_cannot_be_used_is_said_once_for_its_property`.
+  `::test_a_value_that_cannot_be_used_is_said_once_for_its_property`,
+  `::test_each_property_the_integration_reads_is_named_when_it_cannot_be_used`,
+  `::test_a_clock_that_shows_no_date_is_put_right_and_not_reported`.
 - `tests/test_diagnostics.py::test_the_file_calls_unusable_what_the_entities_are_shown_as_unusable`,
   `::test_a_level_that_is_not_whole_is_read_out_as_a_whole_one`,
   `::test_the_download_says_what_the_lamp_reported`.

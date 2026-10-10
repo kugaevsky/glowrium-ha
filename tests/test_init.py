@@ -4,6 +4,7 @@ import ast
 import asyncio
 from collections.abc import Callable, Iterator, Mapping
 import contextlib
+import datetime
 import importlib
 import logging
 from pathlib import Path
@@ -1324,18 +1325,38 @@ _SHOWS: dict[str, Callable[[Mapping[int, Any]], Any]] = {
 }
 
 
-def _shown_otherwise(hass: HomeAssistant, reported: Mapping[int, Any]) -> list[str]:
-    """Name each entity that shows a value for none, or none for a value.
+def _says(shown: str, value: Any) -> bool:
+    """Tell whether the state ``shown`` is what ``value`` means."""
+    if isinstance(value, bool):
+        return shown == ("on" if value else "off")
+    if isinstance(value, (int, float)):
+        # A coordinate is shown to five places; nothing else is rounded.
+        return shown not in ("unknown", "unavailable") and (
+            float(shown) == pytest.approx(value, abs=1e-5)
+        )
+    if isinstance(value, datetime.time):
+        return shown == value.isoformat()
+    return shown == value
 
-    An entity of another mode than the lamp is in is unavailable, and says
-    nothing either way.
+
+def _shown_otherwise(hass: HomeAssistant, reported: Mapping[int, Any]) -> list[str]:
+    """Name each entity that does not show what was read of its property.
+
+    Unknown for what cannot be used; for a value, the state that value
+    means. An entity of another mode than the lamp is in is unavailable, and
+    says nothing either way.
     """
     wrong = []
     for entity, read in _SHOWS.items():
         shown = hass.states.get(entity).state
         reading = read(reported)
-        is_a_value = reading is not None and reading is not protocol.UNUSABLE
-        if shown != "unavailable" and is_a_value == (shown == "unknown"):
+        if shown == "unavailable":
+            continue
+        if reading is None or reading is protocol.UNUSABLE:
+            as_read = shown == "unknown"
+        else:
+            as_read = _says(shown, reading)
+        if not as_read:
             wrong.append(f"{entity} shows {shown!r} for {reading!r}")
     select = hass.states.get("select.glowrium_g7_1234_lighting_mode").state
     if protocol.lighting_mode(reported) is protocol.UNUSABLE and select not in (

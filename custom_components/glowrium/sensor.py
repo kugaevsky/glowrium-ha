@@ -12,7 +12,7 @@ from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 from . import GlowriumConfigEntry
 from .coordinator import GlowriumCoordinator
 from .entity import GlowriumEntity
-from .protocol import Unusable, known
+from .protocol import Unusable, usable
 
 # Nothing here is polled and nothing takes a command: state is pushed by the
 # coordinator.
@@ -66,5 +66,5 @@ class GlowriumCoordinateSensor(GlowriumEntity, SensorEntity):
     @property
     def native_value(self) -> float | None:
         """Return the stored coordinate in degrees."""
-        degrees = known(self._read())
+        degrees = usable(self._read())
         return None if degrees is None else round(degrees, 5)

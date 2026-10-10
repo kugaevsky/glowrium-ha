@@ -167,7 +167,10 @@ def _state(
     lamp's choosing.
     """
     shown: dict[str, Any] = {}
-    clock = partial(_clock, heard_at=clock_heard_at)
+    # Worded with the moment it came, which no other property needs. Each
+    # wording is handed what its own reader returned, once that is known to
+    # be a value: the table pairs them by id, which no type can say.
+    clock: Callable[[Any], Any] = partial(_clock, heard_at=clock_heard_at)
     for key, word in ({KEY_TIME: clock} | _READ).items():
         name, read = protocol.PROPERTIES[key]
         reading = read(reported)

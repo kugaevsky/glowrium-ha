@@ -3039,7 +3039,7 @@ async def test_a_warning_names_a_model_and_a_firmware_that_are_what_they_claim(
     Both come out of the device-info string, where the serial number and the
     address sit beside them, and where one field ends is only what the
     parser made of the string. A lamp that separates its fields differently
-    hands over one long field with the others inside it. Four warnings name
+    hands over one long field with the others inside it. Five warnings name
     the model and the firmware, and each of them asks to be reported: the
     log is held to the shapes the diagnostics file is held to. Until the
     lamp is read, its model is what an earlier session stored (``known_by``
@@ -3071,10 +3071,7 @@ async def test_a_value_that_cannot_be_used_is_said_once_for_its_property(
     lamp reports all day, so a second one under the same property is not
     said; another property is said for itself.
     """
-    coordinator = ScriptedLamp().coordinator(hass)
-    coordinator.device_info = _parse_device_info(
-        b"brand:INLEDCO;pkey:Glowrium-C051;devid:CST-0001;mac:x;version:4;;"
-    )
+    coordinator = ScriptedLamp().coordinator(hass, model_id="Glowrium-C051")
     with caplog.at_level(logging.WARNING, logger=coordinator_module.__name__):
         coordinator._ingest(cbor.encode({KEY_RAMP: b"\xab" * 5}))
         coordinator._ingest(cbor.encode({KEY_RAMP: b"\xcd" * 6}))  # the ramp again
@@ -3088,10 +3085,66 @@ async def test_a_value_that_cannot_be_used_is_said_once_for_its_property(
     assert "schedule" in said[1]
     for line in said:
         assert "cannot be used" in line
-        assert "(model Glowrium-C051, firmware 4)" in line
+        assert "(model Glowrium-C051, firmware unknown)" in line
         assert "diagnostics" in line
-        for of_the_value in ("abab", "cdcd", "HomeNetwork", "CST-0001"):
+        for of_the_value in ("abab", "cdcd", "HomeNetwork"):
             assert of_the_value not in line
+
+
+@pytest.mark.parametrize(
+    ("key", "name"),
+    [
+        (KEY_TIME, "clock"),
+        (KEY_POWER, "power"),
+        (KEY_BRIGHTNESS, "brightness"),
+        (KEY_CIRCADIAN, "circadian"),
+        (KEY_LATITUDE, "latitude"),
+        (KEY_LONGITUDE, "longitude"),
+        (KEY_SCHEDULE, "schedule mode"),
+        (KEY_TIMER, "schedule"),
+        (KEY_ACTIVATED, "activated"),
+        (KEY_INDICATOR, "indicator"),
+        (KEY_LIGHTING_MODE, "lighting mode"),
+        (KEY_RAMP, "ramp"),
+        (KEY_DST, "daylight saving"),
+    ],
+)
+async def test_each_property_the_integration_reads_is_named_when_it_cannot_be_used(
+    hass: HomeAssistant, caplog: pytest.LogCaptureFixture, key: int, name: str
+) -> None:
+    """Whatever an entity shows or a command builds on, the log speaks for.
+
+    Thirteen properties are read, and each goes unknown without a word on
+    the device page when what the lamp reported under it cannot be used. A
+    property left out of the table the warning goes by would do so in the
+    log as well. Each is named by the name it has in the diagnostics
+    download, with its id, and the text that stood under it is not repeated.
+    """
+    coordinator = ScriptedLamp().coordinator(hass)
+    with caplog.at_level(logging.WARNING, logger=coordinator_module.__name__):
+        coordinator._ingest(cbor.encode({key: "HomeNetwork-5G"}))
+
+    (said,) = [r.getMessage() for r in caplog.records if r.levelno >= logging.WARNING]
+    assert f"its {name} (0x{key:02x}) cannot be used" in said
+    assert "HomeNetwork" not in said
+
+
+async def test_a_clock_that_shows_no_date_is_put_right_and_not_reported(
+    hass: HomeAssistant, caplog: pytest.LogCaptureFixture
+) -> None:
+    """The warning asks for a report of what this integration cannot handle.
+
+    Seven bytes with no date in them it can: that is a clock that is wrong,
+    and the first exchange sets it. A lamp that has never been given the
+    time may well report one, and would be asked to report itself on every
+    first connect for a thing that is mended in the same breath.
+    """
+    coordinator = ScriptedLamp().coordinator(hass)
+    with caplog.at_level(logging.WARNING, logger=coordinator_module.__name__):
+        coordinator._ingest(cbor.encode({KEY_TIME: bytes(7)}))
+
+    assert [r for r in caplog.records if r.levelno >= logging.WARNING] == []
+    assert protocol.clock_is_no_date(coordinator.state)
 
 
 async def test_what_was_written_and_not_reported_is_not_said_to_be_unusable(
@@ -3195,6 +3248,10 @@ async def test_a_clock_that_is_right_or_unread_is_left_alone(
     "kept",
     [
         pytest.param(bytes.fromhex("07ea0712151823") + b"\x00", id="a byte more"),
+        pytest.param(
+            bytes.fromhex("07ea0d12151823") + b"\x00",
+            id="a byte more, and no date in the first seven",
+        ),
         pytest.param(bytes.fromhex("07ea0712"), id="cut short"),
         pytest.param("2026-07-18T21:24:35", id="as text"),
         pytest.param(1784409875, id="as a number"),

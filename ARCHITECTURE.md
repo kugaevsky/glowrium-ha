@@ -443,7 +443,9 @@ them differs (ADR 0011, ADR 0015):
   that waiting helps, as the refusal for a setting not yet reported does.
   The daylight-saving switch writes the hour.
 - **The log** says it once a session for each property, at warning level:
-  the property by its name here, nothing of the value, and what to send.
+  the property by its name here, nothing of the value, and what to send. One
+  thing that cannot be used is not said: a clock of seven bytes that shows no
+  date. That is a clock that is wrong, and the first exchange sets it right.
 - **The diagnostics** say `not as expected` exactly where the reader says
   the value cannot be used, and word what the reader returns.
 
@@ -460,13 +462,16 @@ it, is how that is mended.
 ### Property-key table
 
 Keys are defined in `const.py` and were verified against btsnoop captures and the
-live device.
+live device. The types are what a G7 reports. What the integration takes for a
+value of each - and what it does with something else under the same id - is
+[What a value is](#what-a-value-is): every property here is read through its
+reader there.
 
 | Key | Const | Property | Type | Meaning |
 | --- | --- | --- | --- | --- |
 | `0x05` | `KEY_TIME` | Device clock | `bytes(7)` | `year_BE(2), month, day, hour, minute, second`. Reported with the rest of the state; written during bring-up and whenever it has drifted (see [Keeping the clock right](#keeping-the-clock-right)). |
 | `0x06` | `KEY_POWER` | Power | `bool` | Light on/off. |
-| `0x08` | `KEY_BRIGHTNESS` | Brightness | `int 0..100` | Percentage. The `light` entity scales to HA's 0–255. |
+| `0x08` | `KEY_BRIGHTNESS` | Brightness | `int 0..100` | Percentage; a number that is not whole is taken too. The `light` entity scales to HA's 0–255. |
 | `0x09` | `KEY_CIRCADIAN` | Circadian mode | `bool` | Sunrise/sunset-synced auto mode. **Mutually exclusive** with `0x0d`. |
 | `0x0a` | `KEY_LATITUDE` | Latitude | `float64` | Degrees. The lamp computes its own circadian curve from this. |
 | `0x0b` | `KEY_LONGITUDE` | Longitude | `float64` | Degrees. |
@@ -538,8 +543,9 @@ encoders, which return the whole slot with one field changed).
 | `9`–`10` | gradual | fade duration, seconds, **big-endian** |
 
 For example, `01 00 00 00 06 00 12 00 64 00 00` → enabled, 06:00 → 18:00,
-100 %, no fade. A value under `0x11` shorter than the 11 bytes
-(`TIMER_SLOT_LENGTH`) is not read as a slot.
+100 %, no fade. A value under `0x11` of any other length than the 11 bytes
+(`TIMER_SLOT_LENGTH`) is not read as a slot, and neither is one whose bytes
+are not what their places mean (see [What a value is](#what-a-value-is)).
 
 ### Lighting-mode command
 
@@ -586,7 +592,9 @@ alone — a blind write would be guessing at what it believes. Seven bytes
 that show no date are a clock that is wrong, and are corrected. Anything
 else under the id - a clock of another length, a number, a text - is a
 clock kept in a way nobody has seen, and is left alone as well: seven bytes
-written over it would be a guess of another kind.
+written over it would be a guess of another kind. (The bring-up of a lamp
+that reports itself not activated writes the clock in any case: it replays
+the vendor app's sequence whole.)
 
 Measured while settling how the DST flag interacts with this: toggling `0x35`
 does **not** move `0x05`. The lamp stores the clock verbatim, so writing local
@@ -1393,6 +1401,8 @@ with its reason. A reach that is not on the list is a test to be moved.
 | `_async_notify_listeners`, `_async_write`, `_cancel_bluetooth`, `_cancel_unavailable`, `_cancel_poll` | The telling of the entities and the three watchers, where a test counts the tellings or sees that a watcher was let go of. |
 | `_link` | The door itself: `link_of` for the tests, and the bench's own - each held to that one name by a test. |
 | The ceilings and counts of the link and of the device half: `link._CONFIRM_TIMEOUT` and thirteen more | Shortened, so that the test of a deadline takes milliseconds; or read, so that a test moves the clock by exactly that much. |
+| `coordinator._parse_device_info` | What the parser makes of a device-info string, set as what the lamp said about itself where a test needs a coordinator that knows its model and firmware - or a string cut in an odd place - and reading it over a link would be the test of something else. |
+| `diagnostics._clock` | How the file words a clock with no record of when it came: a branch no path of the integration reaches, kept as a guard and held on its own (ADR 0013). |
 | `link._reason`, `mirror._for_the_log`, `mirror._LOGGER` | Two functions with tests of their own - what a log line says of an error that has no text, and how a frame is printed - and the name the mirror logs under. |
 | Fields of a `Link` and of the holder of what would not close: `client`, `lost`, `last_answer`, `stuck_hang_ups`, `dial_not_before`, `unclosed`, `backends`, `lock` | Read, to say what the link holds after what the test did. The lock is taken where a test stands in for a command at work, and by the one helper that takes a link bare (`taken_bare`), since `Link.open` is for a caller that holds it. Set in two tests only: that of the diagnostics' link section, which moves each field on its own, since two states that differ in everything cannot tell a field from a copy of its neighbour; and one that sets a count of unanswered hang-ups it would take days of ticks to reach. No test gives a link its client - a link is taken through a command, `connect` or `open` - and a test reads the tests to hold that. |
 

@@ -40,6 +40,7 @@ from .const import (
     KEY_POWER,
     KEY_RAMP,
     KEY_SCHEDULE,
+    KEY_TIME,
     KEY_TIMER,
     KNOWN_KEYS,
     MODE_CIRCADIAN,
@@ -64,7 +65,7 @@ from .link import (
 )
 from .mirror import Mirror
 from .models import GlowriumModel, has_profile, resolve_model
-from .protocol import UNUSABLE, Unusable, known
+from .protocol import UNUSABLE, Unusable, usable
 
 _LOGGER = logging.getLogger(__name__)
 # Where the repair for a Bluetooth stack that will not hang up sends the
@@ -1026,6 +1027,10 @@ class GlowriumCoordinator:
             name, read = protocol.PROPERTIES[key]
             if read(self.state) is not UNUSABLE:
                 continue
+            if key == KEY_TIME and protocol.clock_is_no_date(self.state):
+                # A clock that is wrong, which the first exchange sets right: it
+                # is known what this is, and there is nothing to report.
+                continue
             self._unusable_said.add(key)
             _LOGGER.warning(
                 "%s (%s): what the lamp reported as its %s (0x%02x) cannot be used "
@@ -1059,7 +1064,7 @@ class GlowriumCoordinator:
         # lighting mode and after every switch to Circadian, and an empty one,
         # or five bytes, would latch and keep a later ramp from being taken.
         if self._desired_ramp is None:
-            self._desired_ramp = known(protocol.reported_ramp(self.state))
+            self._desired_ramp = usable(protocol.reported_ramp(self.state))
         self._async_notify_listeners()
         return carried
 
@@ -1325,15 +1330,10 @@ class GlowriumCoordinator:
         # back is deliberate. The mode above is different: defaulting it there
         # silently *changes* a setting the caller never asked to touch.
         #
-        # What the lamp reported goes back only when it is a ramp: whatever
-        # stood under the id used to, five bytes of it or a text.
-        ramp_value = (
-            ramp
-            if ramp is not None
-            else self._desired_ramp
-            or known(protocol.reported_ramp(self.state))
-            or RAMP_DEFAULT
-        )
+        # What the lamp reported goes back only as the ramp remembered, and
+        # that is remembered only when it is a ramp (see _ingest): whatever
+        # stood under the id used to go back, five bytes of it or a text.
+        ramp_value = ramp if ramp is not None else self._desired_ramp or RAMP_DEFAULT
         return {
             KEY_LIGHTING_MODE: mode_value,
             KEY_MODE_PARAM_2C: MODE_PARAM_2C,
