@@ -68,7 +68,8 @@ last thing the first exchange does (ADR 0002).
 
 - CHANGELOG, Unreleased (#31); README, "About the G8"; ARCHITECTURE, "A model
   without a profile"; CONTRIBUTING, "Sending protocol data for a device".
-- `tests/test_models.py::test_a_model_id_has_a_profile_of_its_own_or_has_none`.
+- `tests/test_models.py::test_a_model_id_has_a_profile_of_its_own_or_has_none`,
+  `::test_a_profile_is_a_profile_whatever_it_is_called`.
 - `tests/test_init.py::test_a_model_without_a_profile_is_put_in_front_of_its_owner_at_start`,
   `::test_a_lamp_with_a_profile_or_one_not_yet_known_is_told_nothing`,
   `::test_the_notice_comes_in_the_session_the_model_is_first_read_in`,
@@ -82,9 +83,12 @@ last thing the first exchange does (ADR 0002).
   `::test_the_notice_and_the_repair_for_a_stack_fault_leave_each_other_alone`,
   `::test_one_lamps_notice_is_not_anothers`,
   `::test_a_coordinator_that_was_stopped_raises_no_notice`,
-  `::test_the_notice_has_words_for_what_it_brings`.
+  `::test_the_notice_has_words_for_what_it_brings`,
+  `::test_the_notice_links_to_a_heading_the_guide_has`,
+  `::test_a_choice_is_written_for_a_model_without_a_profile_as_it_was`.
 - `tests/test_translations.py::test_the_notice_about_presets_has_its_two_wordings`,
-  `::test_the_notice_says_whose_presets_they_are_in_every_language`.
+  `::test_the_notice_says_whose_presets_they_are_in_every_language`,
+  `::test_the_notice_calls_the_select_what_its_language_calls_it`.
 
 ## Revisit when
 
