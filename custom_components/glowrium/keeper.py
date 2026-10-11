@@ -278,9 +278,10 @@ class EntryKeeper:
     def _name_as_text(self) -> str:
         """The lamp's name for a repair, which is rendered as Markdown.
 
-        The entry is titled with the name the lamp advertised: it comes off
-        the air. Without the address a lamp picked from the list is titled
-        with: a repair leaves the host in the diagnostics.
+        The entry is titled with the name the lamp advertised, so it comes
+        off the air and goes in as text. A lamp picked from the list of
+        discovered ones has its address after its name; the name is said
+        without it.
         """
         return identity.as_text(
             identity.without_address(self._entry.title, self._address)
