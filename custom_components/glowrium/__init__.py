@@ -15,7 +15,7 @@ from homeassistant.util.hass_dict import HassKey
 
 from .const import DOMAIN
 from .coordinator import GlowriumCoordinator
-from .keeper import EntryKeeper, presets_issue_id
+from .keeper import EntryKeeper, dial_for, presets_issue_id
 from .link import Unclosed
 
 PLATFORMS: list[Platform] = [
@@ -42,7 +42,6 @@ async def async_setup_entry(hass: HomeAssistant, entry: GlowriumConfigEntry) -> 
     """Set up Glowrium from a config entry."""
     address = entry.data[CONF_ADDRESS]
     coordinator = GlowriumCoordinator(
-        hass,
         address,
         entry.title,
         # What an earlier session read off the lamp. The entities are built
@@ -50,6 +49,8 @@ async def async_setup_entry(hass: HomeAssistant, entry: GlowriumConfigEntry) -> 
         model_id=entry.data.get(CONF_MODEL_ID),
         # What keeps it: this entry, known from before anything is watched.
         keeper=EntryKeeper(hass, entry),
+        # The lamp, as Home Assistant's Bluetooth finds it at each dial.
+        dial=dial_for(hass, address, entry.title),
         # What a coordinator for this lamp before this one could not let go
         # of. By the lamp's address and not by the entry: a lamp removed and
         # set up again is the same lamp, under another entry.

@@ -28,7 +28,7 @@ from custom_components.glowrium.coordinator import (
 )
 
 from .conftest import ROOT, load_tool
-from .lamp import ScriptedKeeper
+from .lamp import ScriptedLamp
 
 _CURVE_KEY = 0x34
 # Seven times, seconds from midnight: 06:00 ... 18:00.
@@ -49,9 +49,7 @@ def bench() -> ModuleType:
 
 def _a_lamp() -> GlowriumCoordinator:
     """Return a coordinator that has heard everything a lamp says."""
-    coordinator = GlowriumCoordinator(
-        None, _ADDRESS, "bench", keeper=ScriptedKeeper(None)
-    )
+    coordinator = ScriptedLamp().coordinator(None, "bench")
     coordinator._mirror.echo(
         {
             KEY_POWER: True,

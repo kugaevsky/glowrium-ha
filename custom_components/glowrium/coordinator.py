@@ -10,9 +10,7 @@ import logging
 from time import monotonic
 from typing import Any, Final, NamedTuple, Protocol
 
-from bleak.backends.device import BLEDevice
-from homeassistant.components import bluetooth
-from homeassistant.core import Event, HomeAssistant, callback
+from homeassistant.core import Event, callback
 from homeassistant.exceptions import HomeAssistantError, ServiceValidationError
 from homeassistant.util import dt as dt_util
 
@@ -55,7 +53,6 @@ from .link import (
     RefusedError,
     Turn,
     Unclosed,
-    dial_by_bluetooth,
 )
 from .mirror import Mirror
 from .models import GlowriumModel, resolve_model
@@ -220,35 +217,32 @@ class GlowriumCoordinator:
 
     def __init__(  # noqa: PLR0913 - what a coordinator is built from, by name
         self,
-        hass: HomeAssistant | None,
         address: str,
         name: str,
         model_id: str | None = None,
         *,
         keeper: Keeper,
-        dial: Dial | None = None,
+        dial: Dial,
         unclosed: Unclosed | None = None,
     ) -> None:
         """Initialize the coordinator for the device at ``address``.
-
-        ``hass`` is None when there is no Home Assistant behind it: that is
-        how tools/bench.py drives the real coordinator against a real lamp.
-        It then connects, primes and commands as it does anywhere.
-
-        ``keeper`` is what keeps this coordinator (see ``Keeper``).
 
         ``model_id`` is the model an earlier session read off the lamp, if
         one did. The entities are built before this session has read
         anything, and which presets a lamp has depends on its model.
 
-        ``dial`` is what a link is made through (see ``Dial``). Left out, it
-        is the lamp as Home Assistant's Bluetooth finds it.
+        ``keeper`` is what keeps this coordinator (see ``Keeper``): Home
+        Assistant for a config entry, tools/bench.py for a run against a
+        real lamp. There is no coordinator without one, and so nothing here
+        asks whether Home Assistant is there.
+
+        ``dial`` is what a link is made through (see ``Dial``): for a config
+        entry, the lamp as Home Assistant's Bluetooth finds it at each dial.
 
         ``unclosed`` is what coordinators for this lamp before this one could
         neither hang up nor close (see ``Unclosed``). The integration keeps one
         for each lamp and hands it to every coordinator it makes for it.
         """
-        self.hass = hass
         self._keeper = keeper
         self.address = address
         self.name = name
@@ -271,11 +265,11 @@ class GlowriumCoordinator:
         # cannot be used, and of which the log has said so (once each).
         self._unusable_said: set[int] = set()
         # The link to the lamp: the client, the lock around it, and how it is
-        # let go of (link.py). It is handed its dial; left out, that is the
-        # lamp as Home Assistant's Bluetooth finds it.
+        # let go of (link.py). It is handed the dial, and what it needs of
+        # the keeper.
         self._link = Link(
             address,
-            dial or dial_by_bluetooth(self._ble_device, address, name),
+            dial,
             notify_uuid=NOTIFY_UUID,
             heard=self._on_notify,
             greet=self._greet,
@@ -629,13 +623,6 @@ class GlowriumCoordinator:
         # Before anything is awaited.
         self._async_stop_watching()
         await self._link.let_go()
-
-    def _ble_device(self) -> BLEDevice | None:
-        if self.hass is None:  # the bench scans for itself and hands in a dial
-            return None
-        return bluetooth.async_ble_device_from_address(
-            self.hass, self.address, connectable=True
-        )
 
     def _require[T](self, reading: T | Unusable | None, refusal: _Refusal) -> T:
         """Return ``reading`` when it is a value, or refuse what would build on it.

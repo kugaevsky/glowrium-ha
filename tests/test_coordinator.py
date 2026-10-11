@@ -1,10 +1,12 @@
 """Tests for the Glowrium coordinator's command encoding."""
 
+import ast
 import asyncio
 from collections.abc import Callable
 import contextlib
 from datetime import timedelta
 import logging
+from pathlib import Path
 from time import monotonic
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
@@ -64,7 +66,6 @@ from custom_components.glowrium.keeper import EntryKeeper
 
 from .lamp import (
     LampLink,
-    ScriptedKeeper,
     ScriptedLamp,
     flood,
     keeper_of,
@@ -1108,9 +1109,7 @@ async def test_split_notification_updates_state(hass: HomeAssistant) -> None:
 
 async def test_empty_ramp_does_not_latch(hass: HomeAssistant) -> None:
     """A zero-length ramp must not block seeding the remembered ramp later."""
-    coordinator = GlowriumCoordinator(
-        hass, "AA:BB:CC:DD:EE:FF", "Glowrium-G7", keeper=ScriptedKeeper(hass)
-    )
+    coordinator, _lamp = _at_a_lamp(hass)
     coordinator._ingest(bytes.fromhex("a1182f40"))  # {0x2f: b""}
     assert coordinator._desired_ramp is None
     coordinator._ingest(bytes.fromhex("a1182f420e10"))  # {0x2f: b"\x0e\x10"}
@@ -1423,9 +1422,7 @@ async def test_no_line_in_the_log_carries_the_coordinates(
     is and carry none of it. Whoever posts a debug log is asked to look a
     frame over, and that cannot rest on blanking hex by hand.
     """
-    coordinator = GlowriumCoordinator(
-        hass, "AA:BB:CC:DD:EE:FF", "Glowrium-G7", keeper=ScriptedKeeper(hass)
-    )
+    coordinator, _lamp = _at_a_lamp(hass)
 
     with caplog.at_level(logging.DEBUG, logger=coordinator_module.__name__):
         coordinator._ingest(bytes.fromhex(frame))
@@ -2804,6 +2801,85 @@ async def test_stopping_hangs_up_even_when_the_lock_is_busy(
 
     assert link.hung_up == 1  # hung up anyway
     assert link_of(coordinator).diagnostics()["connected"] is False
+
+
+# What the device half keeps of Home Assistant: its two exceptions, which the
+# entities and the service calls understand; the mark of a callback; the type
+# of the event the stop comes as; and the clock, for the lamp's local time.
+# A name added here is one more thing the device half knows of what runs it.
+_OF_HOME_ASSISTANT = {
+    ("homeassistant.core", "Event"),
+    ("homeassistant.core", "callback"),
+    ("homeassistant.exceptions", "HomeAssistantError"),
+    ("homeassistant.exceptions", "ServiceValidationError"),
+    ("homeassistant.util", "dt"),
+}
+
+
+def test_the_device_half_asks_its_keeper_and_names_no_home_assistant() -> None:
+    """The coordinator's module knows its keeper, and not what the keeper is.
+
+    No instance of Home Assistant, no config entry, no Bluetooth integration,
+    no registry of issues or of devices: each is behind the keeper (#54), and
+    a coordinator cannot be built without one, so nothing in it asks whether
+    Home Assistant is there. This reads the source, as the test of the seam
+    with the link does: the seam erodes one import at a time, and a branch on
+    an absent Home Assistant is a line nobody would write a test against.
+    """
+    tree = ast.parse(Path(coordinator_module.__file__).read_text(encoding="utf-8"))
+    imported = {
+        (node.module, one.name)
+        for node in ast.walk(tree)
+        if isinstance(node, ast.ImportFrom)
+        and (node.module or "").startswith("homeassistant")
+        for one in node.names
+    }
+    whole = [
+        one.name
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Import)
+        for one in node.names
+        if one.name.startswith("homeassistant")
+    ]
+    assert imported == _OF_HOME_ASSISTANT
+    assert whole == []
+
+    # Nor is anything kept by a name that was Home Assistant's or stood in
+    # for it: the instance, the entry, the tasks the coordinator held itself,
+    # the lookup of the lamp for a dial nobody handed in.
+    gone = {"hass", "_entry", "_kept_tasks", "_run_without_hass", "_ble_device"}
+    named = sorted(
+        f"{node.lineno} {said}"
+        for node in ast.walk(tree)
+        for said in (
+            getattr(node, "id", None),
+            getattr(node, "attr", None),
+            getattr(node, "arg", None),
+            getattr(node, "name", None),
+        )
+        if said in gone
+    )
+    assert named == []
+
+    # A coordinator is built with a keeper and a dial: neither has a default.
+    (built,) = (
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.ClassDef) and node.name == "GlowriumCoordinator"
+    )
+    (init,) = (
+        node
+        for node in built.body
+        if isinstance(node, ast.FunctionDef) and node.name == "__init__"
+    )
+    required = [
+        arg.arg
+        for arg, default in zip(
+            init.args.kwonlyargs, init.args.kw_defaults, strict=True
+        )
+        if default is None
+    ]
+    assert required == ["keeper", "dial"]
 
 
 async def test_work_is_started_through_the_keeper(hass: HomeAssistant) -> None:

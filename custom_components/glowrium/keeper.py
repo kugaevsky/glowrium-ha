@@ -14,6 +14,7 @@ from collections.abc import Callable, Coroutine
 from datetime import datetime
 from typing import Any
 
+from bleak.backends.device import BLEDevice
 from homeassistant.components import bluetooth
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import CONF_ADDRESS, CONF_MODEL_ID
@@ -24,7 +25,7 @@ from homeassistant.helpers.typing import UNDEFINED
 
 from . import identity
 from .const import DOMAIN
-from .link import _RECONNECT_INTERVAL
+from .link import _RECONNECT_INTERVAL, Dial, dial_by_bluetooth
 from .models import has_profile, resolve_model
 
 # Where the repair for a Bluetooth stack that will not hang up sends the
@@ -47,6 +48,21 @@ def presets_issue_id(entry_id: str) -> str:
     repair goes when the entry is removed, and no keeper is left then.
     """
     return f"presets_unconfirmed_{entry_id}"
+
+
+def dial_for(hass: HomeAssistant, address: str, name: str) -> Dial:
+    """Return the dial to the lamp as Home Assistant's Bluetooth finds it.
+
+    Asked of the scanners at the moment of each dial, and not once: which
+    of them hears the lamp, and whether any does, is not the same from one
+    dial to the next. A lamp none of them has is "not in range", said by
+    the dial before the library is asked.
+    """
+
+    def _found() -> BLEDevice | None:
+        return bluetooth.async_ble_device_from_address(hass, address, connectable=True)
+
+    return dial_by_bluetooth(_found, address, name)
 
 
 class EntryKeeper:

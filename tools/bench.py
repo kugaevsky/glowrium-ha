@@ -382,7 +382,6 @@ async def main() -> int:
 
     _PRIVACY.address = device.address
     coordinator = GlowriumCoordinator(
-        None,
         device.address,
         device.name,
         keeper=BenchKeeper(),

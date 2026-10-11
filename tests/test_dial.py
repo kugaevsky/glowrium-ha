@@ -9,7 +9,6 @@ then dials through Home Assistant's Bluetooth as it always has.
 from __future__ import annotations
 
 import asyncio
-import logging
 from unittest.mock import AsyncMock, MagicMock
 
 from bleak.exc import BleakError
@@ -20,7 +19,7 @@ import pytest
 
 from custom_components.glowrium import (
     cbor,
-    coordinator as coordinator_module,
+    keeper as keeper_module,
     link as link_module,
 )
 from custom_components.glowrium.const import (
@@ -41,7 +40,7 @@ async def test_the_coordinator_dials_through_the_dial_it_is_handed(
     """A command to a lamp with no link dials it, once, and is written to it."""
     lamp = ScriptedLamp()
     coordinator = GlowriumCoordinator(
-        hass, ADDRESS, "Glowrium-G7", keeper=ScriptedKeeper(hass), dial=lamp.dial
+        ADDRESS, "Glowrium-G7", keeper=ScriptedKeeper(hass), dial=lamp.dial
     )
 
     await coordinator.async_set_power(True)
@@ -479,7 +478,7 @@ def test_a_helper_given_the_coordinator_alone_finds_its_lamp(
     with pytest.raises(LookupError, match="not built at a scripted lamp"):
         lamp_of(
             GlowriumCoordinator(
-                hass, ADDRESS, "Glowrium-G7", keeper=ScriptedKeeper(hass)
+                ADDRESS, "Glowrium-G7", keeper=ScriptedKeeper(hass), dial=lamp.dial
             )
         )
 
@@ -515,7 +514,7 @@ async def test_handed_no_dial_the_coordinator_dials_by_bluetooth(
     monkeypatch.setattr(link_module, "establish_connection", connect)
     lost = MagicMock()
 
-    dial = coordinator_module.dial_by_bluetooth(lambda: device, ADDRESS, "Glowrium-G7")
+    dial = link_module.dial_by_bluetooth(lambda: device, ADDRESS, "Glowrium-G7")
 
     assert await dial(lost) is client
     connect.assert_awaited_once_with(
@@ -527,12 +526,12 @@ async def test_handed_no_dial_the_coordinator_dials_by_bluetooth(
     )
 
 
-async def test_handed_no_dial_the_lamp_is_looked_up_in_home_assistant(
+async def test_the_dial_of_a_config_entry_looks_the_lamp_up_in_home_assistant(
     hass: HomeAssistant, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """What the integration's own setup gets: it passes the coordinator no dial.
+    """What the integration's own setup hands the coordinator for a dial.
 
-    The lamp is then asked of Home Assistant's scanners at the moment of each
+    The lamp is asked of Home Assistant's scanners at the moment of each
     dial - as a device that can be connected to, by its address - and what
     they have is what is dialled.
     """
@@ -542,11 +541,14 @@ async def test_handed_no_dial_the_lamp_is_looked_up_in_home_assistant(
     link.write_gatt_char = AsyncMock()
     scanners = MagicMock()
     scanners.async_ble_device_from_address.return_value = device
-    monkeypatch.setattr(coordinator_module, "bluetooth", scanners)
+    monkeypatch.setattr(keeper_module, "bluetooth", scanners)
     connect = AsyncMock(return_value=link)
     monkeypatch.setattr(link_module, "establish_connection", connect)
     coordinator = GlowriumCoordinator(
-        hass, ADDRESS, "Glowrium-G7", keeper=ScriptedKeeper(hass)
+        ADDRESS,
+        "Glowrium-G7",
+        keeper=ScriptedKeeper(hass),
+        dial=keeper_module.dial_for(hass, ADDRESS, "Glowrium-G7"),
     )
     scanners.async_ble_device_from_address.assert_not_called()  # not before a dial
 
@@ -569,28 +571,8 @@ async def test_a_lamp_bluetooth_does_not_find_is_not_dialled(
     connect = AsyncMock()
     monkeypatch.setattr(link_module, "establish_connection", connect)
 
-    dial = coordinator_module.dial_by_bluetooth(lambda: None, ADDRESS, "Glowrium-G7")
+    dial = link_module.dial_by_bluetooth(lambda: None, ADDRESS, "Glowrium-G7")
 
     with pytest.raises(BleakError, match=f"{ADDRESS} is not in range"):
         await dial(MagicMock())
     connect.assert_not_awaited()
-
-
-async def test_without_home_assistant_and_without_a_dial_nothing_is_found(
-    caplog: pytest.LogCaptureFixture,
-) -> None:
-    """Looking the lamp up goes through Home Assistant's scanners.
-
-    The bench scans for itself and hands the coordinator a dial to what it
-    found; built with neither, the coordinator says "not in range" rather
-    than falling over.
-    """
-    coordinator = GlowriumCoordinator(
-        None, ADDRESS, "bench", keeper=ScriptedKeeper(None)
-    )
-    caplog.set_level(logging.DEBUG, logger=coordinator_module.__name__)
-
-    with pytest.raises(HomeAssistantError):
-        await coordinator.async_set_power(True)
-
-    assert f"{ADDRESS} is not in range" in caplog.text

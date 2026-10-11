@@ -66,7 +66,6 @@ from custom_components.glowrium.const import (
     WRITE_UUID,
 )
 from custom_components.glowrium.coordinator import (
-    GlowriumCoordinator,
     _parse_device_info as _parsed,
 )
 from custom_components.glowrium.entity import GlowriumEntity
@@ -82,7 +81,7 @@ from custom_components.glowrium.select import GlowriumLightingModeSelect
 from custom_components.glowrium.time import GlowriumTimerEnd, GlowriumTimerStart
 
 from .conftest import ROOT
-from .lamp import ScriptedKeeper, ScriptedLamp, in_range, link_of
+from .lamp import ScriptedLamp, in_range, link_of
 
 ADDRESS = "AA:BB:CC:DD:EE:FF"
 G7_INFO = b"brand:INLEDCO;pkey:Glowrium-C051;devid:CST-0001;mac:x;version:4;;"
@@ -1541,9 +1540,7 @@ def test_the_select_itself_does_not_offer_a_mode_the_lamp_does_not_have() -> Non
     the state above reads the same either way. What the entity answers is
     asked here directly.
     """
-    select = GlowriumLightingModeSelect(
-        GlowriumCoordinator(None, ADDRESS, "Glowrium-G7", keeper=ScriptedKeeper(None))
-    )
+    select = GlowriumLightingModeSelect(ScriptedLamp().coordinator(None))
 
     select._restored = "moonlight"
     assert select.current_option is None
@@ -1558,9 +1555,7 @@ def test_a_report_of_nothing_is_a_report_and_the_remembered_mode_steps_back() ->
     The remembered mode stands in while the id is absent from the mirror. A
     value that is there and names no preset is the lamp having spoken.
     """
-    select = GlowriumLightingModeSelect(
-        GlowriumCoordinator(None, ADDRESS, "Glowrium-G7", keeper=ScriptedKeeper(None))
-    )
+    select = GlowriumLightingModeSelect(ScriptedLamp().coordinator(None))
     select._restored = "balance"
     assert select.current_option == "balance"
 

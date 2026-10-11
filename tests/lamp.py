@@ -447,7 +447,6 @@ class ScriptedLamp:
         if keeper is None:
             keeper = ScriptedKeeper(hass)
         coordinator = GlowriumCoordinator(
-            hass,
             ADDRESS,
             name,
             model_id,
