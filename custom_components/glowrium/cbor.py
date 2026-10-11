@@ -35,11 +35,11 @@ class _RanOutError(ValueError):
 class UnreadableItemError(ValueError):
     """The outermost map of a device frame holds an item with no reading here.
 
-    Such an item has no length either, so nothing behind it can be found. The
-    pairs ahead of it were read as from any whole frame, and ``ahead`` hands
-    them over: whether they are worth keeping is for the caller to say. Still
-    a ``ValueError`` - to a caller that only asks whether the frame decoded,
-    it did not.
+    The decoder does not step over such an item, so nothing behind it is
+    found. The pairs ahead of it were read as from any whole frame, and
+    ``ahead`` hands them over: whether they are worth keeping is for the
+    caller to say. Still a ``ValueError`` - to a caller that only asks
+    whether the frame decoded, it did not.
     """
 
     def __init__(self, reason: str, ahead: dict[int, Any]) -> None:

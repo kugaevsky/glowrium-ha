@@ -3,7 +3,9 @@
 - **Status:** accepted
 - **Date:** 2026-08-24 (short maps kept, trailing bytes rejected: #5, in 0.2.0);
   2026-10-05 (only `ValueError` leaves the decoder; nesting bound of four; an
-  item that cannot be read keeps the pairs ahead of it)
+  item that cannot be read keeps the pairs ahead of it); 2026-10-11 (a frame
+  that is dropped whole is said once a session, and the two ways of reading a
+  frame in part are left to differ: #41)
 
 ## Context
 
@@ -42,6 +44,26 @@ callback, inside the Bluetooth stack's own message handler - catches exactly
   the frame is dropped: the remainder could decode to a short, plausible map,
   `{0x14: false}` among them - the value that triggers the bring-up.
 - Whatever the bytes, nothing but `ValueError` leaves the decoder.
+- A frame that cannot be decoded at all, and one that decodes to nothing
+  that can be used - something other than a map of properties, or a map with
+  nothing in it - is dropped and is no report. The first of each in a session
+  is said at warning level, on a count of its own, as the frame with trailing
+  bytes and the one with an unreadable item are; the frame is in the debug
+  log (ADR 0012).
+
+The two ways of reading a frame in part differ, and are left to. A frame with
+trailing bytes is dropped whole; one with an item that cannot be read is kept
+as far as it was read, `0x14 = false` included - as it is from a map that ends
+early. Neither has been seen from a lamp. Making them agree would mean
+dropping what was read ahead of an item, which costs the link, or keeping a
+frame whose head is contradicted by its own length, with no frame on record
+to say what such a frame is. A lamp seen to send either reopens this: each is
+said once a session, and the frame is in the debug log.
+
+A frame of which nothing was kept is no answer to the state request, and that
+lamp is read as a silent one is, on every connect. The read is the only other
+way to a state, and on BlueZ it costs that lamp its link, as it costs a lamp
+that refuses (ADR 0002).
 
 ## Consequences
 
@@ -53,8 +75,8 @@ callback, inside the Bluetooth stack's own message handler - catches exactly
 - The bound is load-bearing. A claim that an overflow is unreachable is to be
   measured over every form of nesting - keys, values, arrays - not the forms a
   reviewer happened to name; it was wrongly "corrected" once that way.
-- Neither warning prints the frame; the debug lines that do go through
-  `mirror._for_the_log` (ADR 0012).
+- None of the warnings a frame can cause prints it; the debug lines that do
+  go through `mirror._for_the_log` (ADR 0012).
 
 ## Evidence
 
@@ -63,10 +85,18 @@ callback, inside the Bluetooth stack's own message handler - catches exactly
   (a seeded corpus of noise, mutated real frames and deep nesting),
   `::test_an_item_that_cannot_be_read_says_what_was_read_ahead_of_it`,
   `::test_trailing_bytes_raise_their_own_type`;
-  `tests/test_mirror.py::test_what_was_read_ahead_of_an_unreadable_item_is_kept_and_said_loudly`;
-  `tests/test_coordinator.py::test_a_report_read_only_in_part_is_still_the_answer_to_the_request`.
+  `tests/test_mirror.py::test_what_was_read_ahead_of_an_unreadable_item_is_kept_and_said_loudly`,
+  `::test_trailing_bytes_are_reported_as_themselves`,
+  `::test_a_frame_that_cannot_be_decoded_is_said_once_and_without_the_frame`,
+  `::test_a_frame_that_decodes_to_nothing_usable_is_named_as_well`,
+  `::test_what_a_dropped_frame_was_is_said_for_each_kind_of_its_own`,
+  `::test_next_report_wakes_on_a_report_and_on_nothing_else`;
+  `tests/test_coordinator.py::test_a_report_read_only_in_part_is_still_the_answer_to_the_request`,
+  `::test_a_lamp_that_acknowledges_and_says_nothing_is_read`.
 
 ## Revisit when
 
 A model is found whose reports legitimately nest deeper than four, or carry an
-item the subset should learn to read: the warning is how it was found.
+item the subset should learn to read: the warning is how it was found. Or a
+lamp is seen to send a frame with trailing bytes, or one that is read only in
+part: what that frame is settles whether the two ways should agree.

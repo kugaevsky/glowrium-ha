@@ -321,9 +321,12 @@ not pass one off as the other: it raises `cbor.UnreadableItemError`. It used
 to take such a pair for the end of a split map, so the frame was merged as far
 as it went and nothing said that the rest of it had not been understood.
 
-An item with no reading has no length either, so nothing behind it can be
-found. What was ahead of it was read as from any whole frame, and the error
-carries those pairs (`ahead`). The mirror keeps them (`Mirror.take`), and
+The decoder does not step over an item it has no reading for, so nothing
+behind it is found - though a tag, a half-precision float, a simple value and
+`undefined` each have a length it could go by
+([#40](https://github.com/kugaevsky/glowrium-ha/issues/40)). What was ahead
+of it was read as from any whole frame, and the error carries those pairs
+(`ahead`). The mirror keeps them (`Mirror.take`), and
 says so - once per session as a warning, with the frame in the debug log. Dropping the frame instead would cost more than its
 properties. A state request answered only by such a frame would count as
 unanswered; the connect would fall back on reading the state; and on BlueZ a
@@ -332,10 +335,11 @@ item nobody has given a reading would lose its link on every connect - which
 is what 0.2.0 and 0.2.1 did to every lamp. A frame of which nothing at all
 could be read is still no report, and that lamp is read, as a silent one is.
 
-A frame is printed in the debug log and nowhere else. This warning and the
-one for trailing bytes say what was wrong and where the frame is, and carry
-none of it: its bytes are the lamp's to choose, and the log a warning stands
-in is posted for reasons that have nothing to do with this integration.
+A frame is printed in the debug log and nowhere else. This warning, the one
+for trailing bytes and the two for a frame that is dropped whole (below) say
+what was wrong and where the frame is, and carry none of it: its bytes are
+the lamp's to choose, and the log a warning stands in is posted for reasons
+that have nothing to do with this integration.
 Wherever a frame is printed, it is printed without what says where the lamp
 is (`mirror._for_the_log`). The coordinates and the times the lamp works out
 from them are found by their bytes and not by decoding, since these are the
@@ -365,6 +369,31 @@ is new as of the split-frame fix, the mirror reports the first such frame per
 session as a warning carrying the model, with the frame in the debug log, so a regression on a
 model that never produced them shows up as itself rather than as generic
 undecodable garbage.
+
+### Frames that are dropped whole
+
+Two more kinds of frame are dropped, and each is said as the frame with
+trailing bytes is: the first of a session in a warning that names the lamp
+and carries no byte of the frame, every one in the debug log.
+
+- One that cannot be decoded at all: a tag at the top, a map of indefinite
+  length, noise. The warning says what was wrong in the decoder's own words.
+- One that decodes without a fault to nothing that can be used: something
+  other than a map of properties, or a map with nothing in it.
+
+Each has a count of its own: one having been said says nothing of another.
+None of the three is a report, and to the state request none is an answer.
+The lamp is read instead, as a silent one is, on every connect: the read is
+the only other way to a state, and on BlueZ it costs that lamp its link, as
+it costs a lamp that refuses. The owner of such a lamp sees entities that
+read `unknown` and a link that keeps dropping, and the warning is what says
+why.
+
+The two ways of reading a frame in part differ, and are left to (ADR 0007). A
+frame with trailing bytes is dropped whole; one with an item that cannot be
+read is kept as far as it was read, `0x14 = false` included - as it is from a
+map that ends early. Neither has been seen from a lamp, and a lamp seen to
+send either is what reopens it.
 
 ### The state mirror
 

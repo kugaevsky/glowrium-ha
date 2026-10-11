@@ -387,6 +387,18 @@ messages worth acting on, and two symptoms that come without one.
   the frame is kept, so the lamp goes on working; what follows it is lost.
   The frame is in the debug log, blanked the same way, and an issue with it
   is how the reading gets written.
+- **`sent a frame that could not be decoded`** — the lamp sent something the
+  decoder could make nothing of, and the message says what was wrong. Such a
+  frame tells the integration nothing. A lamp that answers with nothing else
+  has its state read instead, on every connect, and on a Linux host that read
+  costs the link: the entities read `unknown` and the lamp keeps dropping.
+  The frame is in the debug log, blanked the same way, and an issue with it
+  is how such a lamp gets read.
+- **`sent a frame that decodes to nothing this integration can use`** — the
+  frame was read, and it is not a map of properties, or is one with nothing
+  in it. It is dropped as the one above is, at the same cost when a lamp
+  sends nothing else. The frame is in the debug log; please
+  [report it](CONTRIBUTING.md#sending-protocol-data-for-a-device).
 - **`reports more properties than this integration keeps`** — the lamp sent
   more properties the integration has no name for than it has room for. It
   keeps the ones it knows and a fixed number of others, and counts each time

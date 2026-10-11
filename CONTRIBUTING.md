@@ -108,8 +108,9 @@ What is worth sending, roughly in order of usefulness:
    link stands, in one file.
 2. **A notify frame the decoder mishandled**, as hex. Turn on debug logging for
    `custom_components.glowrium`; frames that cannot be used are printed with
-   their bytes. A frame with trailing bytes, or with an item nothing here can
-   read, is named in a warning without it. One such frame from a G8 turned
+   their bytes. A frame with trailing bytes, one with an item nothing here
+   can read, one that could not be decoded and one that decoded to nothing of
+   use are each named in a warning without it. One such frame from a G8 turned
    into a fix and a regression test — the decoder had been throwing away
    eleven valid properties because the frame promised twelve pairs and
    carried eleven.

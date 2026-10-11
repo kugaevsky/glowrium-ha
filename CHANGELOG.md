@@ -84,6 +84,18 @@ All notable changes to this project are documented here. The format is based on
   before that - and goes when its model gets a profile or the lamp is
   removed. The presets on offer and what is written for a choice are as they
   were ([#31](https://github.com/kugaevsky/glowrium-ha/issues/31)).
+- **A lamp whose frames cannot be read is said so in the log.** A frame that
+  could not be decoded at all - a map behind a tag, a map of indefinite
+  length, noise - or that decoded to something other than a map of
+  properties, or to a map with nothing in it, was dropped with a line in the
+  debug log and nowhere else. A lamp that answers the state request with
+  nothing else is read instead on every connect, which on a Linux host costs
+  it the link: its owner saw entities that read `unknown` and a lamp that
+  kept dropping, and nothing above debug said why. The first such frame of a
+  session is now a warning, one for each of the two kinds: the lamp, its
+  model and firmware, what was wrong, and where the frame is - not the frame.
+  What is done with such a frame is as before
+  ([#41](https://github.com/kugaevsky/glowrium-ha/issues/41)).
 
 ## [0.4.0] - 2026-10-10
 
