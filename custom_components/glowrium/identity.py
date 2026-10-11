@@ -25,6 +25,17 @@ from .const import NAME_PREFIX
 _NAME_SHOWN: Final = 48
 
 
+def without_address(name: str, address: str) -> str:
+    """Return the lamp's name without its address after it.
+
+    A lamp picked from the list of discovered devices is titled with its
+    name and its address in brackets. Where the address is said anyway, or
+    where brackets and colons do not survive (``as_text``), the name alone
+    reads better.
+    """
+    return name.removesuffix(f" ({address})")
+
+
 def as_text(name: str) -> str:
     """Return ``name`` with nothing in it that Markdown or HTML would act on.
 

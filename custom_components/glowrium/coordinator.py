@@ -66,9 +66,6 @@ from .models import GlowriumModel, has_profile, resolve_model
 from .protocol import UNUSABLE, Unusable, usable
 
 _LOGGER = logging.getLogger(__name__)
-# Where the repair for a Bluetooth stack that will not hang up sends the
-# reader for what to do.
-_TROUBLESHOOTING_URL = "https://github.com/kugaevsky/glowrium-ha#troubleshooting"
 # What to send of a lamp nobody here owns, and how: where the notice about
 # unconfirmed presets points.
 _PROTOCOL_DATA_URL = (
@@ -206,6 +203,15 @@ class Keeper(Protocol):
         watched - a setup that failed before the start is stopped as well.
         """
 
+    def stack_fault(self, count: int | None) -> None:
+        """Hear of a Bluetooth stack that will not hang up, or that it has let go.
+
+        ``count`` is how many requests in a row to disconnect the lamp went
+        unanswered when the link called it a fault; ``None`` says that the
+        lamp has answered since. What is made of it is the keeper's: Home
+        Assistant's raises a repair and takes it down.
+        """
+
 
 class GlowriumCoordinator:
     """Maintain a BLE connection and mirror the device's CBOR property state.
@@ -287,7 +293,7 @@ class GlowriumCoordinator:
             greet=self._greet,
             probe=self._probe,
             reach_changed=self._async_reach_changed,
-            stack_fault=self._async_on_stack_fault,
+            stack_fault=keeper.stack_fault,
             spawn=self._spawn,
             run_lasting=keeper.run_lasting,
             unclosed=unclosed,
@@ -362,14 +368,8 @@ class GlowriumCoordinator:
 
     @property
     def _plain_name(self) -> str:
-        """The lamp's name without its address after it.
-
-        A lamp picked from the list of discovered devices is titled with its
-        name and its address in brackets. Where the address is said anyway, or
-        where brackets and colons do not survive (``identity.as_text``), the name
-        alone reads better.
-        """
-        return self.name.removesuffix(f" ({self.address})")
+        """The lamp's name without its address after it: the log says both."""
+        return identity.without_address(self.name, self.address)
 
     # --- What the link is handed ----------------------------------------------
 
@@ -399,14 +399,6 @@ class GlowriumCoordinator:
     def _async_reach_changed(self) -> None:
         """Tell the entities: the link says there is something for them to learn."""
         self._async_notify_listeners()
-
-    @callback
-    def _async_on_stack_fault(self, count: int | None) -> None:
-        """Raise the repair for a stack that will not hang up, or take it down."""
-        if count is None:
-            self._async_clear_stack_issue()
-        else:
-            self._async_raise_stack_issue(count)
 
     @property
     def available(self) -> bool:
@@ -648,11 +640,6 @@ class GlowriumCoordinator:
         # and outlast this, and from here on it is refused a new link.
         self._link.halt()
         self._keeper.unwatch()
-        # A coordinator that has stopped watching cannot say when the stack
-        # lets go, so it does not leave the claim standing that it has not.
-        # The repair filed under this entry from here on is its successor's
-        # (and the link has no episode left to call over: see Link.halt).
-        self._async_clear_stack_issue()
 
     @callback
     def async_shutdown(self, _event: Event | None = None) -> None:
@@ -670,52 +657,6 @@ class GlowriumCoordinator:
         # Before anything is awaited.
         self._async_stop_watching()
         await self._link.let_go()
-
-    @property
-    def _stack_issue_id(self) -> str:
-        """Name the repair by the config entry, never by the lamp's address.
-
-        Home Assistant lists the ids of an integration's open repairs in its
-        diagnostics download, which is a file people post. The entry's id
-        tells two lamps apart as well as the address would.
-        """
-        if self._entry is None:
-            return "bluetooth_stack_stuck"
-        return f"bluetooth_stack_stuck_{self._entry.entry_id}"
-
-    @callback
-    def _async_raise_stack_issue(self, count: int) -> None:
-        """Put the wedged stack in front of the user, as a repair.
-
-        The log line is for whoever goes looking. This is for everyone else:
-        it names the lamp, says that it is the host's stack and not the lamp,
-        and carries the one thing that ends it. Not kept across a restart -
-        the next start finds out for itself whether the stack still holds on.
-        """
-        if self.hass is None:  # the bench has no dashboard to raise it on
-            return
-        ir.async_create_issue(
-            self.hass,
-            DOMAIN,
-            self._stack_issue_id,
-            is_fixable=False,
-            is_persistent=False,
-            severity=ir.IssueSeverity.WARNING,
-            learn_more_url=_TROUBLESHOOTING_URL,
-            translation_key="bluetooth_stack_stuck",
-            translation_placeholders={
-                # As text: the description is rendered as Markdown.
-                "name": identity.as_text(self._plain_name),
-                "count": str(count),
-            },
-        )
-
-    @callback
-    def _async_clear_stack_issue(self) -> None:
-        """Take the repair down: the lamp answered, or nobody is watching."""
-        if self.hass is None:
-            return
-        ir.async_delete_issue(self.hass, DOMAIN, self._stack_issue_id)
 
     @callback
     def _async_review_presets_notice(

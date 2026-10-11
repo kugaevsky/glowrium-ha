@@ -87,3 +87,25 @@ def test_a_line_meant_for_posting_says_three_things_of_a_model_or_a_firmware(
 ) -> None:
     """What it is, that it is not known yet, or that it is not what it claims."""
     assert identity.described(model, firmware) == said
+
+
+@pytest.mark.parametrize(
+    ("name", "alone"),
+    [
+        # Picked from the list of discovered lamps: titled with its address.
+        ("Glowrium-G7_DDEEFF (AA:BB:CC:DD:EE:FF)", "Glowrium-G7_DDEEFF"),
+        ("Glowrium-G7_DDEEFF", "Glowrium-G7_DDEEFF"),
+        # Another lamp's address is part of what somebody called this one.
+        (
+            "Glowrium-G7_DDEEFF (11:22:33:44:55:66)",
+            "Glowrium-G7_DDEEFF (11:22:33:44:55:66)",
+        ),
+        # Only where a title puts it: at the end, in brackets.
+        ("(AA:BB:CC:DD:EE:FF) over the desk", "(AA:BB:CC:DD:EE:FF) over the desk"),
+    ],
+)
+def test_a_name_is_said_without_the_lamps_own_address_after_it(
+    name: str, alone: str
+) -> None:
+    """Where the address is said anyway, or would not survive, the name alone."""
+    assert identity.without_address(name, "AA:BB:CC:DD:EE:FF") == alone

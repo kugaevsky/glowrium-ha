@@ -136,6 +136,9 @@ class ScriptedKeeper:
         # The names of the work asked for, by the lifetime it was asked for.
         self.spawned: list[str] = []
         self.lasting: list[str] = []
+        # What was said of a stack that will not hang up: each count, and
+        # ``None`` for each time it was said to be over.
+        self.stack_faults: list[int | None] = []
         # Whether the lamp is on the air when the watching begins.
         self.present = True
         # What the device half handed over to be told through, while it
@@ -164,6 +167,10 @@ class ScriptedKeeper:
     def unwatch(self) -> None:
         """Tell the device half nothing from here on."""
         self._told = None
+
+    def stack_fault(self, count: int | None) -> None:
+        """Note what was said of a stack that will not hang up."""
+        self.stack_faults.append(count)
 
     @property
     def watching(self) -> bool:

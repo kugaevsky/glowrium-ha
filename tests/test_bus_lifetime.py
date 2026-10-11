@@ -30,6 +30,7 @@ from bleak.backends.bluezdbus import defs
 from bleak.backends.bluezdbus.client import BleakClientBlueZDBus
 from bleak.exc import BleakError
 from dbus_fast import MessageType
+from homeassistant.const import CONF_ADDRESS
 from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers import issue_registry as ir
@@ -48,12 +49,13 @@ from custom_components.glowrium.const import (
     NOTIFY_UUID,
     WRITE_UUID,
 )
-from custom_components.glowrium.coordinator import GlowriumCoordinator
+from custom_components.glowrium.coordinator import GlowriumCoordinator, Keeper
+from custom_components.glowrium.keeper import EntryKeeper
 
 from .lamp import (
     LampLink,
-    ScriptedKeeper,
     ScriptedLamp,
+    keeper_of,
     lamp_of,
     link_of,
     nothing_heard,
@@ -166,14 +168,16 @@ def _wedged(
     behind: Any = _Backend,
     *,
     backs_off: bool = False,
+    keeper: Keeper | None = None,
 ) -> tuple[GlowriumCoordinator, _WedgedBlueZ]:
     """Return a coordinator facing a wedged stack (see ``_a_wedged_stack``).
 
     For a test that needs the device half as well: what the user is told, or
-    the repair. The link alone is had from ``_wedged_link``.
+    the repair - which is its ``keeper``'s to raise. The link alone is had
+    from ``_wedged_link``.
     """
     host, lamp = _a_wedged_stack(monkeypatch, behind, backs_off=backs_off)
-    return lamp.coordinator(hass), host
+    return lamp.coordinator(hass, keeper=keeper), host
 
 
 # The lamp a bare link was built to dial, for a test that sends its dials
@@ -1581,11 +1585,39 @@ def _on_a_clock(
     return link, host, clock, dialled
 
 
+def _an_entry(hass: HomeAssistant, title: str = "Glowrium-G7") -> SimpleNamespace:
+    """Return what stands for the config entry of the lamp: what a keeper reads.
+
+    Its id, the name the lamp was set up under, the lamp's address - and
+    where its work goes, which is where a test waits for it.
+    """
+    return SimpleNamespace(
+        entry_id="01JENTRY",
+        title=title,
+        data={CONF_ADDRESS: "AA:BB:CC:DD:EE:FF"},
+        async_create_background_task=lambda _hass, coro, name: hass.async_create_task(
+            coro, name
+        ),
+    )
+
+
 def _coordinator_on_a_clock(
-    hass: HomeAssistant, monkeypatch: pytest.MonkeyPatch
+    hass: HomeAssistant,
+    monkeypatch: pytest.MonkeyPatch,
+    entry: SimpleNamespace | None = None,
 ) -> tuple[GlowriumCoordinator, _WedgedBlueZ, _Clock, list[float]]:
-    """Return the same of a coordinator: for what it makes of the link's word."""
-    coordinator, host = _wedged(hass, monkeypatch, backs_off=True)
+    """Return the same of a coordinator kept for a config entry.
+
+    For what is made of the link's word: the repair is raised by what keeps
+    a coordinator in Home Assistant, under ``entry`` - one of its own when
+    the test has none to say something about.
+    """
+    coordinator, host = _wedged(
+        hass,
+        monkeypatch,
+        backs_off=True,
+        keeper=EntryKeeper(hass, entry or _an_entry(hass)),
+    )
     clock = _Clock()
     monkeypatch.setattr(coordinator_module, "monotonic", clock)
     monkeypatch.setattr(link_module, "monotonic", clock)
@@ -1957,8 +1989,9 @@ async def test_the_repair_shows_the_lamps_name_as_text_and_nothing_more(
     any script, and nothing Markdown or HTML acts on - not even a dot, which
     is all it takes to make an address clickable.
     """
-    coordinator, _host, clock, _dialled = _coordinator_on_a_clock(hass, monkeypatch)
-    coordinator.name = name
+    coordinator, _host, clock, _dialled = _coordinator_on_a_clock(
+        hass, monkeypatch, _an_entry(hass, title=name)
+    )
 
     await _ticks(link_of(coordinator), clock, 3, hass=hass)
 
@@ -1983,12 +2016,6 @@ async def test_the_repair_is_filed_under_the_entry_and_not_under_the_address(
     entry's id tells two lamps apart just as well and names neither.
     """
     coordinator, _host, clock, _dialled = _coordinator_on_a_clock(hass, monkeypatch)
-    coordinator._entry = SimpleNamespace(
-        entry_id="01JENTRY",
-        async_create_background_task=lambda _hass, coro, name: hass.async_create_task(
-            coro, name
-        ),
-    )
 
     await _ticks(link_of(coordinator), clock, 3, hass=hass)
 
@@ -2006,8 +2033,9 @@ async def test_the_repair_shows_no_more_of_a_name_than_it_takes_to_know_it(
     hass: HomeAssistant, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """A name is cut at a length that is still a name, not a paragraph."""
-    coordinator, _host, clock, _dialled = _coordinator_on_a_clock(hass, monkeypatch)
-    coordinator.name = "Glowrium " + "x" * 200
+    coordinator, _host, clock, _dialled = _coordinator_on_a_clock(
+        hass, monkeypatch, _an_entry(hass, title="Glowrium " + "x" * 200)
+    )
 
     await _ticks(link_of(coordinator), clock, 3, hass=hass)
 
@@ -2131,14 +2159,10 @@ async def test_a_stopped_coordinator_ends_no_episode_and_takes_down_no_repair(
     is not this one's to take down. Nor is it if this coordinator did
     announce an episode while it was watching: stopping closed it.
     """
-    coordinator, _host, clock, _dialled = _coordinator_on_a_clock(hass, monkeypatch)
-    entry = SimpleNamespace(
-        entry_id="01JENTRY",
-        async_create_background_task=lambda _hass, coro, name: hass.async_create_task(
-            coro, name
-        ),
+    entry = _an_entry(hass)
+    coordinator, _host, clock, _dialled = _coordinator_on_a_clock(
+        hass, monkeypatch, entry
     )
-    coordinator._entry = entry
     if announced_before_it_stopped:
         await _ticks(link_of(coordinator), clock, 3, hass=hass)
         assert _stack_issue(hass) is not None
@@ -2151,8 +2175,9 @@ async def test_a_stopped_coordinator_ends_no_episode_and_takes_down_no_repair(
     assert link_of(coordinator).stuck_hang_ups == 3
     assert _stack_issue(hass) is None
 
-    successor, _host, successor_clock, _ = _coordinator_on_a_clock(hass, monkeypatch)
-    successor._entry = entry
+    successor, _host, successor_clock, _ = _coordinator_on_a_clock(
+        hass, monkeypatch, entry
+    )
     await _ticks(link_of(successor), successor_clock, 3, hass=hass)
     assert _stack_issue(hass) is not None
 
@@ -2165,17 +2190,23 @@ async def test_a_stopped_coordinator_ends_no_episode_and_takes_down_no_repair(
     await successor.async_stop()
 
 
-async def test_a_wedged_stack_is_survived_without_home_assistant() -> None:
-    """The bench has no dashboard to raise a repair on, and counts all the same."""
-    coordinator = GlowriumCoordinator(
-        None, "AA:BB:CC:DD:EE:FF", "bench", keeper=ScriptedKeeper(None)
-    )
+async def test_a_wedged_stack_is_said_to_whatever_keeps_the_coordinator() -> None:
+    """The device half raises no repair: it tells its keeper, and tells it the end.
+
+    Home Assistant's keeper has a dashboard to put it on. The bench has
+    none, and is told all the same - and the count is kept all the same.
+    """
+    coordinator = ScriptedLamp().coordinator(None, "bench")
+    keeper = keeper_of(coordinator)
 
     for _ in range(link_module._STACK_FAULT_AFTER):
         link_of(coordinator).note_stuck_hang_up()
+    assert keeper.stack_faults == [3]
+
     link_of(coordinator).note_answer()
 
     assert link_of(coordinator).stuck_hang_ups == 0
+    assert keeper.stack_faults == [3, None]
 
 
 async def test_a_command_is_not_held_back_by_the_backoff(

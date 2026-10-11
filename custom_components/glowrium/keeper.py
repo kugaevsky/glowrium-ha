@@ -18,9 +18,16 @@ from homeassistant.components import bluetooth
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import CONF_ADDRESS
 from homeassistant.core import HomeAssistant, callback
+from homeassistant.helpers import issue_registry as ir
 from homeassistant.helpers.event import async_track_time_interval
 
+from . import identity
+from .const import DOMAIN
 from .link import _RECONNECT_INTERVAL
+
+# Where the repair for a Bluetooth stack that will not hang up sends the
+# reader for what to do.
+_TROUBLESHOOTING_URL = "https://github.com/kugaevsky/glowrium-ha#troubleshooting"
 
 
 class EntryKeeper:
@@ -109,6 +116,61 @@ class EntryKeeper:
         return bluetooth.async_address_present(hass, address, connectable=True)
 
     def unwatch(self) -> None:
-        """End every watcher that was begun, once."""
+        """End every watcher that was begun, once, and stand behind no repair.
+
+        A keeper that has ceased to watch cannot say when the stack lets go,
+        so it does not leave the claim standing that it has not. The repair
+        filed under this entry from here on is the next keeper's.
+        """
         while self._watchers:
             self._watchers.pop()()
+        self.stack_fault(None)
+
+    @property
+    def _name_as_text(self) -> str:
+        """The lamp's name for a repair, which is rendered as Markdown.
+
+        The entry is titled with the name the lamp advertised: it comes off
+        the air. Without the address a lamp picked from the list is titled
+        with: a repair leaves the host in the diagnostics.
+        """
+        return identity.as_text(
+            identity.without_address(self._entry.title, self._address)
+        )
+
+    @property
+    def _stack_issue_id(self) -> str:
+        """Name the repair by the config entry, never by the lamp's address.
+
+        Home Assistant lists the ids of an integration's open repairs in its
+        diagnostics download, which is a file people post. The entry's id
+        tells two lamps apart as well as the address would.
+        """
+        return f"bluetooth_stack_stuck_{self._entry.entry_id}"
+
+    def stack_fault(self, count: int | None) -> None:
+        """Put a stack that will not hang up in front of the user, as a repair.
+
+        The log line is for whoever goes looking. This is for everyone else:
+        it names the lamp, says that it is the host's stack and not the lamp,
+        and carries the one thing that ends it. Not kept across a restart -
+        the next start finds out for itself whether the stack still holds on.
+        Taken down (``None``) once the lamp has answered.
+        """
+        if count is None:
+            ir.async_delete_issue(self._hass, DOMAIN, self._stack_issue_id)
+            return
+        ir.async_create_issue(
+            self._hass,
+            DOMAIN,
+            self._stack_issue_id,
+            is_fixable=False,
+            is_persistent=False,
+            severity=ir.IssueSeverity.WARNING,
+            learn_more_url=_TROUBLESHOOTING_URL,
+            translation_key="bluetooth_stack_stuck",
+            translation_placeholders={
+                "name": self._name_as_text,
+                "count": str(count),
+            },
+        )
