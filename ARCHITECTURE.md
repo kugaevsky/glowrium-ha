@@ -175,30 +175,42 @@ something changes, and a complete map from a moment earlier proves nothing.
 (`Glowrium-C064`) answers the request with ATT `Insufficient authorization`;
 another may acknowledge it and say nothing. Then the characteristic is read —
 at the price of the link on BlueZ, which for such a lamp is the price of
-having a state at all. A lamp that has refused once is read *first* from
-then on, as every lamp was before, and asked again afterwards: it was
-reported of the G8 that the refused request takes the link with it, and
-after that there would be nothing left to read. (Whether that was the
-request or the read before it is no longer certain. It cannot be checked
-without a G8.)
+having a state at all. The order is one, for every lamp and every time:
+asked, and read only then
+([#55](https://github.com/kugaevsky/glowrium-ha/issues/55)). Until then a
+lamp that had refused once was read *first* and asked afterwards, because it
+was reported of the G8 that the refused request takes the link with it.
+Whether that was the request or the read before it was never certain, and
+nobody has seen a refusal that passes; it cannot be checked without a G8.
 
 > ⚠️ **The read does not return the whole property map.** Measured directly on a
 > G7 at RSSI −40 and reported for a G8 in issue #3: it returns a complete,
 > twenty-pair map headed `0xb4`, carrying keys `0x00`–`0x15` and nothing above.
 > The indicator (`0x17`), lighting mode (`0x2b`), ramp (`0x2f`) and DST
 > (`0x35`) are absent from it on both models and arrive only through the
-> `STATE_KEYS` request. So a lamp that is read keeps being asked as well.
+> `STATE_KEYS` request. So one refusal does not end the asking.
 
 A refusal is **non-fatal**, and it is told by what the error says — an
 authorization or permission error — not by anything having worked before
 it: a link that is gone answers `Not connected` to everything, and counting
-that muted the request on a perfectly good G7 forty seconds after start-up.
+that ended the asking on a perfectly good G7 forty seconds after start-up.
 Where the error is bleak's own it says which ATT error it was
 (`BleakGATTProtocolError.code`), and that code alone decides; the text is
 what is left to go by for anything else, a Bluetooth proxy's error for one.
-After `_STATE_REQUEST_ATTEMPTS` (3) refusals in a row the coordinator warns
-once and pauses the request for `_STATE_REQUEST_COOLDOWN` (10 minutes); a
-model that refuses again once that expires is not asked again this session.
+After `_STATE_REQUEST_ATTEMPTS` (3) refusals in a row the lamp is not asked
+again for as long as the coordinator lives: it is only read, on every
+connect, and the log says so once - the lamp, its model and firmware, that
+commands still work, that what a read does not carry stays unknown, and a
+request to report the model. A request the lamp accepts starts the count
+again, so one refusal does not add up with another an hour later. A link
+that drops under the request is a lost link and is counted as nothing.
+
+There was more to it until #55: the third refusal paused the request for ten
+minutes, and a second run of three after that gave it up for the session,
+each with a warning. The pause was from when any error counted as a refusal
+and a weak link "refused" by dropping. With only the lamp's own no counted,
+it gave the owner of a lamp that refuses two warnings for one fact, and no
+lamp has been seen to refuse and then stop refusing.
 
 Whether to ask is never judged by the state mirror. The mirror accumulates,
 so a key seen once would look covered for the rest of the session, and a
@@ -655,8 +667,9 @@ turn on until it has been brought up.
 
 The vendor app performs this bring-up on first pairing. It is **entirely local** —
 the captures show **no SMP pairing / BLE bond and no cloud** — so the integration
-replays the same sequence itself. On connect, `_async_activate_if_needed` waits
-briefly for the initial state to arrive; if `0x14` reads `False`,
+replays the same sequence itself. On connect, once the state request is over,
+`_async_activate_if_needed` looks at the flag as the mirror holds it - reported,
+or read from a lamp that will not report; if `0x14` reads `False`,
 `_async_activate` sends three commands to `facebd01`:
 
 ```
@@ -676,6 +689,14 @@ Notes:
 - It goes by the flag itself, both ways. Only the boolean `False` is a lamp
   to bring up, and only the boolean `True` settles the question for the
   session: a number or a text under `0x14` reads as true and says neither.
+- **Nothing is waited for.** The state request has asked for the flag and
+  waited for the report, and read where the lamp did not report; the exchange
+  holds the link's lock, and a command may be queued behind it. Until #55 the
+  flag was waited for a second time, up to three seconds, which ran only where
+  it was not going to come. A flag that comes later than the lamp's answer is
+  in the mirror by the next first exchange, and the lamp is brought up then.
+- A lamp that is only read is judged the same way. It was passed over until
+  #55, as a lamp whose flag could not come - and a read brings the flag.
 - The **Activated** `binary_sensor` (diagnostic) surfaces this flag so users can
   see provisioning status.
 
@@ -1128,7 +1149,7 @@ killed has not been measured.
 
 **A command connects without priming** (`Link.send` takes its link bare). It needs
 the link and its own write, nothing else — and priming costs the state request,
-the wait for its answer, up to 3 s waiting for the activation flag and, the
+the wait for its answer and, the
 first time, the device-info read, all before the write is attempted and all
 inside the command budget. On a lamp
 where the connect alone is marginal, that is what turns a working command into a
@@ -1465,7 +1486,7 @@ with its reason. A reach that is not on the list is a test to be moved.
 | --- | --- |
 | `_ingest`, `_mirror`, `_new_mirror` | The mirror's seam (ADR 0013). A frame is handed to the one intake, as the link hands it one; a test that needs the lamp to have said something says it through the mirror's own two ways in, never by assignment; a test that wants nothing heard is given a new mirror, built as the coordinator builds its own. |
 | `_request_state`, `_async_read_state`, `_async_read_device_info`, `_async_activate_if_needed`, `_async_activate`, `_async_sync_clock_if_needed` | The steps of the first exchange, each called on a turn over the scripted lamp's link (`turn_over`). The exchange as a whole is run by the link, through its connect; a step is run alone where the test is of that step. |
-| `_state_request_failures`, `_state_request_muted`, `_state_request_muted_until`, `_state_request_given_up` | A lamp that has refused the state request before - set down, where refusing three times over would be the test of something else. |
+| `_state_request_refusals` | How often in a row the lamp has refused the state request - set down in the one test of the diagnostics' link section, which moves each field on its own. The tests of the request itself read what was asked and read, in order, and the log. |
 | `_activation_checked` | Read, to see whether the bring-up was settled for the session. |
 | `_desired_ramp`, `_writes_sent` | What was remembered of the ramp, and how many commands were written: neither has a reader but the coordinator's next step and the diagnostics. |
 | `_async_notify_listeners`, `_async_write` | The telling of the entities, where a test counts the tellings, and a command with a payload of the test's own. |

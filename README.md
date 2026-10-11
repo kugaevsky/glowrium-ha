@@ -373,7 +373,9 @@ messages worth acting on, and two symptoms that come without one.
 - **`refused the batched state request`** — the lamp will not report its state
   when asked. That is a property of the model (a G8 does it), not a fault:
   commands still work and the state is read instead, but the indicator,
-  lighting mode, ramp and DST stay `unknown`. Please
+  lighting mode, ramp and DST stay `unknown`. It is said once, after the
+  third refusal in a row, and the lamp is not asked again until Home
+  Assistant restarts or the entry is reloaded. Please
   [report the model](CONTRIBUTING.md#sending-protocol-data-for-a-device).
 - **`sent a frame with … trailing bytes and it was dropped`** — a frame the
   decoder would not trust. The frame as hex is exactly what an issue needs,

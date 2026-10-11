@@ -30,8 +30,11 @@ the stray response, so the bench on a laptop never showed it. No workaround.
   reports is never read.
 - A read is left for a lamp that will not report: one that refuses the request
   (a G8 answers ATT `Insufficient authorization`) or acknowledges it and says
-  nothing. A lamp that has refused is read first from then on, and still asked
-  afterwards: the read stops at `0x15` and carries no indicator, mode or ramp.
+  nothing. The order is one: asked, and read only then. The read stops at
+  `0x15` and carries no indicator, mode or ramp, so one refusal does not end
+  the asking; three in a row do, and from then on the lamp is only read
+  (2026-10-11, #55). Before that a lamp that had refused was read first and
+  asked afterwards, and the third refusal paused the request for ten minutes.
 - A refusal is told by what the error says (the ATT code where bleak gives
   one, the text otherwise), never by what worked before it.
 - The device-info string (`facebd80`) is the one read left. It is read once

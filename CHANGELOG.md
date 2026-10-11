@@ -70,6 +70,27 @@ All notable changes to this project are documented here. The format is based on
   it is nearest to. For what a G7 reports the file is unchanged
   ([#23](https://github.com/kugaevsky/glowrium-ha/issues/23)).
 
+- **A lamp that refuses to report its state is asked three times, and then
+  only read.** After three refusals in a row the integration paused the
+  request for ten minutes, asked a second run of three, and only then gave
+  it up for the session - with a warning each time. The pause was from when
+  a link that dropped was counted as a refusal; for a while now only the
+  lamp's own no has been. So the third refusal in a row ends the asking
+  until Home Assistant restarts or the entry is reloaded, and the log says
+  so once. And such a lamp was read *before* it was asked, from its first
+  refusal on: it is asked and then read, like any other. Nothing changes for
+  a G7, which answers. A G8 refuses, and none was at hand to try this on
+  ([#55](https://github.com/kugaevsky/glowrium-ha/issues/55)).
+- **The first exchange on a link no longer waits for the activation flag.**
+  After asking the lamp for its state it waited up to three seconds more for
+  the flag that says whether the lamp has to be brought up - with the link
+  held, and any command queued behind it waiting too. The flag is asked for
+  with the rest of the state and read where the lamp does not report, so
+  that second wait ran only where the flag was not going to come. A lamp
+  whose flag comes later than its answer is brought up on the next connect,
+  not this one; no lamp has been seen to do that. And a lamp that is only
+  read is brought up when its flag says it has to be: it was passed over
+  ([#55](https://github.com/kugaevsky/glowrium-ha/issues/55)).
 - **`tools/bench.py` drives the integration the way Home Assistant does.**
   It built the integration's coordinator and then made the connect itself,
   through a private door, with a private flag set to keep it from activating
