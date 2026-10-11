@@ -1,7 +1,8 @@
 # A Bluetooth stack that will not hang up is a state, not an event
 
 - **Status:** accepted
-- **Date:** 2026-10-05 (the count, the backoff, the warning and the repair)
+- **Date:** 2026-10-05 (the count, the backoff, the warning and the repair);
+  2026-10-11 (two states and not one; the day to revisit made checkable)
 
 ## Context
 
@@ -66,6 +67,30 @@ dialled again for five hours until a command failed.
 
 ## Revisit when
 
-BlueZ 5.84 or later is what hosts run, Home Assistant OS included, so that an
-unanswered hang-up no longer means a phantom link; the count, the backoff and
-the repair could go. The bus-closing half (ADR 0003) stays: that is bleak's.
+Debian stable and Raspberry Pi OS ship BlueZ 5.84 or later. From then on an
+unanswered hang-up no longer means a phantom link on the hosts this was seen
+on, and the count, the backoff and the repair could go. The bus-closing half
+(ADR 0003) stays: that is bleak's.
+
+Made checkable on 2026-10-11 (the map's ticket on the stuck stack, #47):
+
+- The change is one commit of BlueZ, `8c9977b02169`, first in 5.84: a
+  disconnect that the kernel answers "already disconnected" is taken for the
+  disconnection it is. It has the hang-up answered; it does not keep
+  bluetoothd from believing in a dead link until somebody hangs up.
+- Home Assistant OS has had 5.85 since 17.0, and Ubuntu 26.04 has it. That is
+  not the day: a Container installation uses the host's bluetoothd.
+- On 2026-10-11 Debian stable and Raspberry Pi OS had 5.82 and Ubuntu 24.04
+  had 5.72, none with a backport of the change and none with a date for one.
+  Where to look: Debian's package tracker for `bluez` in stable, and the
+  `Packages` list of the Raspberry Pi archive.
+- That the change ends an episode is read from BlueZ's code. No host on 5.84
+  or later has been seen to go through one.
+
+Decided the same day, and not to be reopened without a second host showing
+the fault: the episode stays on the link and starts from nothing after a
+reload, while a client that would not close stays with the lamp and outlives
+one. They are two states with two texts. Moving the count beside the client
+left behind would give a reload nothing to learn again - about a minute and
+a half, and a repair that comes back as new - at the price of a change to
+the link, for code that the day above retires.
