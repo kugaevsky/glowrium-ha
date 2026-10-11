@@ -267,6 +267,25 @@ async def _setup_without_bluetooth(
     return entry
 
 
+async def test_the_lamp_of_an_entry_is_looked_up_by_its_address(
+    hass: HomeAssistant,
+) -> None:
+    """The dial the setup hands the coordinator asks the scanners for this lamp.
+
+    By the address the entry was set up with, as a device that can be
+    connected to - and not by the entry's title, which is what the lamp is
+    called and is handed to the same dial beside it, for the log.
+    """
+    entry = await _setup_without_bluetooth(hass)
+    lamp = ScriptedLamp()
+
+    with in_range(lamp) as looked_up:
+        await entry.runtime_data.async_set_power(True)
+
+    looked_up.assert_called_once_with(hass, ADDRESS, connectable=True)
+    assert lamp.dials == 1
+
+
 async def test_a_reload_hands_on_what_would_not_close(hass: HomeAssistant) -> None:
     """What could be neither hung up nor closed is held for the lamp.
 

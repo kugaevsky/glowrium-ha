@@ -16,7 +16,7 @@ import asyncio
 from collections.abc import Awaitable, Callable, Coroutine, Iterator
 import contextlib
 from typing import Any
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 from weakref import WeakKeyDictionary
 
 from bleak.exc import BleakError
@@ -489,15 +489,15 @@ class ScriptedLamp:
 
 
 @contextlib.contextmanager
-def in_range(lamp: ScriptedLamp) -> Iterator[None]:
+def in_range(lamp: ScriptedLamp) -> Iterator[MagicMock]:
     """Put ``lamp`` where the integration's own dial finds it and connects to it.
 
     For a coordinator the integration's setup made, which is handed the dial
     of a config entry: what stands in for the lamp is what that dial is made
-    of - Home
-    Assistant's lookup of the device, and the library's connect, which here
-    hands out the lamp's links. With the tests of the dial itself, the one
-    place either is replaced at module level.
+    of - Home Assistant's lookup of the device, and the library's connect,
+    which here hands out the lamp's links. With the tests of the dial itself,
+    the one place either is replaced at module level. What is handed back is
+    the lookup, for a test of what the lamp was looked up by.
     """
 
     async def _connects(*_args: object, **kwargs: object) -> Any:
@@ -507,13 +507,13 @@ def in_range(lamp: ScriptedLamp) -> Iterator[None]:
         patch(
             "homeassistant.components.bluetooth.async_ble_device_from_address",
             return_value=object(),
-        ),
+        ) as looked_up,
         patch(
             "custom_components.glowrium.link.establish_connection",
             side_effect=_connects,
         ),
     ):
-        yield
+        yield looked_up
 
 
 def link_of(coordinator: GlowriumCoordinator) -> Link:
