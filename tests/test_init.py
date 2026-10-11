@@ -746,6 +746,28 @@ async def test_the_stop_listener_goes_with_the_entry(hass: HomeAssistant) -> Non
     shutdown.assert_not_called()
 
 
+async def test_an_entry_unloaded_after_the_stop_is_no_error_to_home_assistant(
+    hass: HomeAssistant, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Dropping the stop listener once the stop has come is nothing to log.
+
+    A listener registered to be called once takes itself off the bus when its
+    event comes. Taken off a second time, with the entry, it has Home
+    Assistant log an error about a listener it does not know. Home Assistant
+    unloads nothing on its way down, so that is an entry reloaded while it
+    stops - and every test here that fires the stop, when its entry is
+    unloaded behind it.
+    """
+    entry = await _setup_without_bluetooth(hass)
+    hass.bus.async_fire(EVENT_HOMEASSISTANT_STOP)
+    await hass.async_block_till_done()
+
+    assert await hass.config_entries.async_unload(entry.entry_id)
+    await hass.async_block_till_done()
+
+    assert not [r for r in caplog.records if r.levelno >= logging.ERROR]
+
+
 async def _reads_what_the_lamp_is(
     entry: MockConfigEntry, info: bytes | None
 ) -> ScriptedLamp:

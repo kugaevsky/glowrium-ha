@@ -25,6 +25,12 @@ All notable changes to this project are documented here. The format is based on
   the command that carried it failed with a `TypeError` in place of the
   integration's own message
   ([#23](https://github.com/kugaevsky/glowrium-ha/issues/23)).
+- **Unloading an entry after Home Assistant has begun to stop logs no
+  error.** The integration listens for the stop, to hang the lamp's link
+  up, and had Home Assistant forget that listener with the entry even when
+  the stop had already used it up: the log got "Unable to remove unknown
+  job listener" and a traceback. Nothing went wrong behind it. The
+  listener is now one that can be dropped whenever the entry goes.
 
 ### Changed
 

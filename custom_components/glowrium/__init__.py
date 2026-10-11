@@ -67,9 +67,11 @@ async def async_setup_entry(hass: HomeAssistant, entry: GlowriumConfigEntry) -> 
     # Home Assistant stopping is not an unload: it does not run the callback
     # above, so the lamp's link would be left to whatever the process manages
     # on its way out. Listened for explicitly, and the listener is dropped
-    # with the entry.
+    # with the entry. Not with async_listen_once: a listener of that kind
+    # takes itself off the bus when the stop comes, and dropping it again
+    # with an entry unloaded after that has Home Assistant log an error.
     entry.async_on_unload(
-        hass.bus.async_listen_once(EVENT_HOMEASSISTANT_STOP, coordinator.async_shutdown)
+        hass.bus.async_listen(EVENT_HOMEASSISTANT_STOP, coordinator.async_shutdown)
     )
     await coordinator.async_start(entry)
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
