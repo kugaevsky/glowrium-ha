@@ -393,8 +393,7 @@ async def test_sync_location_refuses_a_home_that_was_never_set(
     its sunrise and sunset out for it.
     """
     coordinator, lamp = _at_a_lamp(hass)
-    hass.config.latitude = zero
-    hass.config.longitude = zero
+    keeper_of(coordinator).home = (zero, zero)
     with pytest.raises(HomeAssistantError) as err:
         await coordinator.async_sync_location()
     assert err.value.translation_key == "home_location_not_set"
@@ -426,22 +425,38 @@ async def test_sync_location_writes_any_home_but_zero_and_zero(
     starts out with.
     """
     coordinator, lamp = _at_a_lamp(hass)
-    hass.config.latitude = latitude
-    hass.config.longitude = longitude
+    keeper_of(coordinator).home = (latitude, longitude)
     await coordinator.async_sync_location()
     assert lamp.written == [
         (WRITE_UUID, cbor.encode({0x0A: float(latitude), 0x0B: float(longitude)}))
     ]
 
 
-async def test_sync_location_writes_nothing_without_home_assistant() -> None:
-    """The bench has no home to hand over, and the command says nothing of it.
+async def test_the_home_sync_location_writes_is_home_assistants(
+    hass: HomeAssistant,
+) -> None:
+    """Kept for a config entry, the home is the one Home Assistant was given."""
+    coordinator, lamp = _kept_for(hass, _an_entry())
+    hass.config.latitude = 12.3456
+    hass.config.longitude = 65.4321
 
-    tools/bench.py builds the real coordinator with ``hass=None``; the command
-    returns there as it always did, whatever else it now refuses.
+    await coordinator.async_sync_location()
+
+    assert lamp.written == [(WRITE_UUID, cbor.encode({0x0A: 12.3456, 0x0B: 65.4321}))]
+
+
+async def test_sync_location_is_refused_where_there_is_no_home() -> None:
+    """The bench has no home to hand over, and the command says so.
+
+    Its keeper answers zero and zero, as Home Assistant does of a home that
+    was never set, and the command is refused the same way. It returned
+    without a word there, and without writing: a press that did nothing
+    and said nothing.
     """
     coordinator, lamp, _link = await _holding_a_link(None, "bench")
-    await coordinator.async_sync_location()
+    with pytest.raises(HomeAssistantError) as err:
+        await coordinator.async_sync_location()
+    assert err.value.translation_key == "home_location_not_set"
     assert lamp.written == []
 
 

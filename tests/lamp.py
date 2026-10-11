@@ -142,6 +142,8 @@ class ScriptedKeeper:
         # What the lamp was said to be, each time: model id, firmware,
         # serial number.
         self.described: list[tuple[str | None, str | None, str | None]] = []
+        # Where home is: latitude and longitude. Zero and zero is no home.
+        self.home: tuple[float, float] = (0, 0)
         # Whether the lamp is on the air when the watching begins.
         self.present = True
         # What the device half handed over to be told through, while it
@@ -195,6 +197,10 @@ class ScriptedKeeper:
         """Tell the device half the clock has come round."""
         assert self._told is not None, "nothing is told to a keeper not watching"
         self._told[1]()
+
+    def coordinates(self) -> tuple[float, float]:
+        """Say where ``home`` is."""
+        return self.home
 
     def _start(self, work: Coroutine[Any, Any, None], name: str) -> asyncio.Task[None]:
         if self._hass is not None:

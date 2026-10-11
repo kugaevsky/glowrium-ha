@@ -203,6 +203,13 @@ class Keeper(Protocol):
         the exchange that reads it, and Home Assistant stopping does not.
         """
 
+    def coordinates(self) -> tuple[float, float]:
+        """Say where home is: its latitude and its longitude, in degrees.
+
+        Zero and zero from a keeper that has no home - which is what Home
+        Assistant holds when it was given none (see ``async_sync_location``).
+        """
+
 
 class GlowriumCoordinator:
     """Maintain a BLE connection and mirror the device's CBOR property state.
@@ -1161,7 +1168,7 @@ class GlowriumCoordinator:
         await self._async_write({KEY_DST: protocol.with_dst(self.state, is_on)})
 
     async def async_sync_location(self) -> None:
-        """Push HA's home coordinates; the device recomputes its circadian curve.
+        """Push the home's coordinates; the device recomputes its circadian curve.
 
         Home Assistant holds a latitude and a longitude always, as numbers:
         there is no missing one to look for, and both are zero when it was
@@ -1175,12 +1182,10 @@ class GlowriumCoordinator:
         the link, and is raised as such: Home Assistant shows it and keeps it
         out of the log.
 
-        Without Home Assistant (``tools/bench.py``) there is no home to push.
+        A keeper with no home (``tools/bench.py``) answers zero and zero, and
+        is refused the same way.
         """
-        if self.hass is None:
-            return
-        lat = self.hass.config.latitude
-        lon = self.hass.config.longitude
+        lat, lon = self._keeper.coordinates()
         if lat == 0 and lon == 0:
             raise ServiceValidationError(
                 translation_domain=DOMAIN,

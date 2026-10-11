@@ -198,6 +198,14 @@ class EntryKeeper:
         # The model is known from here on, in this session and not the next.
         self._review_presets_notice()
 
+    def coordinates(self) -> tuple[float, float]:
+        """Say where Home Assistant's home is.
+
+        It holds a latitude and a longitude always, as numbers, and both are
+        zero when it was given no position.
+        """
+        return self._hass.config.latitude, self._hass.config.longitude
+
     def _review_presets_notice(self) -> None:
         """Say that the presets are unconfirmed for this lamp's model, or unsay it.
 
