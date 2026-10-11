@@ -10,11 +10,17 @@ to do for a lamp is done in this module.
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Coroutine
+from collections.abc import Callable, Coroutine
+from datetime import datetime
 from typing import Any
 
+from homeassistant.components import bluetooth
 from homeassistant.config_entries import ConfigEntry
-from homeassistant.core import HomeAssistant
+from homeassistant.const import CONF_ADDRESS
+from homeassistant.core import HomeAssistant, callback
+from homeassistant.helpers.event import async_track_time_interval
+
+from .link import _RECONNECT_INTERVAL
 
 
 class EntryKeeper:
@@ -31,6 +37,9 @@ class EntryKeeper:
         """
         self._hass = hass
         self._entry = entry
+        self._address: str = entry.data[CONF_ADDRESS]
+        # How to end each thing that watches, in the order they were begun.
+        self._watchers: list[Callable[[], None]] = []
 
     def spawn(self, work: Coroutine[Any, Any, None], name: str) -> None:
         """Run ``work`` on the entry, so that an unload ends it.
@@ -50,3 +59,56 @@ class EntryKeeper:
         the lamp's slot taken and the client's bus open.
         """
         return self._hass.async_create_task(work, name)
+
+    def watch(
+        self, advertising: Callable[[bool], None], tick: Callable[[], None]
+    ) -> bool:
+        """Watch through Home Assistant's Bluetooth and its timer.
+
+        Three watchers. Without the advertisements the lamp is never noticed
+        coming back. Without the tracking of a lamp gone unavailable its
+        entities never say that it was unplugged: availability follows the
+        lamp on the air, not the link. And the advertisements are throttled,
+        so the clock is watched as well: a link that dropped is looked at
+        within ``_RECONNECT_INTERVAL``, whenever the lamp is next heard.
+
+        Each is kept as it is begun, so a start that fails part-way leaves
+        nothing ``unwatch`` cannot end.
+        """
+        hass, address = self._hass, self._address
+
+        @callback
+        def _heard(
+            _service_info: bluetooth.BluetoothServiceInfoBleak,
+            _change: bluetooth.BluetoothChange,
+        ) -> None:
+            advertising(True)
+
+        @callback
+        def _gone(_service_info: bluetooth.BluetoothServiceInfoBleak) -> None:
+            advertising(False)
+
+        @callback
+        def _on_the_clock(_now: datetime) -> None:
+            tick()
+
+        self._watchers.append(
+            bluetooth.async_register_callback(
+                hass,
+                _heard,
+                bluetooth.BluetoothCallbackMatcher(address=address, connectable=True),
+                bluetooth.BluetoothScanningMode.ACTIVE,
+            )
+        )
+        self._watchers.append(
+            bluetooth.async_track_unavailable(hass, _gone, address, connectable=True)
+        )
+        self._watchers.append(
+            async_track_time_interval(hass, _on_the_clock, _RECONNECT_INTERVAL)
+        )
+        return bluetooth.async_address_present(hass, address, connectable=True)
+
+    def unwatch(self) -> None:
+        """End every watcher that was begun, once."""
+        while self._watchers:
+            self._watchers.pop()()

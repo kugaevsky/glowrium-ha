@@ -136,6 +136,11 @@ class ScriptedKeeper:
         # The names of the work asked for, by the lifetime it was asked for.
         self.spawned: list[str] = []
         self.lasting: list[str] = []
+        # Whether the lamp is on the air when the watching begins.
+        self.present = True
+        # What the device half handed over to be told through, while it
+        # is watched for.
+        self._told: tuple[Callable[[bool], None], Callable[[], None]] | None = None
 
     def spawn(self, work: Coroutine[Any, Any, None], name: str) -> None:
         """Start work that ends with the watching."""
@@ -148,6 +153,32 @@ class ScriptedKeeper:
         """Start work that outlives the watching, and return it."""
         self.lasting.append(name)
         return self._start(work, name)
+
+    def watch(
+        self, advertising: Callable[[bool], None], tick: Callable[[], None]
+    ) -> bool:
+        """Take what to tell the device half through; answer ``present``."""
+        self._told = (advertising, tick)
+        return self.present
+
+    def unwatch(self) -> None:
+        """Tell the device half nothing from here on."""
+        self._told = None
+
+    @property
+    def watching(self) -> bool:
+        """Whether the device half has asked to be told, and not asked to stop."""
+        return self._told is not None
+
+    def hears(self, present: bool) -> None:
+        """Tell the device half the lamp was heard, or is no longer."""
+        assert self._told is not None, "nothing is told to a keeper not watching"
+        self._told[0](present)
+
+    def ticks(self) -> None:
+        """Tell the device half the clock has come round."""
+        assert self._told is not None, "nothing is told to a keeper not watching"
+        self._told[1]()
 
     def _start(self, work: Coroutine[Any, Any, None], name: str) -> asyncio.Task[None]:
         if self._hass is not None:

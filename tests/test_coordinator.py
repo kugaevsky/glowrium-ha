@@ -11,6 +11,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 from bleak.exc import BleakError, BleakGATTProtocolError, BleakGATTProtocolErrorCode
 from bleak_retry_connector import BLEAK_TIMEOUT
+from homeassistant.const import CONF_ADDRESS
 from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import HomeAssistantError
 from homeassistant.util import dt as dt_util
@@ -22,6 +23,7 @@ from custom_components.glowrium import (
     const,
     coordinator as coordinator_module,
     diagnostics,
+    keeper as keeper_module,
     link as link_module,
     protocol,
 )
@@ -85,6 +87,17 @@ def _at_a_lamp(
     """
     lamp = ScriptedLamp()
     return lamp.coordinator(hass, name), lamp
+
+
+def _an_entry() -> MagicMock:
+    """Return what stands for the config entry of the scripted lamp.
+
+    With what its keeper reads of an entry as it is built: the address of
+    the lamp it is for.
+    """
+    entry = MagicMock()
+    entry.data = {CONF_ADDRESS: "AA:BB:CC:DD:EE:FF"}
+    return entry
 
 
 def _kept_for(
@@ -2084,11 +2097,22 @@ async def test_stopping_tears_everything_down(
     while Home Assistant is on its way out, and after the one hang-up it
     will get.
     """
-    coordinator, lamp, link = await _holding_a_link(hass)
     cancels = {name: MagicMock() for name in ("bluetooth", "unavailable", "poll")}
-    coordinator._cancel_bluetooth = cancels["bluetooth"]
-    coordinator._cancel_unavailable = cancels["unavailable"]
-    coordinator._cancel_poll = cancels["poll"]
+    fake = MagicMock()
+    fake.async_register_callback.return_value = cancels["bluetooth"]
+    fake.async_track_unavailable.return_value = cancels["unavailable"]
+    fake.async_address_present.return_value = True
+    monkeypatch.setattr(keeper_module, "bluetooth", fake)
+    monkeypatch.setattr(
+        keeper_module, "async_track_time_interval", lambda *_a: cancels["poll"]
+    )
+    entry = _an_entry()
+    # The first connect is left out: the link here is one a command takes.
+    entry.async_create_background_task = lambda _hass, coro, _name: coro.close()
+    coordinator, lamp = _kept_for(hass, entry)
+    await coordinator.async_start(entry)
+    await coordinator.async_set_indicator(True)
+    link = lamp.links[-1]
     monkeypatch.setattr(link_module, "_CONFIRM_TIMEOUT", 0.01)
 
     if stopped_by == "an unload":
@@ -2104,6 +2128,37 @@ async def test_stopping_tears_everything_down(
     with pytest.raises(HomeAssistantError):
         await coordinator.async_set_power(True)
     assert lamp.dials == 1  # the link it was stopped with; none since
+
+    # An entry can be unloaded after Home Assistant has begun to stop, and
+    # that is a second stop: a watcher is not ended twice.
+    await coordinator.async_stop()
+    for name, cancel in cancels.items():
+        assert cancel.call_count == 1, f"{name} watcher was ended twice"
+
+
+async def test_a_start_that_fails_part_way_leaves_no_watcher_behind(
+    hass: HomeAssistant, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """What was begun before the start failed is ended by the stop that follows.
+
+    A setup that fails is stopped like any other (Home Assistant runs what
+    the entry was told to run on unload), and it is retried: a watcher that
+    stop could not reach would be one more on every retry, each answering
+    the lamp's advertisements for a coordinator nobody has.
+    """
+    ended = MagicMock()
+    fake = MagicMock()
+    fake.async_register_callback.return_value = ended
+    fake.async_track_unavailable.side_effect = RuntimeError("no scanner")
+    monkeypatch.setattr(keeper_module, "bluetooth", fake)
+    entry = _an_entry()
+    coordinator, _lamp = _kept_for(hass, entry)
+
+    with pytest.raises(RuntimeError, match="no scanner"):
+        await coordinator.async_start(entry)
+    await coordinator.async_stop()
+
+    assert ended.call_count == 1
 
 
 async def test_a_write_on_a_turn_whose_link_is_gone_is_refused_not_dropped(
@@ -2346,7 +2401,7 @@ async def test_a_lamp_that_is_advertising_at_start_is_in_reach_from_the_start(
     of reach, and that is said: by its name, and with its address once - a
     lamp picked from the list has its address in its title already.
     """
-    entry = MagicMock()
+    entry = _an_entry()
     entry.async_create_background_task = lambda _hass, coro, _name: coro.close()
     coordinator, _lamp = _kept_for(
         hass, entry, "Glowrium-G7_DDEEFF (AA:BB:CC:DD:EE:FF)"
@@ -2355,7 +2410,7 @@ async def test_a_lamp_that_is_advertising_at_start_is_in_reach_from_the_start(
     fake.async_register_callback.return_value = lambda: None
     fake.async_track_unavailable.return_value = lambda: None
     fake.async_address_present.return_value = present
-    monkeypatch.setattr(coordinator_module, "bluetooth", fake)
+    monkeypatch.setattr(keeper_module, "bluetooth", fake)
 
     with caplog.at_level(logging.INFO, logger=coordinator_module.__name__):
         await coordinator.async_start(entry)
@@ -2388,7 +2443,7 @@ async def test_starting_watches_for_the_device(
         handed_over.append(name)
         return MagicMock()
 
-    entry = MagicMock()
+    entry = _an_entry()
     entry.async_create_background_task = _background
     # This is about the watchers, not the link.
     coordinator, _lamp = _kept_for(hass, entry)
@@ -2403,11 +2458,17 @@ async def test_starting_watches_for_the_device(
     fake.async_address_present.side_effect = lambda *a, **k: calls.append("presence")
     fake.BluetoothCallbackMatcher = MagicMock()
     fake.BluetoothScanningMode = MagicMock()
-    monkeypatch.setattr(coordinator_module, "bluetooth", fake)
+    monkeypatch.setattr(keeper_module, "bluetooth", fake)
 
     await coordinator.async_start(entry)
     try:
         assert sorted(calls) == ["advertisement", "presence", "unavailable"]
+        # Each for this lamp, by the address its entry was set up with.
+        matcher = fake.BluetoothCallbackMatcher.call_args.kwargs
+        assert matcher == {"address": "AA:BB:CC:DD:EE:FF", "connectable": True}
+        for asked in (fake.async_track_unavailable, fake.async_address_present):
+            assert asked.call_args.args[-1] == "AA:BB:CC:DD:EE:FF"
+            assert asked.call_args.kwargs == {"connectable": True}
         # The first connect is handed to the entry, which is what cancels it
         # on unload rather than letting it outlive the coordinator.
         assert len(handed_over) == 1
@@ -2753,6 +2814,47 @@ async def test_work_is_started_through_the_keeper(hass: HomeAssistant) -> None:
     assert keeper.spawned == ["glowrium reconnect AA:BB:CC:DD:EE:FF"]
 
 
+@pytest.mark.parametrize("stopped_by", ["an unload", "Home Assistant stopping"])
+async def test_the_lamp_is_watched_through_the_keeper(
+    hass: HomeAssistant, stopped_by: str
+) -> None:
+    """The device half watches nothing itself: its keeper tells it, and the link hears.
+
+    Whether the lamp is on the air as the watching begins, the lamp heard,
+    the lamp gone, the clock come round: each is the keeper's to know, and
+    what it says reaches the link as it is. Stopped either way, the device
+    half asks to be told nothing more.
+    """
+    coordinator, lamp = _at_a_lamp(hass)
+    lamp.out_of_range()  # every dial fails at once, and is counted
+    keeper = keeper_of(coordinator)
+    keeper.present = False
+
+    await coordinator.async_start(MagicMock())
+    await hass.async_block_till_done()  # the first connect, failing
+
+    assert keeper.spawned == ["glowrium initial connect AA:BB:CC:DD:EE:FF"]
+    assert not coordinator.available  # as the keeper said it was at the start
+
+    keeper.hears(True)
+    assert coordinator.available
+    await hass.async_block_till_done()  # the reconnect that set off, failing
+
+    keeper.hears(False)
+    assert not coordinator.available
+
+    dials = lamp.dials
+    keeper.ticks()
+    await hass.async_block_till_done()
+    assert lamp.dials == dials + 1  # the tick dialled
+
+    if stopped_by == "an unload":
+        await coordinator.async_stop()
+    else:
+        coordinator.async_shutdown()
+    assert not keeper.watching
+
+
 async def test_background_work_is_tied_to_the_entry(hass: HomeAssistant) -> None:
     """Reconnects and priming must die with the entry, like the first connect.
 
@@ -2767,7 +2869,7 @@ async def test_background_work_is_tied_to_the_entry(hass: HomeAssistant) -> None
         spawned.append(name)
         return MagicMock()
 
-    entry = MagicMock()
+    entry = _an_entry()
     entry.async_create_background_task = _background
     coordinator, _lamp = _kept_for(hass, entry)
 
@@ -2794,7 +2896,7 @@ async def test_one_background_connect_at_a_time(hass: HomeAssistant) -> None:
         spawned.append(name)
         return MagicMock()
 
-    entry = MagicMock()
+    entry = _an_entry()
     entry.async_create_background_task = _background
     coordinator, _lamp = _kept_for(hass, entry)
 
@@ -2819,7 +2921,7 @@ def test_no_path_holds_the_lock_longer_than_a_command_will_wait() -> None:
     ask = link_module._ASK_TIMEOUT
     command = link_module._COMMAND_TIMEOUT
     hang_up = link_module._HANG_UP_TIMEOUT
-    poll = coordinator_module._RECONNECT_INTERVAL.total_seconds()
+    poll = link_module._RECONNECT_INTERVAL.total_seconds()
 
     assert connect < command, "a lock holder outlasting the waiter is an inversion"
     # A dial waits for a hang-up still under way, inside the connect's own
@@ -3615,7 +3717,7 @@ async def test_a_hang_up_is_not_tied_to_the_entry(hass: HomeAssistant) -> None:
     past, and that call is how Home Assistant - and every test here - lets
     pending work settle before it looks at the result.
     """
-    entry = MagicMock()
+    entry = _an_entry()
     coordinator, lamp = _kept_for(hass, entry)
     await coordinator.async_set_indicator(True)  # a link, taken by a command
     link = lamp.links[-1]
@@ -4043,14 +4145,13 @@ async def test_what_the_watchers_hear_reaches_the_link(
 ) -> None:
     """The lamp heard, the lamp gone and the timer each reach the link.
 
-    Home Assistant's watchers are the coordinator's, and each is one line
-    that hands the link what it saw: an advertisement, the lamp no longer
-    heard, the tick. What the link then does is tested on the link itself;
-    this holds the three lines, which nothing else did once the tests had
-    crossed the seam - three mutants of the stage 2 gate outlived stage 3.
+    Home Assistant's watchers are its keeper's, and each is one line that
+    hands on what it saw to what the device half gave it for the link: an
+    advertisement, the lamp no longer heard, the tick. What the link then
+    does is tested on the link itself; this holds the three lines, which
+    nothing else did once the tests had crossed the seam - three mutants
+    of the stage 2 gate outlived stage 3.
     """
-    coordinator, lamp = _at_a_lamp(hass)
-    lamp.out_of_range()  # every dial fails at once, and is counted
     heard: dict[str, Callable[..., None]] = {}
 
     def _register(
@@ -4069,12 +4170,14 @@ async def test_what_the_watchers_hear_reaches_the_link(
     fake.async_register_callback.side_effect = _register
     fake.async_track_unavailable.side_effect = _track
     fake.async_address_present.return_value = False
-    monkeypatch.setattr(coordinator_module, "bluetooth", fake)
-    entry = MagicMock()
+    monkeypatch.setattr(keeper_module, "bluetooth", fake)
+    entry = _an_entry()
     # Run what is handed over: a connect that fails has to end as one.
     entry.async_create_background_task = lambda _hass, coro, name: (
         hass.async_create_task(coro, name)
     )
+    coordinator, lamp = _kept_for(hass, entry)
+    lamp.out_of_range()  # every dial fails at once, and is counted
 
     await coordinator.async_start(entry)
     try:
@@ -4089,7 +4192,7 @@ async def test_what_the_watchers_hear_reaches_the_link(
         assert not coordinator.available  # and heard it go
 
         dials = lamp.dials
-        later = dt_util.utcnow() + coordinator_module._RECONNECT_INTERVAL
+        later = dt_util.utcnow() + link_module._RECONNECT_INTERVAL
         async_fire_time_changed(hass, later + timedelta(seconds=1))
         await hass.async_block_till_done()
         assert lamp.dials == dials + 1  # the tick dialled
@@ -4122,7 +4225,7 @@ async def test_a_reconnect_started_while_starting_belongs_to_the_entry(
         handed_over.append(name)
         return MagicMock()
 
-    entry = MagicMock()
+    entry = _an_entry()
     entry.async_create_background_task = _background
     coordinator, lamp = _kept_for(hass, entry)
     lamp.out_of_range()
@@ -4135,7 +4238,7 @@ async def test_a_reconnect_started_while_starting_belongs_to_the_entry(
     fake.async_register_callback.side_effect = _register
     fake.async_track_unavailable.return_value = lambda: None
     fake.async_address_present.return_value = True
-    monkeypatch.setattr(coordinator_module, "bluetooth", fake)
+    monkeypatch.setattr(keeper_module, "bluetooth", fake)
 
     await coordinator.async_start(entry)
     try:

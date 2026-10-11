@@ -17,7 +17,6 @@ from homeassistant.const import CONF_MODEL_ID
 from homeassistant.core import Event, HomeAssistant, callback
 from homeassistant.exceptions import HomeAssistantError, ServiceValidationError
 from homeassistant.helpers import device_registry as dr, issue_registry as ir
-from homeassistant.helpers.event import async_track_time_interval
 from homeassistant.helpers.typing import UNDEFINED
 from homeassistant.util import dt as dt_util
 
@@ -53,7 +52,6 @@ from .const import (
     WRITE_UUID,
 )
 from .link import (
-    _RECONNECT_INTERVAL,
     Dial,
     Link,
     LinkLostError,
@@ -188,6 +186,26 @@ class Keeper(Protocol):
         back, and one cut short leaves the client's bus open.
         """
 
+    def watch(
+        self, advertising: Callable[[bool], None], tick: Callable[[], None]
+    ) -> bool:
+        """Watch the air for the lamp, and the clock; say if the lamp is there now.
+
+        From here on ``advertising(present)`` is called when the lamp is
+        heard and when it is no longer, and ``tick()`` on the clock. Called
+        once, by the start. The lamp may be reported heard before this
+        returns - Home Assistant replays the last advertisement from inside
+        the registration - and ``spawn`` works by then: a keeper has what it
+        puts work on from when it is built.
+        """
+
+    def unwatch(self) -> None:
+        """Cease to watch: neither ``advertising`` nor ``tick`` follows.
+
+        More than once does no harm, nor does it on a keeper that never
+        watched - a setup that failed before the start is stopped as well.
+        """
+
 
 class GlowriumCoordinator:
     """Maintain a BLE connection and mirror the device's CBOR property state.
@@ -249,15 +267,8 @@ class GlowriumCoordinator:
         # The properties under which the lamp has reported something that
         # cannot be used, and of which the log has said so (once each).
         self._unusable_said: set[int] = set()
-        self._cancel_bluetooth: Callable[[], None] | None = None
-        self._cancel_unavailable: Callable[[], None] | None = None
-        self._cancel_poll: Callable[[], None] | None = None
-        # Set by async_start. Background work is created on the entry rather
-        # than on hass so it is cancelled when the entry unloads: a task on
-        # hass is only awaited at shutdown, and one that outlives its
-        # coordinator finishes connecting and claims the lamp's single slot
-        # for an owner that no longer exists. The one exception is a hang-up,
-        # which has to outlive the entry - see Link.hang_up.
+        # Set by async_start: what the repairs are filed under, and where
+        # what the lamp says it is gets remembered.
         self._entry: ConfigEntry | None = None
         # Set where the watching ends. What is learnt of the lamp after that
         # is kept, and no longer said. An unload cancels the exchange on its
@@ -617,27 +628,12 @@ class GlowriumCoordinator:
         self._entry = entry
         # From what the entry remembers: the lamp may not be heard for hours.
         self._async_review_presets_notice(hass, entry)
-        self._cancel_bluetooth = bluetooth.async_register_callback(
-            hass,
-            self._async_on_advertisement,
-            bluetooth.BluetoothCallbackMatcher(address=self.address, connectable=True),
-            bluetooth.BluetoothScanningMode.ACTIVE,
-        )
-        # Track presence so entity availability follows the device, not the link.
-        self._cancel_unavailable = bluetooth.async_track_unavailable(
-            hass, self._async_on_unavailable, self.address, connectable=True
-        )
-        self._link.begin(
-            bluetooth.async_address_present(hass, self.address, connectable=True)
-        )
+        # What the keeper hears of the lamp, and its clock, go to the link as
+        # they are: when to dial is the link's to decide.
+        self._link.begin(self._keeper.watch(self._link.advertising, self._link.tick))
         # Absent from the start is worth saying too.
         self._link.log_reach(self._plain_name)
         self._spawn(self._link.initial_connect(), "initial connect")
-        # Advertisement callbacks are throttled, so also poll: reconnect within
-        # _RECONNECT_INTERVAL after any drop, regardless of advertisement timing.
-        self._cancel_poll = async_track_time_interval(
-            hass, self._async_poll_reconnect, _RECONNECT_INTERVAL
-        )
 
     @callback
     def _spawn(self, coro: Coroutine[Any, Any, None], what: str) -> None:
@@ -651,15 +647,7 @@ class GlowriumCoordinator:
         # Said to the link before anything else: a command may be in flight
         # and outlast this, and from here on it is refused a new link.
         self._link.halt()
-        if self._cancel_bluetooth is not None:
-            self._cancel_bluetooth()
-            self._cancel_bluetooth = None
-        if self._cancel_unavailable is not None:
-            self._cancel_unavailable()
-            self._cancel_unavailable = None
-        if self._cancel_poll is not None:
-            self._cancel_poll()
-            self._cancel_poll = None
+        self._keeper.unwatch()
         # A coordinator that has stopped watching cannot say when the stack
         # lets go, so it does not leave the claim standing that it has not.
         # The repair filed under this entry from here on is its successor's
@@ -785,24 +773,6 @@ class GlowriumCoordinator:
             translation_key=key,
             translation_placeholders=said,
         )
-
-    @callback
-    def _async_on_advertisement(
-        self,
-        _service_info: bluetooth.BluetoothServiceInfoBleak,
-        _change: bluetooth.BluetoothChange,
-    ) -> None:
-        self._link.advertising(True)
-
-    @callback
-    def _async_on_unavailable(
-        self, _service_info: bluetooth.BluetoothServiceInfoBleak
-    ) -> None:
-        self._link.advertising(False)
-
-    @callback
-    def _async_poll_reconnect(self, _now: Any) -> None:
-        self._link.tick()
 
     def _ble_device(self) -> BLEDevice | None:
         if self.hass is None:  # the bench scans for itself and hands in a dial
