@@ -15,6 +15,7 @@ from homeassistant.util.hass_dict import HassKey
 
 from .const import DOMAIN
 from .coordinator import GlowriumCoordinator, presets_issue_id
+from .keeper import EntryKeeper
 from .link import Unclosed
 
 PLATFORMS: list[Platform] = [
@@ -47,6 +48,8 @@ async def async_setup_entry(hass: HomeAssistant, entry: GlowriumConfigEntry) -> 
         # What an earlier session read off the lamp. The entities are built
         # before this one has read anything, and the presets depend on it.
         model_id=entry.data.get(CONF_MODEL_ID),
+        # What keeps it: this entry, known from before anything is watched.
+        keeper=EntryKeeper(hass, entry),
         # What a coordinator for this lamp before this one could not let go
         # of. By the lamp's address and not by the entry: a lamp removed and
         # set up again is the same lamp, under another entry.

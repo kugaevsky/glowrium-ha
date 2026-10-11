@@ -32,7 +32,7 @@ from custom_components.glowrium.const import (
 )
 from custom_components.glowrium.coordinator import GlowriumCoordinator
 
-from .lamp import ADDRESS, ScriptedLamp, lamp_of, link_of
+from .lamp import ADDRESS, ScriptedKeeper, ScriptedLamp, lamp_of, link_of
 
 
 async def test_the_coordinator_dials_through_the_dial_it_is_handed(
@@ -40,7 +40,9 @@ async def test_the_coordinator_dials_through_the_dial_it_is_handed(
 ) -> None:
     """A command to a lamp with no link dials it, once, and is written to it."""
     lamp = ScriptedLamp()
-    coordinator = GlowriumCoordinator(hass, ADDRESS, "Glowrium-G7", dial=lamp.dial)
+    coordinator = GlowriumCoordinator(
+        hass, ADDRESS, "Glowrium-G7", keeper=ScriptedKeeper(hass), dial=lamp.dial
+    )
 
     await coordinator.async_set_power(True)
     await coordinator.async_set_brightness(40)
@@ -475,7 +477,11 @@ def test_a_helper_given_the_coordinator_alone_finds_its_lamp(
 
     assert lamp_of(lamp.coordinator(hass)) is lamp
     with pytest.raises(LookupError, match="not built at a scripted lamp"):
-        lamp_of(GlowriumCoordinator(hass, ADDRESS, "Glowrium-G7"))
+        lamp_of(
+            GlowriumCoordinator(
+                hass, ADDRESS, "Glowrium-G7", keeper=ScriptedKeeper(hass)
+            )
+        )
 
 
 async def test_a_lamp_out_of_range_fails_the_command_as_one_that_cannot_connect(
@@ -539,7 +545,9 @@ async def test_handed_no_dial_the_lamp_is_looked_up_in_home_assistant(
     monkeypatch.setattr(coordinator_module, "bluetooth", scanners)
     connect = AsyncMock(return_value=link)
     monkeypatch.setattr(link_module, "establish_connection", connect)
-    coordinator = GlowriumCoordinator(hass, ADDRESS, "Glowrium-G7")
+    coordinator = GlowriumCoordinator(
+        hass, ADDRESS, "Glowrium-G7", keeper=ScriptedKeeper(hass)
+    )
     scanners.async_ble_device_from_address.assert_not_called()  # not before a dial
 
     await coordinator.async_set_power(True)
@@ -577,7 +585,9 @@ async def test_without_home_assistant_and_without_a_dial_nothing_is_found(
     found; built with neither, the coordinator says "not in range" rather
     than falling over.
     """
-    coordinator = GlowriumCoordinator(None, ADDRESS, "bench")
+    coordinator = GlowriumCoordinator(
+        None, ADDRESS, "bench", keeper=ScriptedKeeper(None)
+    )
     caplog.set_level(logging.DEBUG, logger=coordinator_module.__name__)
 
     with pytest.raises(HomeAssistantError):

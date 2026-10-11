@@ -58,11 +58,14 @@ from custom_components.glowrium.coordinator import (
     GlowriumCoordinator,
     _parse_device_info,
 )
+from custom_components.glowrium.keeper import EntryKeeper
 
 from .lamp import (
     LampLink,
+    ScriptedKeeper,
     ScriptedLamp,
     flood,
+    keeper_of,
     lamp_of,
     link_of,
     nothing_heard,
@@ -82,6 +85,19 @@ def _at_a_lamp(
     """
     lamp = ScriptedLamp()
     return lamp.coordinator(hass, name), lamp
+
+
+def _kept_for(
+    hass: HomeAssistant, entry: MagicMock, name: str = "Glowrium-G7"
+) -> tuple[GlowriumCoordinator, ScriptedLamp]:
+    """Return a coordinator at a scripted lamp in range, kept for ``entry``.
+
+    Kept as Home Assistant keeps one: what the device half asks to have
+    started goes where the keeper of a config entry puts it, which is what
+    a test of the entry's part in it looks at.
+    """
+    lamp = ScriptedLamp()
+    return lamp.coordinator(hass, name, keeper=EntryKeeper(hass, entry)), lamp
 
 
 async def _holding_a_link(
@@ -1064,7 +1080,9 @@ async def test_split_notification_updates_state(hass: HomeAssistant) -> None:
 
 async def test_empty_ramp_does_not_latch(hass: HomeAssistant) -> None:
     """A zero-length ramp must not block seeding the remembered ramp later."""
-    coordinator = GlowriumCoordinator(hass, "AA:BB:CC:DD:EE:FF", "Glowrium-G7")
+    coordinator = GlowriumCoordinator(
+        hass, "AA:BB:CC:DD:EE:FF", "Glowrium-G7", keeper=ScriptedKeeper(hass)
+    )
     coordinator._ingest(bytes.fromhex("a1182f40"))  # {0x2f: b""}
     assert coordinator._desired_ramp is None
     coordinator._ingest(bytes.fromhex("a1182f420e10"))  # {0x2f: b"\x0e\x10"}
@@ -1377,7 +1395,9 @@ async def test_no_line_in_the_log_carries_the_coordinates(
     is and carry none of it. Whoever posts a debug log is asked to look a
     frame over, and that cannot rest on blanking hex by hand.
     """
-    coordinator = GlowriumCoordinator(hass, "AA:BB:CC:DD:EE:FF", "Glowrium-G7")
+    coordinator = GlowriumCoordinator(
+        hass, "AA:BB:CC:DD:EE:FF", "Glowrium-G7", keeper=ScriptedKeeper(hass)
+    )
 
     with caplog.at_level(logging.DEBUG, logger=coordinator_module.__name__):
         coordinator._ingest(bytes.fromhex(frame))
@@ -2326,14 +2346,16 @@ async def test_a_lamp_that_is_advertising_at_start_is_in_reach_from_the_start(
     of reach, and that is said: by its name, and with its address once - a
     lamp picked from the list has its address in its title already.
     """
-    coordinator, _lamp = _at_a_lamp(hass, "Glowrium-G7_DDEEFF (AA:BB:CC:DD:EE:FF)")
+    entry = MagicMock()
+    entry.async_create_background_task = lambda _hass, coro, _name: coro.close()
+    coordinator, _lamp = _kept_for(
+        hass, entry, "Glowrium-G7_DDEEFF (AA:BB:CC:DD:EE:FF)"
+    )
     fake = MagicMock()
     fake.async_register_callback.return_value = lambda: None
     fake.async_track_unavailable.return_value = lambda: None
     fake.async_address_present.return_value = present
     monkeypatch.setattr(coordinator_module, "bluetooth", fake)
-    entry = MagicMock()
-    entry.async_create_background_task = lambda _hass, coro, _name: coro.close()
 
     with caplog.at_level(logging.INFO, logger=coordinator_module.__name__):
         await coordinator.async_start(entry)
@@ -2359,7 +2381,17 @@ async def test_starting_watches_for_the_device(
     without the unavailable tracker its entities never go unavailable when it
     is unplugged.
     """
-    coordinator, _lamp = _at_a_lamp(hass)  # this is about the watchers, not the link
+    handed_over: list[str] = []
+
+    def _background(_hass: object, coro: object, name: str) -> object:
+        coro.close()  # the test does not run it, but must not leak it
+        handed_over.append(name)
+        return MagicMock()
+
+    entry = MagicMock()
+    entry.async_create_background_task = _background
+    # This is about the watchers, not the link.
+    coordinator, _lamp = _kept_for(hass, entry)
     calls: list[str] = []
     fake = MagicMock()
     fake.async_register_callback.side_effect = lambda *a, **k: (
@@ -2372,16 +2404,6 @@ async def test_starting_watches_for_the_device(
     fake.BluetoothCallbackMatcher = MagicMock()
     fake.BluetoothScanningMode = MagicMock()
     monkeypatch.setattr(coordinator_module, "bluetooth", fake)
-
-    handed_over: list[str] = []
-
-    def _background(_hass: object, coro: object, name: str) -> object:
-        coro.close()  # the test does not run it, but must not leak it
-        handed_over.append(name)
-        return MagicMock()
-
-    entry = MagicMock()
-    entry.async_create_background_task = _background
 
     await coordinator.async_start(entry)
     try:
@@ -2708,6 +2730,29 @@ async def test_stopping_hangs_up_even_when_the_lock_is_busy(
     assert link_of(coordinator).diagnostics()["connected"] is False
 
 
+async def test_work_is_started_through_the_keeper(hass: HomeAssistant) -> None:
+    """The device half starts nothing itself: its keeper does, by the lifetime asked.
+
+    A reconnect is work that has to end with whatever keeps the coordinator;
+    a hang-up is work that must outlive it. Which is which is the device
+    half's to say and the keeper's to honour, so each is asked for by name.
+    """
+    coordinator, lamp = _at_a_lamp(hass)
+    keeper = keeper_of(coordinator)
+
+    link_of(coordinator).tick()
+    await hass.async_block_till_done()
+
+    assert keeper.spawned == ["glowrium reconnect AA:BB:CC:DD:EE:FF"]
+    assert keeper.lasting == []
+
+    link_of(coordinator).hang_up(lamp.links[-1])
+    await hass.async_block_till_done()
+
+    assert keeper.lasting == ["glowrium hang up AA:BB:CC:DD:EE:FF"]
+    assert keeper.spawned == ["glowrium reconnect AA:BB:CC:DD:EE:FF"]
+
+
 async def test_background_work_is_tied_to_the_entry(hass: HomeAssistant) -> None:
     """Reconnects and priming must die with the entry, like the first connect.
 
@@ -2715,7 +2760,6 @@ async def test_background_work_is_tied_to_the_entry(hass: HomeAssistant) -> None
     outlives its coordinator, finishes connecting, and claims the lamp's only
     slot for a coordinator nobody owns - while the replacement cannot connect.
     """
-    coordinator, _lamp = _at_a_lamp(hass)
     spawned: list[str] = []
 
     def _background(_hass: object, coro: object, name: str) -> object:
@@ -2725,7 +2769,7 @@ async def test_background_work_is_tied_to_the_entry(hass: HomeAssistant) -> None
 
     entry = MagicMock()
     entry.async_create_background_task = _background
-    coordinator._entry = entry
+    coordinator, _lamp = _kept_for(hass, entry)
 
     link_of(coordinator).tick()
     assert len(spawned) == 1  # the reconnect went to the entry, not to hass
@@ -2743,7 +2787,6 @@ async def test_one_background_connect_at_a_time(hass: HomeAssistant) -> None:
     Each of those starting a connect of its own would queue them up behind
     the lock, every one with its own deadline and its own line in the log.
     """
-    coordinator, _lamp = _at_a_lamp(hass)
     spawned: list[str] = []
 
     def _background(_hass: object, coro: object, name: str) -> object:
@@ -2753,7 +2796,7 @@ async def test_one_background_connect_at_a_time(hass: HomeAssistant) -> None:
 
     entry = MagicMock()
     entry.async_create_background_task = _background
-    coordinator._entry = entry
+    coordinator, _lamp = _kept_for(hass, entry)
 
     link_of(coordinator).tick()
     link_of(coordinator).tick()
@@ -3566,16 +3609,16 @@ async def test_a_hang_up_is_not_tied_to_the_entry(hass: HomeAssistant) -> None:
     test_background_work_is_tied_to_the_entry): a connect that outlives its
     coordinator claims the lamp's slot for nobody. A hang-up is the opposite
     - cancelled by an unload, it leaves the slot taken and the D-Bus
-    connection open. With Home Assistant behind the coordinator it is
-    hass's task to see through; the standalone path keeps its own task, and
-    this is the other side of that choice. A task hass does not track is
-    one async_block_till_done walks straight past, and that call is how Home
-    Assistant - and every test here - lets pending work settle before it
-    looks at the result.
+    connection open. Kept for an entry, it is hass's task to see through;
+    the bench keeps its own, and this is the other side of that choice. A
+    task hass does not track is one async_block_till_done walks straight
+    past, and that call is how Home Assistant - and every test here - lets
+    pending work settle before it looks at the result.
     """
-    coordinator, lamp, link = await _holding_a_link(hass)
     entry = MagicMock()
-    coordinator._entry = entry
+    coordinator, lamp = _kept_for(hass, entry)
+    await coordinator.async_set_indicator(True)  # a link, taken by a command
+    link = lamp.links[-1]
     released = asyncio.Event()
     lamp.hangs_up_when(released)
     hass.loop.call_later(0.05, released.set)  # it takes a moment
@@ -3602,36 +3645,6 @@ async def test_reading_the_device_info_does_not_need_home_assistant() -> None:
     assert coordinator.sw_version == "4"
 
 
-async def test_background_work_does_not_need_home_assistant() -> None:
-    """What the poll spawns - a priming, a probe - runs with no hass to run it on.
-
-    With neither an entry nor Home Assistant the task was handed to
-    ``hass.async_create_task``, on None. The coordinator keeps such a task
-    itself, as it keeps a hang-up: the loop holds a task only weakly, and one
-    nobody else refers to can be collected half-way through.
-    """
-    coordinator = GlowriumCoordinator(None, "AA:BB:CC:DD:EE:FF", "bench")
-    started = asyncio.Event()
-    release = asyncio.Event()
-    finished: list[int] = []
-
-    async def _work() -> None:
-        started.set()
-        await release.wait()
-        finished.append(1)
-
-    coordinator._spawn(_work(), "probe")
-    await asyncio.wait_for(started.wait(), 1)
-    assert len(coordinator._kept_tasks) == 1  # held for as long as it runs
-
-    release.set()
-    for _ in range(3):  # the task ends, then its done-callback runs
-        await asyncio.sleep(0)
-
-    assert finished == [1]
-    assert not coordinator._kept_tasks  # and let go of once it is done
-
-
 async def test_watching_the_lamp_needs_home_assistant() -> None:
     """Starting registers with Home Assistant's Bluetooth; without one it says so.
 
@@ -3639,7 +3652,9 @@ async def test_watching_the_lamp_needs_home_assistant() -> None:
     words, with the entry already taken. It is refused at the door instead,
     with nothing put on and nothing registered.
     """
-    coordinator = GlowriumCoordinator(None, "AA:BB:CC:DD:EE:FF", "bench")
+    coordinator = GlowriumCoordinator(
+        None, "AA:BB:CC:DD:EE:FF", "bench", keeper=ScriptedKeeper(None)
+    )
 
     with pytest.raises(RuntimeError, match="needs Home Assistant"):
         await coordinator.async_start(MagicMock())
@@ -4100,7 +4115,16 @@ async def test_a_reconnect_started_while_starting_belongs_to_the_entry(
     On a lamp whose link holds, a connect that outlives its coordinator keeps
     the single slot for nobody.
     """
-    coordinator, lamp = _at_a_lamp(hass)
+    handed_over: list[str] = []
+
+    def _background(_hass: object, coro: object, name: str) -> object:
+        coro.close()  # the test does not run it, but must not leak it
+        handed_over.append(name)
+        return MagicMock()
+
+    entry = MagicMock()
+    entry.async_create_background_task = _background
+    coordinator, lamp = _kept_for(hass, entry)
     lamp.out_of_range()
 
     def _register(_hass: object, callback: object, *_a: object) -> object:
@@ -4112,16 +4136,6 @@ async def test_a_reconnect_started_while_starting_belongs_to_the_entry(
     fake.async_track_unavailable.return_value = lambda: None
     fake.async_address_present.return_value = True
     monkeypatch.setattr(coordinator_module, "bluetooth", fake)
-
-    handed_over: list[str] = []
-
-    def _background(_hass: object, coro: object, name: str) -> object:
-        coro.close()  # the test does not run it, but must not leak it
-        handed_over.append(name)
-        return MagicMock()
-
-    entry = MagicMock()
-    entry.async_create_background_task = _background
 
     await coordinator.async_start(entry)
     try:

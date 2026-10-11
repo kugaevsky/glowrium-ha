@@ -6,9 +6,12 @@ else when the lamp does something nobody expected.
 """
 
 import ast
+import asyncio
+import gc
 import io
 import logging
 from types import ModuleType
+import weakref
 
 import pytest
 
@@ -25,6 +28,7 @@ from custom_components.glowrium.coordinator import (
 )
 
 from .conftest import ROOT, load_tool
+from .lamp import ScriptedKeeper
 
 _CURVE_KEY = 0x34
 # Seven times, seconds from midnight: 06:00 ... 18:00.
@@ -45,7 +49,9 @@ def bench() -> ModuleType:
 
 def _a_lamp() -> GlowriumCoordinator:
     """Return a coordinator that has heard everything a lamp says."""
-    coordinator = GlowriumCoordinator(None, _ADDRESS, "bench")
+    coordinator = GlowriumCoordinator(
+        None, _ADDRESS, "bench", keeper=ScriptedKeeper(None)
+    )
     coordinator._mirror.echo(
         {
             KEY_POWER: True,
@@ -60,6 +66,61 @@ def _a_lamp() -> GlowriumCoordinator:
         f"mac:{_IN_INFO};version:4;;".encode()
     )
     return coordinator
+
+
+def _running(name: str) -> weakref.ref[asyncio.Task[None]]:
+    """Return the task called ``name`` without becoming what holds it."""
+    (ref,) = (
+        weakref.ref(task) for task in asyncio.all_tasks() if task.get_name() == name
+    )
+    return ref
+
+
+def _wake(waited: weakref.ref[asyncio.Future[None]]) -> None:
+    """Give the work what it waits for, and hold on to nothing of it."""
+    future = waited()
+    assert future is not None
+    future.set_result(None)
+
+
+@pytest.mark.parametrize("asked_as", ["spawn", "run_lasting"])
+async def test_work_the_bench_is_asked_to_start_is_held_until_it_is_done(
+    bench: ModuleType, asked_as: str
+) -> None:
+    """What the device half has started on the bench runs to its end.
+
+    A reconnect, a priming, a probe, a hang-up. Home Assistant holds such a
+    task on its entry or on itself; the bench has neither, and the loop
+    holds a task only weakly: one nobody else refers to can be collected
+    half-way through. The bench's keeper holds it for as long as it runs,
+    and lets go of it once it is done.
+    """
+    waits_for: list[weakref.ref[asyncio.Future[None]]] = []
+    finished: list[int] = []
+
+    async def _work() -> None:
+        # Held by the work alone, as an answer from a lamp is: whoever
+        # held it would be holding the work that waits for it.
+        waited = asyncio.get_running_loop().create_future()
+        waits_for.append(weakref.ref(waited))
+        await waited
+        finished.append(1)
+
+    keeper = bench.BenchKeeper()
+    getattr(keeper, asked_as)(_work(), "glowrium probe of the bench")
+    await asyncio.sleep(0)  # it starts, and waits
+    running = _running("glowrium probe of the bench")
+
+    gc.collect()
+    assert running() is not None  # still there to be woken
+
+    _wake(waits_for[0])
+    for _ in range(3):  # the task ends, then its done-callback runs
+        await asyncio.sleep(0)
+    gc.collect()
+
+    assert finished == [1]
+    assert running() is None  # and nothing holds work that is done
 
 
 _PRIVATE = ("12.3456", "65.4321", _CURVE.hex(), "06:00", "18:00", _SERIAL, _IN_INFO)

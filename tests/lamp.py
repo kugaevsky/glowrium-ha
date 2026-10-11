@@ -13,7 +13,7 @@ that will not hang up - puts it behind the lamp's with ``dials_through``.
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Awaitable, Callable, Iterator
+from collections.abc import Awaitable, Callable, Coroutine, Iterator
 import contextlib
 from typing import Any
 from unittest.mock import patch
@@ -24,7 +24,7 @@ from homeassistant.core import HomeAssistant
 
 from custom_components.glowrium import cbor
 from custom_components.glowrium.const import NOTIFY_UUID
-from custom_components.glowrium.coordinator import GlowriumCoordinator
+from custom_components.glowrium.coordinator import GlowriumCoordinator, Keeper
 from custom_components.glowrium.link import Link, Turn, Unclosed
 
 ADDRESS = "AA:BB:CC:DD:EE:FF"
@@ -44,6 +44,8 @@ _NOTHING_BEHIND = NothingBehind()
 # coordinator alone. Kept here and not on the coordinator: nothing outside the
 # tests has any business asking a coordinator what it dials through.
 _LAMPS: WeakKeyDictionary[GlowriumCoordinator, ScriptedLamp] = WeakKeyDictionary()
+# And the keeper each was built with: the tests' own, unless a test handed one in.
+_KEEPERS: WeakKeyDictionary[GlowriumCoordinator, ScriptedKeeper] = WeakKeyDictionary()
 
 
 class LampLink:
@@ -115,6 +117,45 @@ class LampLink:
     def _gone_is_an_error(self) -> None:
         if not self.is_connected:
             raise BleakError("Not connected")
+
+
+class ScriptedKeeper:
+    """What keeps a test's coordinator: it starts the work, and notes what was asked.
+
+    Work goes where Home Assistant waits for it - ``hass.async_create_task``,
+    so that ``async_block_till_done`` settles a connect or a hang-up that a
+    test set off - and with no Home Assistant on the loop, kept until it is
+    done. Both lifetimes of work go to the same place: what ties work to a
+    config entry is the adapter's (``EntryKeeper``), and is tested on it.
+    """
+
+    def __init__(self, hass: HomeAssistant | None) -> None:
+        """Keep a coordinator for a test, on ``hass`` or on the bare loop."""
+        self._hass = hass
+        self._kept: set[asyncio.Task[None]] = set()
+        # The names of the work asked for, by the lifetime it was asked for.
+        self.spawned: list[str] = []
+        self.lasting: list[str] = []
+
+    def spawn(self, work: Coroutine[Any, Any, None], name: str) -> None:
+        """Start work that ends with the watching."""
+        self.spawned.append(name)
+        self._start(work, name)
+
+    def run_lasting(
+        self, work: Coroutine[Any, Any, None], name: str
+    ) -> asyncio.Task[None]:
+        """Start work that outlives the watching, and return it."""
+        self.lasting.append(name)
+        return self._start(work, name)
+
+    def _start(self, work: Coroutine[Any, Any, None], name: str) -> asyncio.Task[None]:
+        if self._hass is not None:
+            return self._hass.async_create_task(work, name)
+        task = asyncio.get_running_loop().create_task(work, name=name)
+        self._kept.add(task)
+        task.add_done_callback(self._kept.discard)
+        return task
 
 
 class ScriptedLamp:
@@ -341,16 +382,29 @@ class ScriptedLamp:
         name: str = "Glowrium-G7",
         model_id: str | None = None,
         unclosed: Unclosed | None = None,
+        keeper: Keeper | None = None,
     ) -> GlowriumCoordinator:
         """Return a coordinator that dials this lamp.
 
         ``unclosed`` is what coordinators for the lamp before this one could
-        not let go of, when a test has two of them in turn.
+        not let go of, when a test has two of them in turn. ``keeper`` is
+        what keeps the coordinator; left out, a ``ScriptedKeeper`` on
+        ``hass``, which ``keeper_of`` hands back.
         """
+        if keeper is None:
+            keeper = ScriptedKeeper(hass)
         coordinator = GlowriumCoordinator(
-            hass, ADDRESS, name, model_id, dial=self.dial, unclosed=unclosed
+            hass,
+            ADDRESS,
+            name,
+            model_id,
+            keeper=keeper,
+            dial=self.dial,
+            unclosed=unclosed,
         )
         _LAMPS[coordinator] = self
+        if isinstance(keeper, ScriptedKeeper):
+            _KEEPERS[coordinator] = keeper
         return coordinator
 
     def out_of_range(self) -> None:
@@ -444,6 +498,16 @@ def lamp_of(coordinator: GlowriumCoordinator) -> ScriptedLamp:
             "build it with ScriptedLamp().coordinator(...)"
         )
     return _LAMPS[coordinator]
+
+
+def keeper_of(coordinator: GlowriumCoordinator) -> ScriptedKeeper:
+    """Return the keeper ``coordinator`` was built with, when it is the tests' own."""
+    if coordinator not in _KEEPERS:
+        raise LookupError(
+            "this coordinator is not kept by a ScriptedKeeper: "
+            "build it with ScriptedLamp().coordinator(...) and no keeper of its own"
+        )
+    return _KEEPERS[coordinator]
 
 
 def nothing_heard(coordinator: GlowriumCoordinator) -> None:

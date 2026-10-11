@@ -52,6 +52,7 @@ from custom_components.glowrium.coordinator import GlowriumCoordinator
 
 from .lamp import (
     LampLink,
+    ScriptedKeeper,
     ScriptedLamp,
     lamp_of,
     link_of,
@@ -2166,7 +2167,9 @@ async def test_a_stopped_coordinator_ends_no_episode_and_takes_down_no_repair(
 
 async def test_a_wedged_stack_is_survived_without_home_assistant() -> None:
     """The bench has no dashboard to raise a repair on, and counts all the same."""
-    coordinator = GlowriumCoordinator(None, "AA:BB:CC:DD:EE:FF", "bench")
+    coordinator = GlowriumCoordinator(
+        None, "AA:BB:CC:DD:EE:FF", "bench", keeper=ScriptedKeeper(None)
+    )
 
     for _ in range(link_module._STACK_FAULT_AFTER):
         link_of(coordinator).note_stuck_hang_up()

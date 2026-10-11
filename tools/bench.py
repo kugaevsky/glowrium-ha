@@ -43,13 +43,14 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+from collections.abc import Coroutine
 from dataclasses import dataclass
 from datetime import datetime
 import logging
 from pathlib import Path
 import re
 import sys
-from typing import TextIO
+from typing import Any, TextIO
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
@@ -176,6 +177,34 @@ class _Masked:
 
     def __getattr__(self, name: str) -> object:
         return getattr(self._stream, name)
+
+
+class BenchKeeper:
+    """What keeps the coordinator here: this run (``coordinator.Keeper``).
+
+    Home Assistant puts what the device half asks to have started on a
+    config entry or on itself. The bench has neither, and the loop holds a
+    task only weakly, so the keeper holds each for as long as it runs.
+    Nothing here ends before the run does, and the two lifetimes the device
+    half tells apart are one.
+    """
+
+    def __init__(self) -> None:
+        """Hold nothing yet."""
+        self._running: set[asyncio.Task[None]] = set()
+
+    def spawn(self, work: Coroutine[Any, Any, None], name: str) -> None:
+        """Start ``work`` and hold it until it is done."""
+        self.run_lasting(work, name)
+
+    def run_lasting(
+        self, work: Coroutine[Any, Any, None], name: str
+    ) -> asyncio.Task[None]:
+        """Start ``work``, hold it until it is done, and return its task."""
+        task = asyncio.get_running_loop().create_task(work, name=name)
+        self._running.add(task)
+        task.add_done_callback(self._running.discard)
+        return task
 
 
 def _device_info(coordinator: GlowriumCoordinator) -> str:
@@ -356,6 +385,7 @@ async def main() -> int:
         None,
         device.address,
         device.name,
+        keeper=BenchKeeper(),
         dial=dial_by_bluetooth(lambda: device, device.address, device.name),
     )
     # The bench never provisions anything. Saying so here beats trusting that

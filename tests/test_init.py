@@ -81,7 +81,7 @@ from custom_components.glowrium.select import GlowriumLightingModeSelect
 from custom_components.glowrium.time import GlowriumTimerEnd, GlowriumTimerStart
 
 from .conftest import ROOT
-from .lamp import ScriptedLamp, in_range, link_of
+from .lamp import ScriptedKeeper, ScriptedLamp, in_range, link_of
 
 ADDRESS = "AA:BB:CC:DD:EE:FF"
 G7_INFO = b"brand:INLEDCO;pkey:Glowrium-C051;devid:CST-0001;mac:x;version:4;;"
@@ -1540,7 +1540,7 @@ def test_the_select_itself_does_not_offer_a_mode_the_lamp_does_not_have() -> Non
     asked here directly.
     """
     select = GlowriumLightingModeSelect(
-        GlowriumCoordinator(None, ADDRESS, "Glowrium-G7")
+        GlowriumCoordinator(None, ADDRESS, "Glowrium-G7", keeper=ScriptedKeeper(None))
     )
 
     select._restored = "moonlight"
@@ -1557,7 +1557,7 @@ def test_a_report_of_nothing_is_a_report_and_the_remembered_mode_steps_back() ->
     value that is there and names no preset is the lamp having spoken.
     """
     select = GlowriumLightingModeSelect(
-        GlowriumCoordinator(None, ADDRESS, "Glowrium-G7")
+        GlowriumCoordinator(None, ADDRESS, "Glowrium-G7", keeper=ScriptedKeeper(None))
     )
     select._restored = "balance"
     assert select.current_option == "balance"

@@ -8,7 +8,7 @@ from datetime import datetime, time
 from enum import Enum, auto
 import logging
 from time import monotonic
-from typing import Any, Final, NamedTuple
+from typing import Any, Final, NamedTuple, Protocol
 
 from bleak.backends.device import BLEDevice
 from homeassistant.components import bluetooth
@@ -162,6 +162,33 @@ def presets_issue_id(entry_id: str) -> str:
     return f"presets_unconfirmed_{entry_id}"
 
 
+class Keeper(Protocol):
+    """What keeps a coordinator, and what the device half asks of it.
+
+    Home Assistant keeps one for a config entry (``keeper.EntryKeeper``); the
+    bench keeps one for a run. The device half asks for what is listed here
+    and for nothing else of whatever runs it, and never asks whether it is
+    there: a coordinator is built with its keeper.
+    """
+
+    def spawn(self, work: Coroutine[Any, Any, None], name: str) -> None:
+        """Start work that ends no later than the keeper's watching does.
+
+        For Home Assistant that is the unload of the entry: a connect that
+        outlived its coordinator would finish and claim the lamp's single
+        slot for an owner that no longer exists.
+        """
+
+    def run_lasting(
+        self, work: Coroutine[Any, Any, None], name: str
+    ) -> asyncio.Task[None]:
+        """Start work that nothing which ends the coordinator ends; return it.
+
+        A hang-up: one that outlives its coordinator gives the lamp's slot
+        back, and one cut short leaves the client's bus open.
+        """
+
+
 class GlowriumCoordinator:
     """Maintain a BLE connection and mirror the device's CBOR property state.
 
@@ -176,6 +203,7 @@ class GlowriumCoordinator:
         name: str,
         model_id: str | None = None,
         *,
+        keeper: Keeper,
         dial: Dial | None = None,
         unclosed: Unclosed | None = None,
     ) -> None:
@@ -183,8 +211,10 @@ class GlowriumCoordinator:
 
         ``hass`` is None when there is no Home Assistant behind it: that is
         how tools/bench.py drives the real coordinator against a real lamp.
-        It then connects, primes and commands as it does anywhere, keeps its
-        own background tasks, and cannot be started (see ``async_start``).
+        It then connects, primes and commands as it does anywhere, and
+        cannot be started (see ``async_start``).
+
+        ``keeper`` is what keeps this coordinator (see ``Keeper``).
 
         ``model_id`` is the model an earlier session read off the lamp, if
         one did. The entities are built before this session has read
@@ -198,6 +228,7 @@ class GlowriumCoordinator:
         for each lamp and hands it to every coordinator it makes for it.
         """
         self.hass = hass
+        self._keeper = keeper
         self.address = address
         self.name = name
         # What the lamp has said and what was written to it (mirror.py); the
@@ -234,9 +265,6 @@ class GlowriumCoordinator:
         # the device info can come in to a coordinator that nobody is left to
         # answer for (see _async_review_presets_notice).
         self._stopped = False
-        # Tasks in flight when there is no hass to keep them: hang-ups, and
-        # whatever the poll spawned (see _run_without_hass).
-        self._kept_tasks: set[asyncio.Task[None]] = set()
         # The link to the lamp: the client, the lock around it, and how it is
         # let go of (link.py). It is handed its dial; left out, that is the
         # lamp as Home Assistant's Bluetooth finds it.
@@ -250,7 +278,7 @@ class GlowriumCoordinator:
             reach_changed=self._async_reach_changed,
             stack_fault=self._async_on_stack_fault,
             spawn=self._spawn,
-            run_lasting=self._run_lasting,
+            run_lasting=keeper.run_lasting,
             unclosed=unclosed,
         )
         self._activation_checked = False
@@ -368,19 +396,6 @@ class GlowriumCoordinator:
             self._async_clear_stack_issue()
         else:
             self._async_raise_stack_issue(count)
-
-    def _run_lasting(
-        self, coro: Coroutine[Any, Any, None], name: str
-    ) -> asyncio.Task[None]:
-        """Run a hang-up where neither a deadline nor an unload can end it.
-
-        On hass, not on the entry like the rest of the background work (see
-        ``_spawn``): a hang-up that outlives its coordinator gives the lamp's
-        slot back, and one cut short leaves the client's bus open.
-        """
-        if self.hass is not None:
-            return self.hass.async_create_task(coro, name)
-        return self._run_without_hass(coro, name)
 
     @property
     def available(self) -> bool:
@@ -626,32 +641,8 @@ class GlowriumCoordinator:
 
     @callback
     def _spawn(self, coro: Coroutine[Any, Any, None], what: str) -> None:
-        """Run ``coro`` in the background, for no longer than the entry lives.
-
-        Without Home Assistant there is no entry to end it and nothing else to
-        hold the task: the coordinator keeps it itself (``_run_without_hass``).
-        """
-        name = f"glowrium {what} {self.address}"
-        if self.hass is None:
-            self._run_without_hass(coro, name)
-        elif self._entry is None:  # not started on an entry: nothing to end it with
-            self.hass.async_create_task(coro, name)
-        else:
-            self._entry.async_create_background_task(self.hass, coro, name)
-
-    @callback
-    def _run_without_hass(
-        self, coro: Coroutine[Any, Any, None], name: str
-    ) -> asyncio.Task[None]:
-        """Run ``coro`` on the loop and keep it until it is done.
-
-        Standalone, with no Home Assistant behind it (tools/bench.py). Nothing
-        keeps the task for us there, and the loop itself holds it only weakly.
-        """
-        task = asyncio.get_running_loop().create_task(coro, name=name)
-        self._kept_tasks.add(task)
-        task.add_done_callback(self._kept_tasks.discard)
-        return task
+        """Have the keeper run ``coro``, for no longer than it keeps watching."""
+        self._keeper.spawn(coro, f"glowrium {what} {self.address}")
 
     @callback
     def _async_stop_watching(self) -> None:
