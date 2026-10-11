@@ -35,7 +35,8 @@ each ends. A deny-list over the mirror would be a list of what one lamp sent.
 ## Decision
 
 - No log record above debug holds bytes of a frame. The warnings for a frame
-  with trailing bytes and for one with an item that cannot be read say what
+  with trailing bytes, for one with an item that cannot be read, for one that
+  cannot be decoded and for one that decodes to nothing of use say what
   was wrong and that the frame is in the debug log; the one for properties
   there was no room for carries nothing of the frame either. A frame is
   printed at debug, the first one too, and rendered only when that line is

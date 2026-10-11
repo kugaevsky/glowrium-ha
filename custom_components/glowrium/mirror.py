@@ -271,11 +271,11 @@ class Mirror(Mapping[int, Any]):
         # is raised once per session instead of on every notification; and the
         # same for a frame that was read only in part, for one that could not
         # be decoded at all, and for one that decoded to nothing of use. Each
-        # on a count of its own: one having been said says nothing of another.
+        # is said for itself: one having been said says nothing of another.
         self._trailing_warned = False
         self._unreadable_warned = False
         self._undecodable_warned = False
-        self._nothing_usable_warned = False
+        self._nothing_of_use_warned = False
         # Whoever is waiting for the next report (next_report).
         self._waiters: list[asyncio.Future[None]] = []
 
@@ -322,11 +322,11 @@ class Mirror(Mapping[int, Any]):
         except cbor.UnreadableItemError as err:
             decoded, unreadable = err.ahead, err
         except cbor.TrailingBytesError as err:
-            # Reported apart from a merely malformed frame, and loudly the first
-            # time: rejecting these is what changed in #5, and on a model whose
-            # frames were always fully consumed before, this is the regression
-            # that change risks. Buried in "Undecodable frame" at debug level it
-            # would never be noticed.
+            # Reported apart from a frame that could not be decoded: rejecting
+            # these is what changed in #5, and on a model whose frames were
+            # always fully consumed before, this is the regression that change
+            # risks. Said as one more frame that could not be decoded, it
+            # would not be told from the rest.
             self._log_trailing_bytes(frame, err.count)
             return frozenset()
         except ValueError as err:  # the decoder raises nothing else
@@ -340,7 +340,7 @@ class Mirror(Mapping[int, Any]):
         elif not carried:
             # Decoded without a fault, and still of no use: every frame that
             # is dropped is named, or nobody can ask what it was.
-            self._log_nothing_usable(frame)
+            self._log_nothing_of_use(frame)
         elif not kept:
             # There was room for none of it. Dropped, then, and named too.
             _LOGGER.debug(
@@ -532,13 +532,13 @@ class Mirror(Mapping[int, Any]):
             _IN_THE_DEBUG_LOG,
         )
 
-    def _log_nothing_usable(self, data: bytes) -> None:
+    def _log_nothing_of_use(self, data: bytes) -> None:
         """Report a frame of no use: once loudly, each time at debug.
 
         Something other than a map of properties, or a map with nothing in
         it. It decoded without a fault, and it leaves the lamp where a frame
-        that did not decode leaves it, so it is said the same way - on a
-        count of its own, being another thing for a lamp to do.
+        that did not decode leaves it, so it is said the same way - and for
+        itself, being another thing for a lamp to do.
         """
         _LOGGER.debug(
             "%s: frame %s decodes to nothing that can be used: it is "
@@ -546,9 +546,9 @@ class Mirror(Mapping[int, Any]):
             self._address,
             _Printed(data),
         )
-        if self._nothing_usable_warned:
+        if self._nothing_of_use_warned:
             return
-        self._nothing_usable_warned = True
+        self._nothing_of_use_warned = True
         _LOGGER.warning(
             "%s (%s) sent a frame that decodes to nothing this integration can "
             "use - it is not a map of properties, or is one with nothing in "

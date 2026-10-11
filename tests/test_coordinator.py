@@ -884,6 +884,40 @@ async def test_a_lamp_that_acknowledges_and_says_nothing_is_read(
         assert await coordinator._request_state(turn_over(coordinator, link)) is True
 
 
+@pytest.mark.parametrize(
+    "answer",
+    [
+        pytest.param("c0a106f5", id="a frame that cannot be decoded"),
+        pytest.param("a0", id="a map with nothing in it"),
+    ],
+)
+async def test_a_lamp_that_answers_with_a_frame_of_which_nothing_is_kept_is_read(
+    hass: HomeAssistant, monkeypatch: pytest.MonkeyPatch, answer: str
+) -> None:
+    """A frame of which nothing is kept is no answer to the request, and is read past.
+
+    Such a lamp is said once in the log, and nothing else is done differently
+    for it. The request is acknowledged, what comes back is no report, the
+    wait for one runs out, and the state is read - as with a lamp that says
+    nothing at all, and the next time the same. It is not a refusal either:
+    nothing is counted that would ever pause the request.
+    """
+    monkeypatch.setattr(coordinator_module, "_REPORT_TIMEOUT", 0.05)
+    coordinator, lamp, link = await _holding_a_link(hass)
+    lamp.answers(frame=bytes.fromhex(answer))
+    lamp.readable(NOTIFY_UUID, cbor.encode({KEY_POWER: True}))
+
+    for _ in range(2):
+        async with asyncio.timeout(1):
+            asked = await coordinator._request_state(turn_over(coordinator, link))
+        assert asked is True
+
+    assert lamp.asked == [bytes(STATE_KEYS)] * 2
+    assert lamp.read == [NOTIFY_UUID] * 2
+    assert coordinator.state == {KEY_POWER: True}  # from the read, and nothing else
+    assert coordinator._state_request_failures == 0
+
+
 async def test_an_answer_in_two_notifications_is_waited_for(
     hass: HomeAssistant,
 ) -> None:

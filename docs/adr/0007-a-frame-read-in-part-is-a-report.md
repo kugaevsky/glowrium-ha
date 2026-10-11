@@ -4,8 +4,9 @@
 - **Date:** 2026-08-24 (short maps kept, trailing bytes rejected: #5, in 0.2.0);
   2026-10-05 (only `ValueError` leaves the decoder; nesting bound of four; an
   item that cannot be read keeps the pairs ahead of it); 2026-10-11 (a frame
-  that is dropped whole is said once a session, and the two ways of reading a
-  frame in part are left to differ: #41)
+  that cannot be decoded, and one that decodes to nothing of use, is said
+  once a session; the two ways of reading a frame in part are left to
+  differ: #41)
 
 ## Context
 
@@ -47,9 +48,9 @@ callback, inside the Bluetooth stack's own message handler - catches exactly
 - A frame that cannot be decoded at all, and one that decodes to nothing
   that can be used - something other than a map of properties, or a map with
   nothing in it - is dropped and is no report. The first of each in a session
-  is said at warning level, on a count of its own, as the frame with trailing
-  bytes and the one with an unreadable item are; the frame is in the debug
-  log (ADR 0012).
+  is said at warning level, each for itself, as the frame with trailing bytes
+  and the one with an unreadable item are; the frame is in the debug log
+  (ADR 0012).
 
 The two ways of reading a frame in part differ, and are left to. A frame with
 trailing bytes is dropped whole; one with an item that cannot be read is kept
@@ -80,7 +81,7 @@ that refuses (ADR 0002).
 
 ## Evidence
 
-- ARCHITECTURE.md, "CBOR wire format" and its three subsections.
+- ARCHITECTURE.md, "CBOR wire format" and its subsections on frames.
 - `tests/test_cbor.py::test_nothing_but_a_valueerror_leaves_the_frame_decoder`
   (a seeded corpus of noise, mutated real frames and deep nesting),
   `::test_an_item_that_cannot_be_read_says_what_was_read_ahead_of_it`,
@@ -88,10 +89,11 @@ that refuses (ADR 0002).
   `tests/test_mirror.py::test_what_was_read_ahead_of_an_unreadable_item_is_kept_and_said_loudly`,
   `::test_trailing_bytes_are_reported_as_themselves`,
   `::test_a_frame_that_cannot_be_decoded_is_said_once_and_without_the_frame`,
-  `::test_a_frame_that_decodes_to_nothing_usable_is_named_as_well`,
+  `::test_a_frame_that_decodes_to_nothing_of_use_is_named_and_said_once`,
   `::test_what_a_dropped_frame_was_is_said_for_each_kind_of_its_own`,
   `::test_next_report_wakes_on_a_report_and_on_nothing_else`;
   `tests/test_coordinator.py::test_a_report_read_only_in_part_is_still_the_answer_to_the_request`,
+  `::test_a_lamp_that_answers_with_a_frame_of_which_nothing_is_kept_is_read`,
   `::test_a_lamp_that_acknowledges_and_says_nothing_is_read`.
 
 ## Revisit when

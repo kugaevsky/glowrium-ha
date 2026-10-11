@@ -336,7 +336,7 @@ is what 0.2.0 and 0.2.1 did to every lamp. A frame of which nothing at all
 could be read is still no report, and that lamp is read, as a silent one is.
 
 A frame is printed in the debug log and nowhere else. This warning, the one
-for trailing bytes and the two for a frame that is dropped whole (below) say
+for trailing bytes and the two for a frame nothing is taken from (below) say
 what was wrong and where the frame is, and carry none of it: its bytes are
 the lamp's to choose, and the log a warning stands in is posted for reasons
 that have nothing to do with this integration.
@@ -370,7 +370,7 @@ session as a warning carrying the model, with the frame in the debug log, so a r
 model that never produced them shows up as itself rather than as generic
 undecodable garbage.
 
-### Frames that are dropped whole
+### Frames that cannot be decoded, and frames of no use
 
 Two more kinds of frame are dropped, and each is said as the frame with
 trailing bytes is: the first of a session in a warning that names the lamp
@@ -381,7 +381,7 @@ and carries no byte of the frame, every one in the debug log.
 - One that decodes without a fault to nothing that can be used: something
   other than a map of properties, or a map with nothing in it.
 
-Each has a count of its own: one having been said says nothing of another.
+Each is said for itself: one having been said says nothing of another.
 None of the three is a report, and to the state request none is an answer.
 The lamp is read instead, as a silent one is, on every connect: the read is
 the only other way to a state, and on BlueZ it costs that lamp its link, as

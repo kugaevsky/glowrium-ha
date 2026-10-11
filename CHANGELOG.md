@@ -90,8 +90,8 @@ All notable changes to this project are documented here. The format is based on
   properties, or to a map with nothing in it, was dropped with a line in the
   debug log and nowhere else. A lamp that answers the state request with
   nothing else is read instead on every connect, which on a Linux host costs
-  it the link: its owner saw entities that read `unknown` and a lamp that
-  kept dropping, and nothing above debug said why. The first such frame of a
+  it the link: its owner saw entities left at `unknown` and a lamp that kept
+  dropping, and nothing above debug said why. The first such frame of a
   session is now a warning, one for each of the two kinds: the lamp, its
   model and firmware, what was wrong, and where the frame is - not the frame.
   What is done with such a frame is as before

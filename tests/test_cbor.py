@@ -263,8 +263,8 @@ def test_an_item_that_cannot_be_read_says_what_was_read_ahead_of_it(
 ) -> None:
     """The frame is malformed, and the error hands over the pairs before the item.
 
-    An item with no reading here has no length either, so nothing behind it
-    can be found. What came ahead of it was read exactly as it would have
+    The decoder does not step over an item it has no reading for, so nothing
+    behind it is found. What came ahead of it was read exactly as it would have
     been from a whole frame, and whether that is worth keeping is for the
     caller to say - which it cannot, unless it is told what there was. The
     error carries it, the way a read that was cut short carries what it got.

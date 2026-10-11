@@ -576,7 +576,7 @@ def test_a_frame_the_decoder_refuses_is_dropped_and_nothing_is_raised(
         pytest.param("f6", id="null"),
     ],
 )
-def test_a_frame_that_decodes_to_nothing_usable_is_named_as_well(
+def test_a_frame_that_decodes_to_nothing_of_use_is_named_and_said_once(
     caplog: pytest.LogCaptureFixture, frame: str
 ) -> None:
     """A frame can decode without a fault and still be of no use.
@@ -687,8 +687,8 @@ def test_what_a_dropped_frame_was_is_said_for_each_kind_of_its_own(
 
     said = _warnings(caplog)
     assert len(said) == 2
-    assert sorted("could not be decoded" in line for line in said) == [False, True]
-    assert sorted("decodes to nothing" in line for line in said) == [False, True]
+    assert len([line for line in said if "could not be decoded" in line]) == 1
+    assert len([line for line in said if "decodes to nothing" in line]) == 1
 
 
 # {power: on, brightness: 70, 0x09: <a tag, which nothing here can read> ...
