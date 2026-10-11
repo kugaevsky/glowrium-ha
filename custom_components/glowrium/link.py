@@ -312,8 +312,8 @@ def _reason(err: BaseException) -> str:
 # between the read and the write), and bleak's is_connected lags reality - on a
 # G7 it still read True at the moment a write failed with "not connected", with
 # the disconnect callback arriving two seconds later. So the test is inverted:
-# recognise a refusal, treat everything else as the link. Muting a working lamp
-# silently costs it every property a read of the state does not carry; asking
+# recognise a refusal, treat everything else as the link. No longer asking a
+# working lamp costs it every property a read of the state does not carry; asking
 # an exotic device once too often costs a reconnect.
 _REFUSAL_MARKERS = ("authorization", "authentication", "not permitted")
 # The same, where the error is bleak's own and says which ATT error it was.
@@ -408,15 +408,6 @@ class Turn:
         self._on_answered = answered
         # Whether the device half has called the lamp answering (see answered).
         self.got_an_answer = False
-
-    @property
-    def up(self) -> bool:
-        """Whether the link still holds the client this turn is on, connected.
-
-        For an exchange that waits for the lamp to say something: there is
-        nothing left to wait for on a link that has gone.
-        """
-        return self._link.client is self._client and self._client.is_connected
 
     async def write(self, uuid: str, frame: bytes) -> None:
         """Write ``frame`` and wait for the lamp to acknowledge it.

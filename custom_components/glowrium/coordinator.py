@@ -7,7 +7,6 @@ from collections.abc import Callable, Coroutine, Mapping
 from datetime import datetime, time
 from enum import Enum, auto
 import logging
-from time import monotonic
 from typing import Any, Final, NamedTuple, Protocol
 
 from homeassistant.core import Event, callback
@@ -74,18 +73,13 @@ _REPORT_TIMEOUT = 3.0
 # far above normal drift between connects.
 _CLOCK_TOLERANCE = 60.0
 
-# The batched state request is muted after this many consecutive refusals. One
-# failure means nothing on a weak link - a dropped connection can surface as
-# the same error as an outright refusal - and giving up after one leaves a
-# lamp that has to be read without every property a read does not carry.
+# After this many refusals in a row the lamp is no longer asked for its state,
+# and is only read, for the rest of the session. A refusal is the lamp
+# answering the request with an error; a link that drops under the request is
+# a lost link and is not counted. One refusal is not taken for the lamp's
+# last word - a lamp that is only read goes without every property a read
+# does not carry - and a request the lamp accepts starts the count again.
 _STATE_REQUEST_ATTEMPTS = 3
-# ...and muted only for this long, not for the session. A model that genuinely
-# refuses the request must not have its link torn down on every connect, but a
-# lamp on a weak signal fails the same way and then recovers: observed on a G7 at
-# RSSI -88, three consecutive failures accumulated about 70 s after start-up
-# purely from a bad link, which permanently cost it four properties until Home
-# Assistant was restarted. Muting expires so that heals itself.
-_STATE_REQUEST_COOLDOWN = 600.0
 
 
 class _Asked(Enum):
@@ -291,24 +285,17 @@ class GlowriumCoordinator:
             unclosed=unclosed,
         )
         self._activation_checked = False
-        # The batched state request is muted until this time after a run of
-        # failures, rather than for the session - see _request_state.
-        self._state_request_muted_until = 0.0
-        self._state_request_failures = 0
-        # Set once a cooldown has already been served and the model refused
-        # again: that is a refusal rather than a run of bad luck.
-        self._state_request_given_up = False
+        # How many times in a row the lamp has refused the state request.
+        # At _STATE_REQUEST_ATTEMPTS it is asked no more - see _request_state.
+        self._state_request_refusals = 0
         # How many writes reached the characteristic: a count, not a value,
         # so that a write that raised still counts (see _write_on).
         self._writes_sent = 0
 
     @property
-    def _state_request_muted(self) -> bool:
-        """True while the batched state request is paused, or given up on."""
-        return (
-            self._state_request_given_up
-            or monotonic() < self._state_request_muted_until
-        )
+    def _only_read(self) -> bool:
+        """Whether the lamp is no longer asked for its state, and only read."""
+        return self._state_request_refusals >= _STATE_REQUEST_ATTEMPTS
 
     @property
     def state(self) -> Mapping[int, Any]:
@@ -517,8 +504,9 @@ class GlowriumCoordinator:
                 "reports": self._mirror.reports,
                 "writes_sent": self._writes_sent,
                 "seconds_since_last_answer": link["seconds_since_last_answer"],
-                "state_request_refusals": self._state_request_failures,
-                "state_request_paused": self._state_request_muted,
+                "state_request_refusals": self._state_request_refusals,
+                # Not being asked: the lamp is read instead.
+                "state_request_paused": self._only_read,
                 "unanswered_hang_ups": link["unanswered_hang_ups"],
                 "dials_held_back": link["dials_held_back"],
                 "clients_that_would_not_close": link["clients_that_would_not_close"],
@@ -702,41 +690,36 @@ class GlowriumCoordinator:
 
         Reading remains the way out for a lamp that will not report - one that
         refuses the request, as a G8 (``Glowrium-C064``) does with ATT
-        ``Insufficient authorization``, or acknowledges it and stays silent. A
-        lamp that has refused before is read first, as it always was, and the
-        request is repeated until ``_STATE_REQUEST_ATTEMPTS`` refusals in a row
-        silence it: a dropped link raises the same kind of error as a refusal,
-        and one failure proves nothing. The read does not carry everything - a
-        complete twenty-pair map that stops at 0x15, so no indicator, lighting
-        mode, ramp or DST - which is why the request is not simply given up.
+        ``Insufficient authorization``, or acknowledges it and stays silent.
+        The order is one: asked, and read only then. The read does not carry
+        everything - a complete twenty-pair map that stops at 0x15, so no
+        indicator, lighting mode, ramp or DST - which is why one refusal does
+        not end the asking. ``_STATE_REQUEST_ATTEMPTS`` in a row do: from then
+        on the lamp is only read, for as long as this coordinator lives, and
+        the log has said so once.
 
         Returns whether the link answered at all: the lamp reported, or
         acknowledged or refused the request, or could be read. bleak can hand
         back a client that reports itself connected while every call on it
         answers "not connected", and such a link is not a working one.
         """
-        if self._state_request_muted or self._state_request_failures:
-            read_ok, carried = await self._async_read_state(turn)
-            if not carried.issuperset(STATE_KEYS) and not self._state_request_muted:
-                # Judged on what this read carried rather than on the mirror:
-                # the mirror accumulates, so a key seen once would look
-                # covered for the rest of the session.
-                await self._async_ask_state(turn)
-            return read_ok
+        if self._only_read:
+            return await self._async_read_state(turn)
         asked = await self._async_ask_state(turn)
         if asked is _Asked.REPORTED:
             return True
-        read_ok, _ = await self._async_read_state(turn)
-        return read_ok or asked in (_Asked.SILENT, _Asked.REFUSED)
+        read = await self._async_read_state(turn)
+        return read or asked in (_Asked.SILENT, _Asked.REFUSED)
 
-    async def _async_read_state(self, turn: Turn) -> tuple[bool, frozenset[int]]:
-        """Read the state map; return whether it answered and what it carried."""
+    async def _async_read_state(self, turn: Turn) -> bool:
+        """Read the state map into the mirror; return whether the read answered."""
         try:
             raw = await turn.read(NOTIFY_UUID)
         except LinkLostError as err:
             _LOGGER.debug("%s state read failed: %s", self.address, err)
-            return False, frozenset()
-        return True, self._ingest(raw)
+            return False
+        self._ingest(raw)
+        return True
 
     async def _async_ask_state(self, turn: Turn) -> _Asked:
         """Write the state request and wait for the lamp to report."""
@@ -744,32 +727,28 @@ class GlowriumCoordinator:
         try:
             await turn.write(NOTIFY_UUID, bytes(STATE_KEYS))
         except RefusedError as err:
-            self._state_request_failures += 1
-            if self._state_request_failures < _STATE_REQUEST_ATTEMPTS:
+            self._state_request_refusals += 1
+            if not self._only_read:
                 _LOGGER.debug(
-                    "%s state request failed (%d/%d): %s",
+                    "%s state request refused (%d/%d): %s",
                     self.address,
-                    self._state_request_failures,
+                    self._state_request_refusals,
                     _STATE_REQUEST_ATTEMPTS,
                     err,
                 )
                 return _Asked.REFUSED
-            self._state_request_failures = 0
-            served_a_cooldown = self._state_request_muted_until > 0.0
-            self._state_request_given_up = served_a_cooldown
-            self._state_request_muted_until = monotonic() + _STATE_REQUEST_COOLDOWN
+            # Said here and nowhere else: the lamp is not asked again, so
+            # this line is not come to a second time.
             _LOGGER.warning(
                 "%s (%s) refused the batched state request "
-                "%d times in a row, most recently: %s. %s "
+                "%d times in a row, most recently: %s. It is not asked again "
+                "this session: its state is read on every connect instead. "
                 "Commands still work; properties a read of the state does not "
                 "carry stay unknown. Please report this model",
                 self.address,
                 self._model_and_firmware(),
                 _STATE_REQUEST_ATTEMPTS,
                 err,
-                "Not asking again this session."
-                if served_a_cooldown
-                else f"Pausing it for {int(_STATE_REQUEST_COOLDOWN // 60)} minutes.",
             )
             return _Asked.REFUSED
         except LinkLostError as err:
@@ -780,7 +759,7 @@ class GlowriumCoordinator:
             # Noted in case it never does (the link's _LOST_GRACE).
             turn.in_doubt()
             return _Asked.LOST
-        self._state_request_failures = 0  # and the write was acknowledged
+        self._state_request_refusals = 0  # accepted: the count starts again
         try:
             asked = frozenset(STATE_KEYS)
             async with asyncio.timeout(_REPORT_TIMEOUT):
@@ -974,22 +953,16 @@ class GlowriumCoordinator:
         """
         if not self._brings_up or self._activation_checked:
             return
-        if self._state_request_muted:
-            # This device is not reporting its properties, so 0x14 can never
-            # arrive. Waiting for it on every connect is pure latency - and the
-            # wait happens while the lock is held, so it delays anything queued
-            # behind it - while a device whose activation flag cannot be read
-            # must never be activated blind.
-            self._activation_checked = True
-            return
-        # Wait (briefly) for the initial state - including 0x14 - to arrive.
-        for _ in range(12):
-            if KEY_ACTIVATED in self.state or not turn.up:
-                break
-            await asyncio.sleep(0.25)
+        # Judged on the flag as the mirror holds it now, whichever way it
+        # came: the state request asked for it and waited for the report, and
+        # read where the lamp did not report. Nothing more is waited for
+        # here - the link's lock is held, and a command may be queued behind
+        # it. A flag that comes later is there for the next first exchange.
+        #
         # On the flag itself, both ways. Only a plain no is a lamp that has to
         # be brought up, and only a plain yes settles the question for the
-        # session: a number or a text there reads as true and says neither.
+        # session: a number or a text there reads as true and says neither,
+        # and a lamp whose flag is not known is never activated blind.
         if self.activated is False:
             await self._async_activate(turn)
         if self.activated is True:

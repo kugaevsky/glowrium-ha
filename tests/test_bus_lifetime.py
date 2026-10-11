@@ -1185,8 +1185,9 @@ async def test_a_call_waiting_its_turn_when_the_link_drops_ends_as_a_lost_link(
     assert coordinator.device_info == {}
     # A link that was lost, and not a lamp that refused: nothing is counted
     # towards asking it no more.
-    assert coordinator._state_request_failures == 0
-    assert not coordinator._state_request_muted
+    asking = coordinator.diagnostics()["link"]
+    assert asking["state_request_refusals"] == 0
+    assert asking["state_request_paused"] is False
     assert bus.closings == 1
     assert client._backend is not None
     assert client._backend._bus is None
@@ -1619,7 +1620,6 @@ def _coordinator_on_a_clock(
         keeper=EntryKeeper(hass, entry or _an_entry(hass)),
     )
     clock = _Clock()
-    monkeypatch.setattr(coordinator_module, "monotonic", clock)
     monkeypatch.setattr(link_module, "monotonic", clock)
     dial, dialled = _timed(host, clock)
     lamp_of(coordinator).dials_through(dial)
@@ -2327,10 +2327,9 @@ async def _holding(
     state and answering - and what that left behind is cleared away: what the
     lamp was written and read, and the mirror. What the lamp is asked from
     here on is the test's, and the mirror holds what the test made it hear.
-    The lamp's state can be read as well, as a lamp that is read first is.
+    The lamp's state can be read as well, as a lamp that will not report is.
     """
     clock = _Clock()
-    monkeypatch.setattr(coordinator_module, "monotonic", clock)
     monkeypatch.setattr(link_module, "monotonic", clock)
     lamp = ScriptedLamp()
     lamp.answers({KEY_POWER: True, KEY_ACTIVATED: True})
@@ -2378,14 +2377,16 @@ async def test_a_link_called_not_connected_and_never_dropped_is_let_go(
     that the link had dropped - due two seconds later, as on every other cycle
     that day - never came. The client went on reading as connected, so nothing
     dialled again. Five hours, until somebody pressed a button.
+
+    A lamp is asked first now, and read after. A read that answers then is
+    the lamp speaking, and settles it; here nothing answers after the
+    request has failed, and the link is in doubt from then on.
     """
     coordinator, lamp, held, clock = await _holding(hass, monkeypatch)
-    coordinator._state_request_failures = 1  # a lamp that is read first
     lamp.fails_writes(BleakError(_NOT_CONNECTED))
+    lamp.fails_reads(BleakError(_NOT_CONNECTED))
 
-    assert await coordinator._request_state(
-        turn_over(coordinator, held)
-    )  # the read did answer
+    assert not await coordinator._request_state(turn_over(coordinator, held))
     clock.now += 5
     await _tick(link_of(coordinator), hass)  # inside the grace BlueZ is given
     assert link_of(coordinator).client is held
@@ -2407,7 +2408,6 @@ async def test_a_lamp_that_speaks_again_is_not_let_go(
     it says afterwards settles it, whatever BlueZ called the link before.
     """
     coordinator, lamp, held, clock = await _holding(hass, monkeypatch)
-    coordinator._state_request_failures = 1
     lamp.fails_writes(BleakError("GATT Protocol Error: Unlikely Error"))
     await coordinator._request_state(turn_over(coordinator, held))
 
@@ -2425,8 +2425,8 @@ async def test_a_link_bluez_did_report_dropped_is_not_hung_up_twice(
 ) -> None:
     """The ordinary case stays as it was: BlueZ reports, and that is the end of it."""
     coordinator, lamp, old, clock = await _holding(hass, monkeypatch)
-    coordinator._state_request_failures = 1
     lamp.fails_writes(BleakError(_NOT_CONNECTED), times=1)
+    lamp.fails_reads(BleakError(_NOT_CONNECTED))  # nor does a read answer
     await coordinator._request_state(turn_over(coordinator, old))
     assert link_of(coordinator).lost is not None
 
@@ -2631,7 +2631,6 @@ async def test_a_refusal_is_not_taken_for_a_link_that_is_going(
 ) -> None:
     """A lamp that says no has answered; nothing about it is waiting to drop."""
     coordinator, lamp, held, clock = await _holding(hass, monkeypatch)
-    coordinator._state_request_failures = 1
     lamp.fails_writes(BleakError("Insufficient authorization (8)"))
 
     await coordinator._request_state(turn_over(coordinator, held))

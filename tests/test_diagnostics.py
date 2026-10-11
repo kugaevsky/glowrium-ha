@@ -18,7 +18,6 @@ from pytest_homeassistant_custom_component.common import MockConfigEntry
 
 from custom_components.glowrium import (
     cbor,
-    coordinator as coordinator_module,
     diagnostics,
     link as link_module,
     protocol,
@@ -837,19 +836,14 @@ async def _hold(
             id="silence",
         ),
         pytest.param(
-            lambda c: setattr(c, "_state_request_failures", 1),
+            lambda c: setattr(c, "_state_request_refusals", 1),
             {"state_request_refusals": 1},
             id="a refusal",
         ),
         pytest.param(
-            lambda c: setattr(c, "_state_request_muted_until", _NOW + 60),
-            {"state_request_paused": True},
-            id="the state request paused",
-        ),
-        pytest.param(
-            lambda c: setattr(c, "_state_request_given_up", True),
-            {"state_request_paused": True},
-            id="the state request given up",
+            lambda c: setattr(c, "_state_request_refusals", 3),
+            {"state_request_refusals": 3, "state_request_paused": True},
+            id="the lamp no longer asked",
         ),
         pytest.param(
             lambda c: setattr(link_of(c), "stuck_hang_ups", 2),
@@ -887,7 +881,6 @@ async def test_each_field_of_the_link_section_follows_its_own_source(
     """
     entry = await _a_lamp_that_has_reported(hass)
     coordinator = entry.runtime_data
-    monkeypatch.setattr(coordinator_module, "monotonic", lambda: _NOW)
     monkeypatch.setattr(link_module, "monotonic", lambda: _NOW)
     link_of(coordinator).last_answer = _NOW
     arranged = arrange(coordinator)
