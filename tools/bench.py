@@ -21,13 +21,15 @@ reprovision somebody's lamp because a flag read back wrong. Priming, though,
 corrects a drifted clock - that is the integration's behaviour, not the
 bench's.
 
-It speaks to the lamp as Home Assistant does: the link the coordinator holds
-makes the connect and the first exchange on it, and the coordinator's commands
-do the writing. It reads nothing of its own. The probes it once carried - of
-the DST convention, of the clock resync, of what makes the lamp report its
-curve - had their answers, which ARCHITECTURE.md records, and were retired
-with #21; they are in this file's history and run from a checkout of the
-code they were written against.
+It speaks to the lamp as Home Assistant does. The coordinator is built with a
+keeper of the bench's own and started as the setup of a config entry starts
+it: the first connect and the first exchange on it are work the keeper is
+handed, and the coordinator's commands do the writing. It reads nothing of
+its own, and reaches for nothing the integration keeps to itself. The probes
+it once carried - of the DST convention, of the clock resync, of what makes
+the lamp report its curve - had their answers, which ARCHITECTURE.md records,
+and were retired with #21; they are in this file's history and run from a
+checkout of the code they were written against.
 
 Docker on macOS cannot reach the host's Bluetooth controller, so this runs
 directly on the machine. The address here is a CoreBluetooth UUID, not a MAC.
@@ -43,7 +45,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
-from collections.abc import Coroutine
+from collections.abc import Callable, Coroutine
 from dataclasses import dataclass
 from datetime import datetime
 import logging
@@ -68,7 +70,7 @@ from custom_components.glowrium.const import (
     STATE_KEYS,
 )
 from custom_components.glowrium.coordinator import GlowriumCoordinator
-from custom_components.glowrium.link import Link, dial_by_bluetooth
+from custom_components.glowrium.link import Dial, dial_by_bluetooth
 
 # Probe brightness: pick whichever end the lamp is not already near, so the
 # change is visible and the restore is meaningful.
@@ -179,32 +181,94 @@ class _Masked:
         return getattr(self._stream, name)
 
 
+# How often the bench's clock comes round: as Home Assistant's timer does.
+_TICK = 30.0
+
+
 class BenchKeeper:
     """What keeps the coordinator here: this run (``coordinator.Keeper``).
 
-    Home Assistant puts what the device half asks to have started on a
-    config entry or on itself. The bench has neither, and the loop holds a
-    task only weakly, so the keeper holds each for as long as it runs.
-    Nothing here ends before the run does, and the two lifetimes the device
-    half tells apart are one.
+    Home Assistant keeps a coordinator for a config entry: it has an entry
+    to put work on, scanners to hear the lamp through, a dashboard for a
+    repair, a registry for what the lamp says it is, and a home. The bench
+    has a lamp it found a moment ago and the terminal. It starts the work it
+    is handed and holds it - the loop holds a task only weakly - and it
+    ticks the clock; the rest it has nowhere to put, and the integration's
+    log and the report say it.
     """
 
     def __init__(self) -> None:
-        """Hold nothing yet."""
-        self._running: set[asyncio.Task[None]] = set()
+        """Hold nothing yet, and watch nothing."""
+        # Work that ends with the watching, and work that nothing ends.
+        self._spawned: set[asyncio.Task[None]] = set()
+        self._lasting: set[asyncio.Task[None]] = set()
+        self._clock: asyncio.TimerHandle | None = None
 
     def spawn(self, work: Coroutine[Any, Any, None], name: str) -> None:
-        """Start ``work`` and hold it until it is done."""
-        self.run_lasting(work, name)
+        """Start ``work`` and hold it until it is done, or the watching ends."""
+        self._hold(work, name, self._spawned)
 
     def run_lasting(
         self, work: Coroutine[Any, Any, None], name: str
     ) -> asyncio.Task[None]:
         """Start ``work``, hold it until it is done, and return its task."""
+        return self._hold(work, name, self._lasting)
+
+    def _hold(
+        self,
+        work: Coroutine[Any, Any, None],
+        name: str,
+        among: set[asyncio.Task[None]],
+    ) -> asyncio.Task[None]:
         task = asyncio.get_running_loop().create_task(work, name=name)
-        self._running.add(task)
-        task.add_done_callback(self._running.discard)
+        among.add(task)
+        task.add_done_callback(among.discard)
         return task
+
+    def watch(
+        self,
+        advertising: Callable[[bool], None],
+        tick: Callable[[], None],
+    ) -> bool:
+        """Tick as Home Assistant's timer does, and say the lamp is there.
+
+        The bench scanned for the lamp before it built anything, and does
+        not listen to the air after that: it never says the lamp was heard
+        or has gone, and what the link makes of a tick is all that keeps it.
+        """
+        loop = asyncio.get_running_loop()
+
+        def _on_the_clock() -> None:
+            self._clock = loop.call_later(_TICK, _on_the_clock)
+            tick()
+
+        self._clock = loop.call_later(_TICK, _on_the_clock)
+        return True
+
+    def unwatch(self) -> None:
+        """Stop the clock, and end the work that was to end with the watching."""
+        if self._clock is not None:
+            self._clock.cancel()
+            self._clock = None
+        for task in list(self._spawned):
+            task.cancel()
+
+    def stack_fault(self, count: int | None) -> None:
+        """Do nothing: the integration's log says it, and there is no dashboard."""
+
+    def lamp_described(
+        self, model_id: str | None, firmware: str | None, serial: str | None
+    ) -> None:
+        """Do nothing: the report prints what the coordinator has of it."""
+
+    def coordinates(self) -> tuple[float, float]:
+        """Answer zero and zero: the bench has no home."""
+        return 0.0, 0.0
+
+    async def idle(self) -> None:
+        """Wait until none of the work this keeper started is still running."""
+        while running := self._spawned | self._lasting:
+            await asyncio.wait(running)
 
 
 def _device_info(coordinator: GlowriumCoordinator) -> str:
@@ -221,15 +285,6 @@ def _device_info(coordinator: GlowriumCoordinator) -> str:
         return str(info)
     said = identity.described(coordinator.model_id, coordinator.sw_version)
     return f"{said}; {len(info)} fields ({_NOT_SHOWN})"
-
-
-def _link_of(coordinator: GlowriumCoordinator) -> Link:
-    """Return the link the coordinator holds.
-
-    The bench's one door to it, as ``link_of`` is the tests': the connect is
-    the link's to make, and nothing else of the link's is reached for.
-    """
-    return coordinator._link  # noqa: SLF001
 
 
 def _reports(coordinator: GlowriumCoordinator) -> int:
@@ -381,23 +436,49 @@ async def main() -> int:
         return 1
 
     _PRIVACY.address = device.address
-    coordinator = GlowriumCoordinator(
+    keeper = BenchKeeper()
+    coordinator = _coordinator(
         device.address,
         device.name,
-        keeper=BenchKeeper(),
-        dial=dial_by_bluetooth(lambda: device, device.address, device.name),
+        keeper,
+        dial_by_bluetooth(lambda: device, device.address, device.name),
     )
-    # The bench never provisions anything. Saying so here beats trusting that
-    # 0x14 reads back the way we expect.
-    coordinator._activation_checked = True  # noqa: SLF001
 
     print(f"\nconnecting to {device.name} ({_address(device.address)})…")
-    try:
-        # The connect Home Assistant makes at start-up: the link, then the
-        # first exchange on it - the state, the clock, the device info.
-        await _link_of(coordinator).connect()
-    except Exception as err:
-        print(f"connect failed: {err!r}")
+    return await _drive(coordinator, keeper, args)
+
+
+def _coordinator(
+    address: str, name: str, keeper: BenchKeeper, dial: Dial
+) -> GlowriumCoordinator:
+    """Build the coordinator the bench drives: the integration's own.
+
+    Kept by the bench, dialling the lamp the bench found - and bringing no
+    lamp up. The bench never provisions anything, and saying so here beats
+    trusting that 0x14 reads back the way we expect.
+    """
+    return GlowriumCoordinator(address, name, keeper=keeper, dial=dial, bring_up=False)
+
+
+async def _drive(
+    coordinator: GlowriumCoordinator, keeper: BenchKeeper, args: argparse.Namespace
+) -> int:
+    """Start the coordinator as the setup of a config entry does, and report.
+
+    The connect Home Assistant makes at start-up - the link, then the first
+    exchange on it: the state, the clock, the device info - is work the
+    keeper is handed by the start. The bench waits for it to be done. How it
+    ended is not an error to catch here; the link says whether it is held.
+    """
+    await coordinator.async_start()
+    await keeper.idle()
+    if not coordinator.diagnostics()["link"]["connected"]:
+        print(
+            "connect failed: no link is held after the first connect. "
+            "The integration's log says how it ended (--debug)"
+        )
+        await coordinator.async_stop()
+        await keeper.idle()
         return 1
 
     _report(coordinator)
@@ -417,6 +498,7 @@ async def main() -> int:
     # Let go the way the integration does: through the hang-up, which is what
     # closes the bus behind the client on a BlueZ host.
     await coordinator.async_stop()
+    await keeper.idle()
     print("\ndisconnected")
     return 0
 

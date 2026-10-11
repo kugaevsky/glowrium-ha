@@ -224,6 +224,7 @@ class GlowriumCoordinator:
         keeper: Keeper,
         dial: Dial,
         unclosed: Unclosed | None = None,
+        bring_up: bool = True,
     ) -> None:
         """Initialize the coordinator for the device at ``address``.
 
@@ -242,8 +243,15 @@ class GlowriumCoordinator:
         ``unclosed`` is what coordinators for this lamp before this one could
         neither hang up nor close (see ``Unclosed``). The integration keeps one
         for each lamp and hands it to every coordinator it makes for it.
+
+        ``bring_up`` is whether a lamp that says it is not activated is
+        brought up (see ``_async_activate_if_needed``). It is, unless whoever
+        builds the coordinator is only there to look at a lamp: the bench
+        must not be able to provision somebody's lamp because a flag read
+        back wrong.
         """
         self._keeper = keeper
+        self._brings_up = bring_up
         self.address = address
         self.name = name
         # What the lamp has said and what was written to it (mirror.py); the
@@ -962,7 +970,7 @@ class GlowriumCoordinator:
         background connect made, or on one a command took, when the poll comes
         to it. Never from a command itself, which takes its link without one.
         """
-        if self._activation_checked:
+        if not self._brings_up or self._activation_checked:
             return
         if self._state_request_muted:
             # This device is not reporting its properties, so 0x14 can never

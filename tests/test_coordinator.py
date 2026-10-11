@@ -574,6 +574,35 @@ async def test_a_device_reporting_unactivated_is_brought_up(
     assert coordinator._activation_checked is True
 
 
+@pytest.mark.parametrize("bring_up", [True, False], ids=["as built", "told not to"])
+async def test_a_coordinator_told_not_to_brings_no_lamp_up(
+    hass: HomeAssistant, bring_up: bool
+) -> None:
+    """Whoever only looks at a lamp says so where the coordinator is built.
+
+    A lamp that reports itself not activated is brought up on the first
+    exchange: that is what a factory-reset lamp needs of Home Assistant. The
+    bench checks somebody's lamp and must never activate one behind their
+    back, so it builds the coordinator told not to - and nothing of the
+    sequence is written, however the flag reads.
+    """
+    lamp = ScriptedLamp()
+    lamp.answers({KEY_ACTIVATED: False})
+    coordinator = lamp.coordinator(hass, bring_up=bring_up)
+
+    await link_of(coordinator).connect()
+
+    commands = [
+        cbor.decode(frame) for uuid, frame in lamp.written if uuid == WRITE_UUID
+    ]
+    if bring_up:
+        assert commands[0] == {0x53: 300}
+        assert commands[-1] == {KEY_ACTIVATED: True}
+    else:
+        assert commands == []
+        assert coordinator.activated is False
+
+
 async def test_activated_property(hass: HomeAssistant) -> None:
     """Activated reflects the device's 0x14 flag."""
     coordinator, _ = _at_a_lamp(hass)

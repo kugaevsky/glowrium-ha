@@ -429,20 +429,24 @@ class ScriptedLamp:
         """Hold every dial until ``found`` is set: a lamp that is slow to connect."""
         self._found = found
 
-    def coordinator(
+    def coordinator(  # noqa: PLR0913 - what a coordinator is built from, by name
         self,
         hass: HomeAssistant | None,
         name: str = "Glowrium-G7",
         model_id: str | None = None,
         unclosed: Unclosed | None = None,
         keeper: Keeper | None = None,
+        *,
+        bring_up: bool = True,
     ) -> GlowriumCoordinator:
         """Return a coordinator that dials this lamp.
 
         ``unclosed`` is what coordinators for the lamp before this one could
         not let go of, when a test has two of them in turn. ``keeper`` is
         what keeps the coordinator; left out, a ``ScriptedKeeper`` on
-        ``hass``, which ``keeper_of`` hands back.
+        ``hass``, which ``keeper_of`` hands back. ``bring_up`` is whether a
+        lamp that says it is not activated is brought up, as it is unless
+        the coordinator is told otherwise.
         """
         if keeper is None:
             keeper = ScriptedKeeper(hass)
@@ -453,6 +457,7 @@ class ScriptedLamp:
             keeper=keeper,
             dial=self.dial,
             unclosed=unclosed,
+            bring_up=bring_up,
         )
         _LAMPS[coordinator] = self
         if isinstance(keeper, ScriptedKeeper):

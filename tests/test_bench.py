@@ -5,25 +5,32 @@ report is what one looks at next to a lamp, and what gets shown to somebody
 else when the lamp does something nobody expected.
 """
 
+import argparse
 import ast
 import asyncio
 import gc
+import inspect
 import io
 import logging
 from types import ModuleType
 import weakref
 
+from homeassistant.exceptions import HomeAssistantError
 import pytest
 
 from custom_components.glowrium import cbor
 from custom_components.glowrium.const import (
+    INFO_UUID,
+    KEY_ACTIVATED,
     KEY_BRIGHTNESS,
     KEY_LATITUDE,
     KEY_LONGITUDE,
     KEY_POWER,
+    WRITE_UUID,
 )
 from custom_components.glowrium.coordinator import (
     GlowriumCoordinator,
+    Keeper,
     _parse_device_info,
 )
 
@@ -264,16 +271,16 @@ def test_the_report_lists_a_property_nobody_named(
     assert "0x60 ?" in capsys.readouterr().out
 
 
-def test_the_bench_reaches_the_coordinator_by_two_private_names_only() -> None:
+def test_the_bench_reaches_for_no_private_name_of_the_integration() -> None:
     """The bench speaks to the lamp as Home Assistant does: by the interface.
 
-    Two things it reaches for that are not on it: the flag that keeps the
-    bring-up from ever running on a bench, and the link the coordinator
-    holds, through which it makes the connect Home Assistant would make at
-    start-up - its one door to the link, as ``link_of`` is the tests'. The
-    probes that reached for the client, the lock and the rest were retired
-    with #21: mypy does not read this file, so a reach that outlived its
-    name would only have shown next to a lamp.
+    It reached for two things that are not on it: the flag that keeps the
+    bring-up from running, and the link the coordinator holds, for the
+    connect Home Assistant makes at start-up. It says the first where it
+    builds the coordinator and has the second made by starting it (#54), and
+    reaches for nothing: not on a coordinator, and not by importing a name
+    the integration keeps to itself. mypy does not read this file, so a
+    reach that outlived its name would only have shown next to a lamp.
     """
     tree = ast.parse((ROOT / "tools" / "bench.py").read_text(encoding="utf-8"))
     reached = sorted(
@@ -282,8 +289,197 @@ def test_the_bench_reaches_the_coordinator_by_two_private_names_only() -> None:
             for node in ast.walk(tree)
             if isinstance(node, ast.Attribute)
             and node.attr.startswith("_")
+            and not node.attr.startswith("__")
             and isinstance(node.value, ast.Name)
             and node.value.id == "coordinator"
         }
     )
-    assert reached == ["_activation_checked", "_link"]
+    imported = sorted(
+        one.name
+        for node in ast.walk(tree)
+        if isinstance(node, ast.ImportFrom)
+        and (node.module or "").startswith("custom_components.glowrium")
+        for one in node.names
+        if one.name.startswith("_")
+    )
+    assert reached == []
+    assert imported == []
+
+
+def test_the_bench_keeps_a_coordinator_by_all_that_the_device_half_asks(
+    bench: ModuleType,
+) -> None:
+    """The bench's keeper offers each thing a keeper is asked for, as it is asked.
+
+    Home Assistant's keeper is held to the protocol by the type checker,
+    where it is handed to a coordinator. The type checker does not read the
+    bench, and what the bench's keeper lacks would only show next to a lamp,
+    at the moment the device half asked for it.
+    """
+    asked = {
+        name: inspect.signature(member)
+        for name, member in vars(Keeper).items()
+        if not name.startswith("_") and callable(member)
+    }
+    assert sorted(asked) == [
+        "coordinates",
+        "lamp_described",
+        "run_lasting",
+        "spawn",
+        "stack_fault",
+        "unwatch",
+        "watch",
+    ]
+    for name, signature in asked.items():
+        offered = inspect.signature(getattr(bench.BenchKeeper, name))
+        assert list(offered.parameters) == list(signature.parameters), name
+
+
+def _at_the_bench(
+    bench: ModuleType, lamp: ScriptedLamp
+) -> tuple[GlowriumCoordinator, object]:
+    """Return a coordinator at ``lamp`` built as the bench builds its own.
+
+    By the bench: kept by its keeper, and dialling the scripted lamp where
+    the bench dials the one it found.
+    """
+    keeper = bench.BenchKeeper()
+    return bench._coordinator(_ADDRESS, "bench", keeper, lamp.dial), keeper
+
+
+def _nothing_left_running() -> bool:
+    return asyncio.all_tasks() == {asyncio.current_task()}
+
+
+async def test_the_bench_drives_a_lamp_as_the_setup_of_an_entry_does(
+    bench: ModuleType, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Started, not connected by hand: the first connect is work its keeper starts.
+
+    The bench made the connect itself, through the link the coordinator
+    holds. It starts the coordinator now, as Home Assistant does: the keeper
+    watches, the first connect and the first exchange on it run as the work
+    the keeper was handed, and the bench waits for that work and reports.
+    A lamp that says it is not activated is not brought up. And the run ends
+    with the link hung up and nothing of the keeper's left running.
+    """
+    lamp = ScriptedLamp()
+    lamp.answers({KEY_ACTIVATED: False, KEY_POWER: True, KEY_BRIGHTNESS: 70})
+    lamp.readable(INFO_UUID, b"pkey:Glowrium-C051;version:4;;")
+    coordinator, keeper = _at_the_bench(bench, lamp)
+
+    ended = await bench._drive(
+        coordinator, keeper, argparse.Namespace(watch=0, commands=False)
+    )
+
+    printed = capsys.readouterr().out
+    assert ended == 0
+    assert "model Glowrium-C051, firmware 4" in printed
+    assert "brightness     70" in printed
+    assert printed.rstrip().endswith("disconnected")
+    assert lamp.dials == 1
+    assert len(lamp.asked) == 1  # the first exchange: the state, asked for
+    assert lamp.read == [INFO_UUID]  # and the device info, read last
+    assert not [uuid for uuid, _frame in lamp.written if uuid == WRITE_UUID]
+    assert lamp.links[0].hung_up == 1
+    assert _nothing_left_running()
+
+
+async def test_the_bench_says_that_the_first_connect_came_to_nothing(
+    bench: ModuleType, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A check that did not run says so, and does not print a report of nothing.
+
+    The first connect is not the bench's to make any more, so how it ended is
+    not an error the bench catches: it is read off what the link says of
+    itself once the work is done. No link held is a connect that failed.
+    """
+    lamp = ScriptedLamp()
+    lamp.out_of_range()
+    coordinator, keeper = _at_the_bench(bench, lamp)
+
+    ended = await bench._drive(
+        coordinator, keeper, argparse.Namespace(watch=0, commands=False)
+    )
+
+    printed = capsys.readouterr().out
+    assert ended == 1
+    assert "connect failed" in printed
+    assert "keys reported" not in printed
+    assert _nothing_left_running()
+
+
+async def test_the_bench_has_no_home_to_sync_a_lamp_to(bench: ModuleType) -> None:
+    """Sync location at the bench is refused, as a home that was never set is.
+
+    Its keeper answers zero and zero. Anything else would be written to
+    somebody's lamp as where it stands.
+    """
+    lamp = ScriptedLamp()
+    coordinator, _keeper = _at_the_bench(bench, lamp)
+
+    with pytest.raises(HomeAssistantError) as refused:
+        await coordinator.async_sync_location()
+
+    assert refused.value.translation_key == "home_location_not_set"
+    assert lamp.dials == 0
+
+
+async def test_the_bench_ends_with_its_watching_the_work_that_was_to_end_with_it(
+    bench: ModuleType,
+) -> None:
+    """The two lifetimes of work are told apart by the bench's keeper as well.
+
+    A reconnect on its way when the run ends is ended with it, as an unload
+    ends one in Home Assistant. A hang-up is not: cut short, it leaves the
+    link to the lamp standing behind a tool that has gone home.
+    """
+    hung_up: list[int] = []
+    release = asyncio.Event()
+
+    async def _a_reconnect() -> None:
+        await asyncio.Event().wait()
+
+    async def _a_hang_up() -> None:
+        await release.wait()
+        hung_up.append(1)
+
+    keeper = bench.BenchKeeper()
+    keeper.watch(lambda _present: None, lambda: None)
+    keeper.spawn(_a_reconnect(), "glowrium reconnect")
+    lasting = keeper.run_lasting(_a_hang_up(), "glowrium hang up")
+    await asyncio.sleep(0)
+
+    keeper.unwatch()
+    await asyncio.sleep(0)
+    assert not lasting.done()  # the hang-up goes on...
+
+    release.set()
+    async with asyncio.timeout(1):
+        await keeper.idle()  # ...and the reconnect is no longer waited for
+    assert hung_up == [1]
+    assert _nothing_left_running()
+
+
+async def test_the_clock_of_the_bench_ticks_until_the_watching_ends(
+    bench: ModuleType, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The link is looked over on the clock, as Home Assistant's timer has it.
+
+    A link a command took is greeted by a tick, one that went quiet is asked
+    again, one that dropped is dialled again: without the clock the bench
+    would show a lamp held by less than an installation holds it by.
+    """
+    monkeypatch.setattr(bench, "_TICK", 0.01)
+    ticks: list[int] = []
+    keeper = bench.BenchKeeper()
+
+    assert keeper.watch(lambda _present: None, lambda: ticks.append(1)) is True
+    await asyncio.sleep(0.05)
+    assert len(ticks) >= 2  # it comes round again
+
+    keeper.unwatch()
+    seen = len(ticks)
+    await asyncio.sleep(0.05)
+    assert len(ticks) == seen
+    keeper.unwatch()  # and a second time does no harm
