@@ -4,6 +4,7 @@ from collections.abc import Iterator
 import importlib.util
 import logging
 from pathlib import Path
+import re
 import sys
 from types import ModuleType
 
@@ -47,6 +48,16 @@ def slow_steps_go_unsaid() -> Iterator[None]:
     asyncio_says.addFilter(_is_not_about_a_slow_step)
     yield
     asyncio_says.removeFilter(_is_not_about_a_slow_step)
+
+
+def anchors(markdown: str) -> set[str]:
+    """Return the anchors GitHub gives the headings of a Markdown document."""
+    titles = (
+        line.lstrip("#").strip().lower()
+        for line in markdown.splitlines()
+        if line.startswith("#")
+    )
+    return {re.sub(r"[^\w -]", "", title).replace(" ", "-") for title in titles}
 
 
 def load_tool(name: str) -> ModuleType:

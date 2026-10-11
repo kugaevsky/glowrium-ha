@@ -1,5 +1,9 @@
 """Tests that the automations the README shows can be run as they are written.
 
+One test is of another thing: that every heading of the contributor guide
+the README sends its reader to is there
+(``test_every_heading_of_the_guide_the_readme_links_to_is_there``).
+
 The examples are found by a rule, so that one added later is held to the same.
 The section runs from the heading ``## Automation examples`` to the next
 heading of that level, and every fenced block in it is one automation, written
@@ -21,7 +25,7 @@ import yaml
 from custom_components.glowrium.const import OPERATING_MODES
 from custom_components.glowrium.models import DEFAULT_MODEL, MODELS
 
-from .conftest import ROOT
+from .conftest import ROOT, anchors
 
 README = ROOT / "README.md"
 HEADING = "## Automation examples"
@@ -204,3 +208,28 @@ def test_an_example_names_only_options_the_selects_offer(source: str) -> None:
 
             assert offered is not None, f"{entity} is neither of the lamp's selects"
             assert set(named) <= offered, f"{entity} does not offer {named}"
+
+
+GUIDE = ROOT / "CONTRIBUTING.md"
+
+
+def test_every_heading_of_the_guide_the_readme_links_to_is_there() -> None:
+    """Where the README sends its reader, the contributor guide has a heading.
+
+    The README does not say what to send of a lamp, or of a host, that nobody
+    working on this has: it points at the part of the guide that does, and so
+    do the warnings it explains. A heading reworded there, or a link misspelt
+    here, leaves the reader at the top of a long page with nothing to say
+    what was meant.
+
+    Found by the name of the file with an anchor behind it, wherever that
+    stands: in a link, in a link with a title, in an address written out.
+    """
+    asked_for = re.findall(
+        r"CONTRIBUTING\.md#([\w-]+)", README.read_text(encoding="utf-8")
+    )
+    assert asked_for, "the README names no heading of the guide"
+
+    there = anchors(GUIDE.read_text(encoding="utf-8"))
+
+    assert [anchor for anchor in asked_for if anchor not in there] == []

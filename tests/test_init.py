@@ -80,7 +80,7 @@ from custom_components.glowrium.number import (
 from custom_components.glowrium.select import GlowriumLightingModeSelect
 from custom_components.glowrium.time import GlowriumTimerEnd, GlowriumTimerStart
 
-from .conftest import ROOT
+from .conftest import ROOT, anchors
 from .lamp import ScriptedLamp, in_range, link_of
 
 ADDRESS = "AA:BB:CC:DD:EE:FF"
@@ -1743,16 +1743,6 @@ async def test_a_model_without_a_profile_is_put_in_front_of_its_owner_at_start(
     assert address.replace(":", "") not in notice.issue_id.lower()
 
 
-def _anchors(markdown: str) -> set[str]:
-    """Return the anchors GitHub gives the headings of a Markdown document."""
-    titles = (
-        line.lstrip("#").strip().lower()
-        for line in markdown.splitlines()
-        if line.startswith("#")
-    )
-    return {re.sub(r"[^\w -]", "", title).replace(" ", "-") for title in titles}
-
-
 async def test_the_notice_links_to_a_heading_the_guide_has(
     hass: HomeAssistant,
 ) -> None:
@@ -1768,7 +1758,7 @@ async def test_the_notice_links_to_a_heading_the_guide_has(
     assert notice.learn_more_url is not None
     page, _, anchor = notice.learn_more_url.partition("#")
     assert page.endswith("/CONTRIBUTING.md")
-    assert anchor in _anchors((ROOT / "CONTRIBUTING.md").read_text())
+    assert anchor in anchors((ROOT / "CONTRIBUTING.md").read_text())
 
 
 async def test_a_choice_is_written_for_a_model_without_a_profile_as_it_was(
