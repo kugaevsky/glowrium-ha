@@ -2380,7 +2380,10 @@ async def test_a_link_called_not_connected_and_never_dropped_is_let_go(
 
     A lamp is asked first now, and read after. A read that answers then is
     the lamp speaking, and settles it; here nothing answers after the
-    request has failed, and the link is in doubt from then on.
+    request has failed. In the first exchange such a link is let go of at
+    once, for answering nothing, and the doubt is what is left where the
+    exchange was cut short before it could say so - a read that hangs to
+    the deadline. The step is run alone here, and leaves the doubt noted.
     """
     coordinator, lamp, held, clock = await _holding(hass, monkeypatch)
     lamp.fails_writes(BleakError(_NOT_CONNECTED))
@@ -2409,7 +2412,9 @@ async def test_a_lamp_that_speaks_again_is_not_let_go(
     """
     coordinator, lamp, held, clock = await _holding(hass, monkeypatch)
     lamp.fails_writes(BleakError("GATT Protocol Error: Unlikely Error"))
+    lamp.fails_reads(BleakError("GATT Protocol Error: Unlikely Error"))
     await coordinator._request_state(turn_over(coordinator, held))
+    assert link_of(coordinator).lost is not None  # in doubt, until it speaks
 
     clock.now += 5
     lamp.say(_STATE)  # and it is still talking
@@ -2632,6 +2637,9 @@ async def test_a_refusal_is_not_taken_for_a_link_that_is_going(
     """A lamp that says no has answered; nothing about it is waiting to drop."""
     coordinator, lamp, held, clock = await _holding(hass, monkeypatch)
     lamp.fails_writes(BleakError("Insufficient authorization (8)"))
+    # Nor does a read answer: what is seen is what the refusal left, and not
+    # a doubt that a read has since settled.
+    lamp.fails_reads(BleakError("Insufficient authorization (8)"))
 
     await coordinator._request_state(turn_over(coordinator, held))
     clock.now += 60

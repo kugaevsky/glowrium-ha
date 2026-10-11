@@ -734,11 +734,10 @@ async def test_a_lamp_that_keeps_refusing_is_asked_three_times_and_then_only_rea
     every time. It is asked and then read - in that order, each time: a
     refusal is the lamp answering, and what it has to say comes by the read.
     After the third in a row it is not asked again, and the log says so
-    once: what the lamp is, that commands still work, what stays unknown,
-    and that this is worth reporting. There was a pause of ten minutes after
-    the third and a second run after it, from when a link that dropped was
-    counted as a refusal. A link that drops is counted as nothing now, so
-    three in a row are three times the lamp said no.
+    once: what the lamp is, that it is read from here on, that commands
+    still work, what stays unknown, and that this is worth reporting. Three
+    in a row are three times the lamp said no: a link that drops under the
+    request is counted as nothing.
     """
     coordinator, lamp, link = await _holding_a_link(hass, "Glowrium-G8")
     _refusing(lamp)
@@ -759,7 +758,9 @@ async def test_a_lamp_that_keeps_refusing_is_asked_three_times_and_then_only_rea
     assert "Commands still work" in said
     assert "stay unknown" in said
     assert "Please report" in said
-    for word in ("paus", "minute", "again later"):
+    assert "not asked again this session" in said
+    assert "read on every connect instead" in said
+    for word in ("paus", "minute"):
         assert word not in said.lower()
     assert coordinator.diagnostics()["link"]["state_request_paused"] is True
 
@@ -824,6 +825,47 @@ async def test_a_link_that_drops_under_the_request_is_not_a_refusal(
     assert len(lamp.asked) == 8  # every time: two refusals, and never a third
     assert _said_of_a_refusal(caplog) == []
     assert coordinator.diagnostics()["link"]["state_request_paused"] is False
+
+
+@pytest.mark.parametrize(
+    ("the_request", "readable", "answered"),
+    [
+        pytest.param(_REFUSAL, False, True, id="refused, and nothing to read"),
+        pytest.param(
+            BleakError("[org.bluez.Error.Failed] Not connected"),
+            True,
+            True,
+            id="lost under the request, and the read answers",
+        ),
+        pytest.param(
+            BleakError("[org.bluez.Error.Failed] Not connected"),
+            False,
+            False,
+            id="lost under the request, and nothing to read",
+        ),
+    ],
+)
+async def test_the_link_has_answered_when_the_lamp_said_anything_at_all(
+    hass: HomeAssistant, the_request: BleakError, readable: bool, answered: bool
+) -> None:
+    """A refusal is the lamp answering, and so is a read that comes back.
+
+    Whether the link answered is what the link goes by: one that answers
+    nothing is let go of at once. A lamp that says no to the request has
+    spoken, whether or not it can be read after. A request that met a link
+    going down has not - but if the read after it comes back, the lamp is
+    there, and whatever doubt the failed request left is settled by it.
+    """
+    coordinator, lamp, link = await _holding_a_link(hass)
+    lamp.fails_writes(the_request)
+    if readable:
+        lamp.readable(NOTIFY_UUID, cbor.encode({KEY_POWER: True}))
+
+    said = await coordinator._request_state(turn_over(coordinator, link))
+
+    assert said is answered
+    assert lamp.exchanges == _ASKED_THEN_READ
+    assert (link_of(coordinator).lost is None) is answered
 
 
 async def test_a_lamp_that_reports_is_asked_and_never_read(hass: HomeAssistant) -> None:
@@ -925,13 +967,13 @@ async def test_a_lamp_that_answers_with_a_frame_of_which_nothing_is_kept_is_read
     lamp.answers(frame=bytes.fromhex(answer))
     lamp.readable(NOTIFY_UUID, cbor.encode({KEY_POWER: True}))
 
-    for _ in range(2):
+    for _ in range(4):  # one more than it takes of refusals to end the asking
         async with asyncio.timeout(1):
             asked = await coordinator._request_state(turn_over(coordinator, link))
         assert asked is True
 
-    assert lamp.asked == [bytes(STATE_KEYS)] * 2
-    assert lamp.read == [NOTIFY_UUID] * 2
+    assert lamp.asked == [bytes(STATE_KEYS)] * 4
+    assert lamp.read == [NOTIFY_UUID] * 4
     assert coordinator.state == {KEY_POWER: True}  # from the read, and nothing else
 
 
@@ -1537,7 +1579,7 @@ async def test_a_command_connect_reads_nothing(hass: HomeAssistant) -> None:
     Not even the model: it used to read the device-info string on its way to
     the write when the model was not known yet - a read between a button and
     its lamp, and on BlueZ a link with two seconds to live. Nor does it pay
-    for priming first: that costs a device-info read, a state read, the
+    for priming first: that cost a device-info read, a state read, the
     batched request and up to 3 s waiting for the activation flag, all before
     the write and all inside the command budget, and on a lamp where the
     connect alone is marginal that is what turned a working command into a
@@ -1952,7 +1994,7 @@ async def test_the_first_exchange_does_not_wait_for_the_activation_flag(
     count of what was slept, not by the wall.
     """
     monkeypatch.setattr(coordinator_module, "_REPORT_TIMEOUT", 0.05)
-    coordinator, lamp, link = await _holding_a_link(hass)
+    coordinator, lamp, _link = await _holding_a_link(hass)
     slept: list[float] = []
     unpatched = asyncio.sleep
 
@@ -1960,9 +2002,9 @@ async def test_the_first_exchange_does_not_wait_for_the_activation_flag(
         slept.append(delay)
         await unpatched(0)
 
-    monkeypatch.setattr(asyncio, "sleep", _counted)
-
-    await coordinator._greet(turn_over(coordinator, link))
+    with monkeypatch.context() as for_the_exchange:
+        for_the_exchange.setattr(asyncio, "sleep", _counted)
+        await link_of(coordinator).prime_held()
 
     assert slept == []
     assert lamp.exchanges == [
@@ -1975,10 +2017,15 @@ async def test_the_first_exchange_does_not_wait_for_the_activation_flag(
 
 @pytest.mark.parametrize(
     "the_flag_came_by",
-    ["a report", "a read, from a lamp that refuses", "a read, from a lamp only read"],
+    [
+        "a report",
+        "a read, from a lamp that says nothing",
+        "a read, from a lamp that refuses",
+        "a read, from a lamp only read",
+    ],
 )
 async def test_a_lamp_that_says_it_is_not_activated_is_brought_up_in_that_exchange(
-    hass: HomeAssistant, the_flag_came_by: str
+    hass: HomeAssistant, monkeypatch: pytest.MonkeyPatch, the_flag_came_by: str
 ) -> None:
     """A plain no under the flag starts the bring-up, whichever way it came.
 
@@ -1987,9 +2034,12 @@ async def test_a_lamp_that_says_it_is_not_activated_is_brought_up_in_that_exchan
     one that is no longer asked at all. Such a lamp was passed over: its
     flag was taken for one that cannot come, when the read brings it.
     """
+    monkeypatch.setattr(coordinator_module, "_REPORT_TIMEOUT", 0.05)
     coordinator, lamp, link = await _holding_a_link(hass)
     if the_flag_came_by == "a report":
         lamp.answers({KEY_ACTIVATED: False})
+    elif the_flag_came_by == "a read, from a lamp that says nothing":
+        lamp.readable(NOTIFY_UUID, cbor.encode({KEY_ACTIVATED: False}))
     else:
         lamp.fails_writes(_REFUSAL, of=NOTIFY_UUID)
         lamp.readable(NOTIFY_UUID, cbor.encode({KEY_POWER: False}))
@@ -1999,7 +2049,7 @@ async def test_a_lamp_that_says_it_is_not_activated_is_brought_up_in_that_exchan
             lamp.forget()
         lamp.readable(NOTIFY_UUID, cbor.encode({KEY_ACTIVATED: False}))
 
-    await coordinator._greet(turn_over(coordinator, link))
+    await link_of(coordinator).prime_held()  # the first exchange on this link
 
     commands = [
         cbor.decode(frame) for uuid, frame in lamp.written if uuid == WRITE_UUID
@@ -2017,19 +2067,21 @@ async def test_a_flag_that_comes_after_the_exchange_is_acted_on_in_the_next(
     """A lamp whose flag comes later than its answer is brought up next time.
 
     Nothing waits for it within the exchange. It is in the mirror by the
-    next first exchange on a link - the next connect - and judged then: the
-    question was not settled, since only a plain yes settles it.
+    next first exchange - on the next link, after the next connect - and
+    judged then: the question was not settled, since only a plain yes
+    settles it.
     """
     monkeypatch.setattr(coordinator_module, "_REPORT_TIMEOUT", 0.05)
     coordinator, lamp, link = await _holding_a_link(hass)
     lamp.answers({KEY_POWER: True}, only=(KEY_POWER,))  # an answer without the flag
 
-    await coordinator._greet(turn_over(coordinator, link))
+    await link_of(coordinator).prime_held()
     lamp.say(cbor.encode({KEY_ACTIVATED: False}))  # and the flag, after it
 
     assert [uuid for uuid, _frame in lamp.written if uuid == WRITE_UUID] == []
 
-    await coordinator._greet(turn_over(coordinator, link))
+    await link_of(coordinator).hang_up(link)
+    await link_of(coordinator).connect()  # the next link, and its first exchange
 
     commands = [
         cbor.decode(frame) for uuid, frame in lamp.written if uuid == WRITE_UUID
@@ -3252,10 +3304,10 @@ _REWORDED = "GATT Protocol Error: put some other way"
         ),
     ],
 )
-async def test_only_an_application_level_refusal_silences_the_request(
+async def test_only_an_application_level_refusal_ends_the_asking(
     hass: HomeAssistant, error: BleakError, readable: bool, is_a_refusal: bool
 ) -> None:
-    """Silence the request on a refusal, never on anything merely unrecognised.
+    """End the asking on a refusal, never on anything merely unrecognised.
 
     Two attempts to tell the cases apart failed on real hardware. A
     successful read does not prove the device is there: seen on a real G7 in

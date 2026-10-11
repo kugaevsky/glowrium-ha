@@ -126,6 +126,9 @@ the link (see the [changelog](CHANGELOG.md)). A G8 refuses to be asked, so it
 is still read, as before — which should leave a G8 working as it did, and on
 such a host still reconnecting after every read. Neither half of that has been
 run on a G8 since the change; a report from one, good or bad, is very welcome.
+Since then the order has been made the same for every lamp: a G8 is asked
+first and read after, three times, and from then on only read - where it was
+read first from its first refusal on. That has not been run on a G8 either.
 
 ### Tested an unverified model? Please report back 🙏
 

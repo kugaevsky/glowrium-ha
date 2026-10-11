@@ -873,9 +873,10 @@ async def test_each_field_of_the_link_section_follows_its_own_source(
     Every field is a count or a flag the integration keeps. The section is
     passed through whole from the coordinator's own description, so it is
     held here to an exact list - a field added there arrives here, and has to
-    be looked at - and each field is moved on its own: two states that
-    differ in everything at once cannot tell a field from a copy of its
-    neighbour. The client is named by its class, which says whether BlueZ or
+    be looked at - and each field is moved on its own, but for the one that
+    says a lamp is no longer asked, which follows the count of its refusals:
+    two states that differ in everything at once cannot tell a field from a
+    copy of its neighbour. The client is named by its class, which says whether BlueZ or
     a proxy is behind the link, and is not printed: a client prints with the
     address in it.
     """

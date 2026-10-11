@@ -332,7 +332,8 @@ def _looks_like_a_refusal(err: Exception) -> bool:
 
     Deliberately narrow: an unrecognised error is treated as the link, because
     the cost of guessing wrong that way is one more request on the next connect,
-    while guessing wrong the other way silences a working lamp for the session.
+    while guessing wrong the other way ends the asking of a working lamp for the
+    session.
 
     bleak's own protocol error carries the ATT error code, and is judged by
     that alone: its wording is bleak's to change. Any other error - a
@@ -754,9 +755,9 @@ class Link:
                     try:
                         # The link and its own write, nothing else. The first
                         # exchange is expensive: the state request and the
-                        # wait for its answer, up to 3 s waiting for the
-                        # activation flag and, the first time, the device-info
-                        # read, all before the write is even attempted and all
+                        # wait for its answer and, the first time, the
+                        # device-info read, all before the write is even
+                        # attempted and all
                         # inside the command's budget. On a lamp where the
                         # connect alone is marginal, that is what turns a
                         # working command into a reported failure. The tick

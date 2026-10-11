@@ -35,8 +35,9 @@ ends the link (`coordinator._request_state`).
 
 **Priming**:
 Getting the state into the mirror on a new link: the state request, and the
-read only where the lamp will not report. A link is primed once its first
-exchange has been made on it (`Link.primed`).
+read only where the lamp will not report - or the read alone, for a lamp that
+has refused the request three times in a row and is no longer asked. A link
+is primed once its first exchange has been made on it (`Link.primed`).
 
 **Device-info string**:
 The one thing that has to be read - brand, `pkey`, serial, address, version -

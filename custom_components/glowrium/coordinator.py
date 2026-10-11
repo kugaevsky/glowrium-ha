@@ -79,7 +79,7 @@ _CLOCK_TOLERANCE = 60.0
 # a lost link and is not counted. One refusal is not taken for the lamp's
 # last word - a lamp that is only read goes without every property a read
 # does not carry - and a request the lamp accepts starts the count again.
-_STATE_REQUEST_ATTEMPTS = 3
+_REFUSALS_THAT_END_THE_ASKING = 3
 
 
 class _Asked(Enum):
@@ -286,16 +286,16 @@ class GlowriumCoordinator:
         )
         self._activation_checked = False
         # How many times in a row the lamp has refused the state request.
-        # At _STATE_REQUEST_ATTEMPTS it is asked no more - see _request_state.
+        # At _REFUSALS_THAT_END_THE_ASKING it is asked no more - see _request_state.
         self._state_request_refusals = 0
         # How many writes reached the characteristic: a count, not a value,
         # so that a write that raised still counts (see _write_on).
         self._writes_sent = 0
 
     @property
-    def _only_read(self) -> bool:
-        """Whether the lamp is no longer asked for its state, and only read."""
-        return self._state_request_refusals >= _STATE_REQUEST_ATTEMPTS
+    def _asked_no_more(self) -> bool:
+        """Whether the lamp is no longer asked for its state, and is read instead."""
+        return self._state_request_refusals >= _REFUSALS_THAT_END_THE_ASKING
 
     @property
     def state(self) -> Mapping[int, Any]:
@@ -506,7 +506,7 @@ class GlowriumCoordinator:
                 "seconds_since_last_answer": link["seconds_since_last_answer"],
                 "state_request_refusals": self._state_request_refusals,
                 # Not being asked: the lamp is read instead.
-                "state_request_paused": self._only_read,
+                "state_request_paused": self._asked_no_more,
                 "unanswered_hang_ups": link["unanswered_hang_ups"],
                 "dials_held_back": link["dials_held_back"],
                 "clients_that_would_not_close": link["clients_that_would_not_close"],
@@ -694,7 +694,7 @@ class GlowriumCoordinator:
         The order is one: asked, and read only then. The read does not carry
         everything - a complete twenty-pair map that stops at 0x15, so no
         indicator, lighting mode, ramp or DST - which is why one refusal does
-        not end the asking. ``_STATE_REQUEST_ATTEMPTS`` in a row do: from then
+        not end the asking. ``_REFUSALS_THAT_END_THE_ASKING`` in a row do: from then
         on the lamp is only read, for as long as this coordinator lives, and
         the log has said so once.
 
@@ -703,7 +703,7 @@ class GlowriumCoordinator:
         back a client that reports itself connected while every call on it
         answers "not connected", and such a link is not a working one.
         """
-        if self._only_read:
+        if self._asked_no_more:
             return await self._async_read_state(turn)
         asked = await self._async_ask_state(turn)
         if asked is _Asked.REPORTED:
@@ -728,12 +728,12 @@ class GlowriumCoordinator:
             await turn.write(NOTIFY_UUID, bytes(STATE_KEYS))
         except RefusedError as err:
             self._state_request_refusals += 1
-            if not self._only_read:
+            if not self._asked_no_more:
                 _LOGGER.debug(
                     "%s state request refused (%d/%d): %s",
                     self.address,
                     self._state_request_refusals,
-                    _STATE_REQUEST_ATTEMPTS,
+                    _REFUSALS_THAT_END_THE_ASKING,
                     err,
                 )
                 return _Asked.REFUSED
@@ -747,7 +747,7 @@ class GlowriumCoordinator:
                 "carry stay unknown. Please report this model",
                 self.address,
                 self._model_and_firmware(),
-                _STATE_REQUEST_ATTEMPTS,
+                _REFUSALS_THAT_END_THE_ASKING,
                 err,
             )
             return _Asked.REFUSED
@@ -953,11 +953,12 @@ class GlowriumCoordinator:
         """
         if not self._brings_up or self._activation_checked:
             return
-        # Judged on the flag as the mirror holds it now, whichever way it
-        # came: the state request asked for it and waited for the report, and
-        # read where the lamp did not report. Nothing more is waited for
-        # here - the link's lock is held, and a command may be queued behind
-        # it. A flag that comes later is there for the next first exchange.
+        # Judged on the flag as the mirror holds it now that the state
+        # request is over, whichever way it came: in the lamp's report, or
+        # in the read of a lamp that did not report. Nothing more is waited
+        # for here - the link's lock is held, and a command may be queued
+        # behind it. A flag that comes later is there for the next first
+        # exchange.
         #
         # On the flag itself, both ways. Only a plain no is a lamp that has to
         # be brought up, and only a plain yes settles the question for the

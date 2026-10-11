@@ -40,7 +40,8 @@ dialled again for five hours until a command failed.
 - `is_connected` is a claim and an answer is evidence: a link whose state
   request failed without a refusal gets `_LOST_GRACE` (10 s) to be reported
   dropped and is then let go; a held link silent for `_PROBE_INTERVAL`
-  (5 min) is asked for its state again - asked, not read (ADR 0002).
+  (5 min) is asked for its state again - asked, not read, unless it is a
+  lamp that refuses to be asked (ADR 0002).
 
 ## Consequences
 

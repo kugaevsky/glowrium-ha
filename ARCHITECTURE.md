@@ -203,7 +203,9 @@ connect, and the log says so once - the lamp, its model and firmware, that
 commands still work, that what a read does not carry stays unknown, and a
 request to report the model. A request the lamp accepts starts the count
 again, so one refusal does not add up with another an hour later. A link
-that drops under the request is a lost link and is counted as nothing.
+that drops under the request is a lost link: it is counted as nothing, and
+does not start the count again either. Three in a row are three requests,
+not three connects: the question put to a silent link is the same request.
 
 There was more to it until #55: the third refusal paused the request for ten
 minutes, and a second run of three after that gave it up for the session,
@@ -211,11 +213,6 @@ each with a warning. The pause was from when any error counted as a refusal
 and a weak link "refused" by dropping. With only the lamp's own no counted,
 it gave the owner of a lamp that refuses two warnings for one fact, and no
 lamp has been seen to refuse and then stop refusing.
-
-Whether to ask is never judged by the state mirror. The mirror accumulates,
-so a key seen once would look covered for the rest of the session, and a
-reconnect could no longer notice that a setting was changed from the vendor
-app while Home Assistant was away.
 
 **The device-info string is the one read left, and it comes last.** It is
 only to be had by a read (`facebd80`), so it is done once per session, after
@@ -697,6 +694,13 @@ Notes:
   in the mirror by the next first exchange, and the lamp is brought up then.
 - A lamp that is only read is judged the same way. It was passed over until
   #55, as a lamp whose flag could not come - and a read brings the flag.
+  **Not seen on any lamp, and on BlueZ likely not to work in that exchange:**
+  measured on a G7, the write that follows a read of this lamp fails there,
+  because the read has cost the link its channel (see "Priming state on
+  connect"). If a G8 does the same, the bring-up of one that is only read
+  fails on such a host, the exchange ends without the lamp being called one
+  that answers, and the next connect tries again. No G8 has been at hand to
+  say. Through macOS or a Bluetooth proxy the write goes through.
 - The **Activated** `binary_sensor` (diagnostic) surfaces this flag so users can
   see provisioning status.
 
@@ -1087,7 +1091,9 @@ command failed. Two checks close that:
   asked; the answer refreshes the mirror for free. A link that does not
   answer, or keeps the question waiting until the deadline (`_ASK_TIMEOUT`),
   is dropped.
-  Asked, not read — a read would end the very link it was checking.
+  Asked, not read — a read would end the very link it was checking. A lamp
+  that refuses to be asked is the exception, and has no other: it is read
+  here as it is on every connect.
 
 **Closing the bus under a call in flight looks like nothing bleak documents.**
 The hang-up from the disconnected callback closes the client's D-Bus connection
@@ -1486,14 +1492,14 @@ with its reason. A reach that is not on the list is a test to be moved.
 | --- | --- |
 | `_ingest`, `_mirror`, `_new_mirror` | The mirror's seam (ADR 0013). A frame is handed to the one intake, as the link hands it one; a test that needs the lamp to have said something says it through the mirror's own two ways in, never by assignment; a test that wants nothing heard is given a new mirror, built as the coordinator builds its own. |
 | `_request_state`, `_async_read_state`, `_async_read_device_info`, `_async_activate_if_needed`, `_async_activate`, `_async_sync_clock_if_needed` | The steps of the first exchange, each called on a turn over the scripted lamp's link (`turn_over`). The exchange as a whole is run by the link, through its connect; a step is run alone where the test is of that step. |
-| `_state_request_refusals` | How often in a row the lamp has refused the state request - set down in the one test of the diagnostics' link section, which moves each field on its own. The tests of the request itself read what was asked and read, in order, and the log. |
+| `_state_request_refusals` | How often in a row the lamp has refused the state request - set down in the one test of the diagnostics' link section, which moves each field on its own. The tests of the request itself read what was asked and read, in order, the log, and what the diagnostics say of the request. |
 | `_activation_checked` | Read, to see whether the bring-up was settled for the session. |
 | `_desired_ramp`, `_writes_sent` | What was remembered of the ramp, and how many commands were written: neither has a reader but the coordinator's next step and the diagnostics. |
 | `_async_notify_listeners`, `_async_write` | The telling of the entities, where a test counts the tellings, and a command with a payload of the test's own. |
 | `_link` | The door itself: `link_of`, for the tests. The bench reaches for nothing, and a test holds it to that. |
 | `keeper.bluetooth`, `keeper.async_track_time_interval` | Home Assistant's scanners and its timer, replaced where the keeper of a config entry finds them, in the tests of what it registers and ends. |
 | `bench._coordinator`, `bench._drive`, `bench._report`, `bench._TICK`, `bench._Masked`, `bench._PRIVACY`, `bench._address` | The bench's own steps and what it prints through: its run is made of them, and a test runs them against a scripted lamp, or reads what goes out through them. |
-| The ceilings and counts of the link and of the device half: `link._CONFIRM_TIMEOUT` and thirteen more | Shortened, so that the test of a deadline takes milliseconds; or read, so that a test moves the clock by exactly that much. |
+| The ceilings and counts of the link and of the device half: `link._CONFIRM_TIMEOUT` and eleven more | Shortened, so that the test of a deadline takes milliseconds; or read, so that a test moves the clock by exactly that much. |
 | `coordinator._parse_device_info` | What the parser makes of a device-info string, set as what the lamp said about itself where a test needs a coordinator that knows its model and firmware - or a string cut in an odd place - and reading it over a link would be the test of something else. |
 | `diagnostics._clock` | How the file words a clock with no record of when it came: a branch no path of the integration reaches, kept as a guard and held on its own (ADR 0013). |
 | `link._reason`, `mirror._for_the_log`, `mirror._LOGGER` | Two functions with tests of their own - what a log line says of an error that has no text, and how a frame is printed - and the name the mirror logs under. |

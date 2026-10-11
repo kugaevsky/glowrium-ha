@@ -2,7 +2,8 @@
 
 - **Status:** accepted
 - **Date:** 2026-10-05 (asking instead of reading); 2026-10-06 (the cause read
-  off the controller; reading the device info in every session reaffirmed)
+  off the controller; reading the device info in every session reaffirmed);
+  amended 2026-10-11 (one order, and three refusals end the asking, #55)
 
 ## Context
 
@@ -41,7 +42,8 @@ the stray response, so the bench on a laptop never showed it. No workaround.
   per session, last - after the state, the bring-up, the clock and
   `turn.answered()`. On BlueZ that link is then spent; the tick makes another
   thirty seconds later on which nothing is read. A command's own connect reads
-  nothing, and the probe of a silent link asks, never reads.
+  nothing, and the probe of a silent link asks and does not read - but for
+  a lamp that is no longer asked, which is read there as everywhere.
 - It is read again in every session. Keeping the string from the last session
   and skipping the read was proposed on 2026-10-06 and rejected by the
   maintainer: firmware changes between starts, and what was remembered is not
@@ -67,6 +69,7 @@ the stray response, so the bench on a laptop never showed it. No workaround.
 
 ## Revisit when
 
-A refusing model is at hand to measure whether the refused request or the read
-before it takes the link (nothing has been re-measured on a G8); a firmware
+A refusing model is at hand to measure what a refused request and the read
+after it do to the link, and whether a write goes through after that read
+(nothing has been re-measured on a G8); a firmware
 stops answering a read twice; or BlueZ stops closing the channel on it.
