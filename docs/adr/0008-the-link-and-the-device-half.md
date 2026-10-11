@@ -49,8 +49,8 @@ cannot be broken from the other module, and no test has to catch it.
   Assistant's scanners, put together where the entry is set up); the tests
   stand a
   scripted lamp at it (`tests/lamp.py`) and patch `establish_connection`
-  nowhere but in the tests of the default dial and, through `in_range`, for a
-  coordinator the integration's own setup made.
+  nowhere but in the tests of the dial made of it and, through `in_range`,
+  for a coordinator the integration's own setup made.
 
 ## Consequences
 

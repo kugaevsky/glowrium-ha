@@ -17,8 +17,8 @@ no size and no id that the lamp picked goes into the file as the lamp gave it.
 
 That holds for what this module returns. Home Assistant wraps it in a header
 of its own (version, time zone, the names of the custom integrations) and adds
-the ids of the integration's open repairs - which is why the coordinator files
-its repair under the config entry's id and not under the lamp's address.
+the ids of the integration's open repairs - which is why each repair is filed
+under the config entry's id and not under the lamp's address (``keeper.py``).
 """
 
 from __future__ import annotations

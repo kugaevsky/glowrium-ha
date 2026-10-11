@@ -143,11 +143,13 @@ class Keeper(Protocol):
     """
 
     def spawn(self, work: Coroutine[Any, Any, None], name: str) -> None:
-        """Start work that ends no later than the keeper's watching does.
+        """Start work that does not outlive what the coordinator is kept for.
 
-        For Home Assistant that is the unload of the entry: a connect that
-        outlived its coordinator would finish and claim the lamp's single
-        slot for an owner that no longer exists.
+        For Home Assistant that is the config entry, and its unload ends the
+        work: a connect that outlived its coordinator would finish and claim
+        the lamp's single slot for an owner that no longer exists. Ceasing
+        to watch does not by itself end it: Home Assistant stopping ends the
+        watching and unloads nothing.
         """
 
     def run_lasting(
@@ -604,7 +606,7 @@ class GlowriumCoordinator:
 
     @callback
     def _spawn(self, coro: Coroutine[Any, Any, None], what: str) -> None:
-        """Have the keeper run ``coro``, for no longer than it keeps watching."""
+        """Have the keeper run ``coro``, for no longer than it keeps the coordinator."""
         self._keeper.spawn(coro, f"glowrium {what} {self.address}")
 
     @callback

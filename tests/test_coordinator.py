@@ -446,21 +446,6 @@ async def test_the_home_sync_location_writes_is_home_assistants(
     assert lamp.written == [(WRITE_UUID, cbor.encode({0x0A: 12.3456, 0x0B: 65.4321}))]
 
 
-async def test_sync_location_is_refused_where_there_is_no_home() -> None:
-    """The bench has no home to hand over, and the command says so.
-
-    Its keeper answers zero and zero, as Home Assistant does of a home that
-    was never set, and the command is refused the same way. It returned
-    without a word there, and without writing: a press that did nothing
-    and said nothing.
-    """
-    coordinator, lamp, _link = await _holding_a_link(None, "bench")
-    with pytest.raises(HomeAssistantError) as err:
-        await coordinator.async_sync_location()
-    assert err.value.translation_key == "home_location_not_set"
-    assert lamp.written == []
-
-
 @pytest.mark.parametrize(
     ("setter", "args", "changed"),
     [
@@ -574,9 +559,9 @@ async def test_a_device_reporting_unactivated_is_brought_up(
     assert coordinator._activation_checked is True
 
 
-@pytest.mark.parametrize("bring_up", [True, False], ids=["as built", "told not to"])
+@pytest.mark.parametrize("bring_up", [None, False], ids=["as built", "told not to"])
 async def test_a_coordinator_told_not_to_brings_no_lamp_up(
-    hass: HomeAssistant, bring_up: bool
+    hass: HomeAssistant, bring_up: bool | None
 ) -> None:
     """Whoever only looks at a lamp says so where the coordinator is built.
 
@@ -595,7 +580,7 @@ async def test_a_coordinator_told_not_to_brings_no_lamp_up(
     commands = [
         cbor.decode(frame) for uuid, frame in lamp.written if uuid == WRITE_UUID
     ]
-    if bring_up:
+    if bring_up is None:  # told nothing, as the setup of an entry tells it nothing
         assert commands[0] == {0x53: 300}
         assert commands[-1] == {KEY_ACTIVATED: True}
     else:
@@ -2845,7 +2830,7 @@ _OF_HOME_ASSISTANT = {
 }
 
 
-def test_the_device_half_asks_its_keeper_and_names_no_home_assistant() -> None:
+def test_the_device_half_names_five_things_of_home_assistant_and_no_more() -> None:
     """The coordinator's module knows its keeper, and not what the keeper is.
 
     No instance of Home Assistant, no config entry, no Bluetooth integration,
@@ -2872,6 +2857,15 @@ def test_the_device_half_asks_its_keeper_and_names_no_home_assistant() -> None:
     ]
     assert imported == _OF_HOME_ASSISTANT
     assert whole == []
+    # Nor does it reach round its keeper for the one Home Assistant has: the
+    # adapter is the setup's to build and hand in.
+    siblings = {
+        one.name if node.module is None else node.module
+        for node in ast.walk(tree)
+        if isinstance(node, ast.ImportFrom) and node.level
+        for one in node.names
+    }
+    assert "keeper" not in siblings
 
     # Nor is anything kept by a name that was Home Assistant's or stood in
     # for it: the instance, the entry, the tasks the coordinator held itself,

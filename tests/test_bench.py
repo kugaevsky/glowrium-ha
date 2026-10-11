@@ -18,7 +18,7 @@ import weakref
 from homeassistant.exceptions import HomeAssistantError
 import pytest
 
-from custom_components.glowrium import cbor
+from custom_components.glowrium import cbor, link as link_module
 from custom_components.glowrium.const import (
     INFO_UUID,
     KEY_ACTIVATED,
@@ -386,14 +386,19 @@ async def test_the_bench_drives_a_lamp_as_the_setup_of_an_entry_does(
 
 
 async def test_the_bench_says_that_the_first_connect_came_to_nothing(
-    bench: ModuleType, capsys: pytest.CaptureFixture[str]
+    bench: ModuleType,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """A check that did not run says so, and does not print a report of nothing.
 
     The first connect is not the bench's to make any more, so how it ended is
     not an error the bench catches: it is read off what the link says of
-    itself once the work is done. No link held is a connect that failed.
+    itself once the work is done. No link held is a connect that failed. And
+    the coordinator is stopped all the same: a keeper left watching would go
+    on dialling the lamp on its clock, behind a run that has said it is over.
     """
+    monkeypatch.setattr(bench, "_TICK", 0.01)
     lamp = ScriptedLamp()
     lamp.out_of_range()
     coordinator, keeper = _at_the_bench(bench, lamp)
@@ -405,6 +410,67 @@ async def test_the_bench_says_that_the_first_connect_came_to_nothing(
     printed = capsys.readouterr().out
     assert ended == 1
     assert "connect failed" in printed
+    assert "keys reported" not in printed
+    assert _nothing_left_running()
+    await asyncio.sleep(0.05)  # several of its clock's rounds
+    assert lamp.dials == 1  # the first connect, and none since
+
+
+async def test_the_bench_says_that_the_first_exchange_was_not_made(
+    bench: ModuleType,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A link that is held and was never greeted is a check that did not run.
+
+    A connect can run out of time with the link taken: the lamp was dialled
+    and does not acknowledge what it is asked. The link is held then, and
+    left to the poll - and nothing was read off the lamp. The bench made
+    that connect itself once, and its error said so; it goes by whether the
+    link it holds is one the first exchange was made on.
+    """
+    monkeypatch.setattr(link_module, "_CONNECT_TIMEOUT", 0.05)
+    lamp = ScriptedLamp()
+    lamp.never_acknowledges_a_write()
+    coordinator, keeper = _at_the_bench(bench, lamp)
+
+    ended = await bench._drive(
+        coordinator, keeper, argparse.Namespace(watch=0, commands=False)
+    )
+
+    printed = capsys.readouterr().out
+    assert ended == 1
+    assert "connect failed" in printed
+    assert "keys reported" not in printed
+    assert lamp.links[0].hung_up == 1  # and the link it held is let go of
+    assert _nothing_left_running()
+
+
+async def test_the_bench_prints_an_error_the_integration_did_not_expect(
+    bench: ModuleType, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """What the first connect ended in, when it is not a link that was lost.
+
+    A lost link is the integration's to log, and the bench says only that no
+    link is held. Anything else is a fault somebody has to see: the bench
+    caught it when it made the connect itself, and printed it. The work is
+    its keeper's to start now, so the keeper says what such work ended in.
+    """
+
+    async def _broken(_lost: object) -> object:
+        raise RuntimeError("no adapter")
+
+    lamp = ScriptedLamp()
+    lamp.dials_through(_broken)
+    coordinator, keeper = _at_the_bench(bench, lamp)
+
+    ended = await bench._drive(
+        coordinator, keeper, argparse.Namespace(watch=0, commands=False)
+    )
+
+    printed = capsys.readouterr().out
+    assert ended == 1
+    assert "RuntimeError('no adapter')" in printed
     assert "keys reported" not in printed
     assert _nothing_left_running()
 

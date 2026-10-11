@@ -1,10 +1,12 @@
 """What keeps a coordinator in Home Assistant: one config entry.
 
 The device half asks its keeper for what it needs of whatever runs it
-(``coordinator.Keeper``) and knows nothing of Home Assistant. This is the
-adapter for Home Assistant: it is built from the instance and the entry,
-neither of which can be absent here, and everything that is Home Assistant's
-to do for a lamp is done in this module.
+(``coordinator.Keeper``), and is handed no instance of Home Assistant and no
+config entry. This is the adapter for Home Assistant: it is built from the
+instance and the entry, neither of which can be absent here, and what the
+device half asks for is done with them in this module. The setup of the
+entry (``__init__.py``) builds it, and keeps what belongs to the entry's
+own coming and going.
 """
 
 from __future__ import annotations
@@ -80,6 +82,15 @@ class EntryKeeper:
         self._hass = hass
         self._entry = entry
         self._address: str = entry.data[CONF_ADDRESS]
+        # The lamp's name for a repair, which is rendered as Markdown: as
+        # the entry is titled now, which is what the coordinator is named
+        # for as long as it lives. It is the name the lamp advertised, so it
+        # comes off the air and goes in as text. A lamp picked from the
+        # list of discovered ones has its address after its name; the name
+        # is said without it.
+        self._name_as_text = identity.as_text(
+            identity.without_address(entry.title, self._address)
+        )
         # How to end each thing that watches, in the order they were begun.
         self._watchers: list[Callable[[], None]] = []
         # Set where the watching ends. What is learnt of the lamp after that
@@ -162,7 +173,7 @@ class EntryKeeper:
         return bluetooth.async_address_present(hass, address, connectable=True)
 
     def unwatch(self) -> None:
-        """End every watcher that was begun, once, and stand behind no repair.
+        """End every watcher that was begun, once, and the repair for the stack.
 
         A keeper that has ceased to watch cannot say when the stack lets go,
         so it does not leave the claim standing that it has not. The repair
@@ -272,19 +283,6 @@ class EntryKeeper:
             learn_more_url=_PROTOCOL_DATA_URL,
             translation_key=key,
             translation_placeholders=said,
-        )
-
-    @property
-    def _name_as_text(self) -> str:
-        """The lamp's name for a repair, which is rendered as Markdown.
-
-        The entry is titled with the name the lamp advertised, so it comes
-        off the air and goes in as text. A lamp picked from the list of
-        discovered ones has its address after its name; the name is said
-        without it.
-        """
-        return identity.as_text(
-            identity.without_address(self._entry.title, self._address)
         )
 
     @property

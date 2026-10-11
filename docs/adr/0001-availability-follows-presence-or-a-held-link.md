@@ -24,8 +24,9 @@ An entity is available while the lamp is in reach: a connected client is held,
 or the lamp is heard advertising (`Link.in_reach`, read by
 `GlowriumEntity.available` through `GlowriumCoordinator.available`). Presence
 is seeded from `bluetooth.async_address_present`, set by the advertisement
-callback and cleared by `bluetooth.async_track_unavailable`; the watchers are
-the coordinator's and hand what they see to `Link.advertising`.
+callback and cleared by `bluetooth.async_track_unavailable`; the watchers
+hand what they see to `Link.advertising`. They were the coordinator's until
+2026-10-11 and are the keeper's since (ADR 0016).
 
 The link is rebuilt silently underneath an available entity: from the
 advertisement callback when the lamp reappears, and from the 30-second tick

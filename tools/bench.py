@@ -203,6 +203,10 @@ class BenchKeeper:
         self._spawned: set[asyncio.Task[None]] = set()
         self._lasting: set[asyncio.Task[None]] = set()
         self._clock: asyncio.TimerHandle | None = None
+        # What work ended in, where that was an error nobody caught. A link
+        # that is lost is caught and logged by the integration; what is left
+        # is a fault, and the bench is where it has to be seen.
+        self.faults: list[BaseException] = []
 
     def spawn(self, work: Coroutine[Any, Any, None], name: str) -> None:
         """Start ``work`` and hold it until it is done, or the watching ends."""
@@ -222,7 +226,13 @@ class BenchKeeper:
     ) -> asyncio.Task[None]:
         task = asyncio.get_running_loop().create_task(work, name=name)
         among.add(task)
-        task.add_done_callback(among.discard)
+
+        def _done(done: asyncio.Task[None]) -> None:
+            among.discard(done)
+            if not done.cancelled() and (fault := done.exception()) is not None:
+                self.faults.append(fault)
+
+        task.add_done_callback(_done)
         return task
 
     def watch(
@@ -448,6 +458,30 @@ async def main() -> int:
     return await _drive(coordinator, keeper, args)
 
 
+def _what_went_wrong(
+    coordinator: GlowriumCoordinator, keeper: BenchKeeper
+) -> str | None:
+    """Say why the lamp was not read on the first connect, or None if it was.
+
+    A link that was lost on the way is the integration's to log, and here it
+    shows as what the link says of itself: none is held, or one is held that
+    the first exchange was not made on - a connect that ran out of time with
+    the lamp dialled and not answering. Anything else the work ended in is a
+    fault, and is printed as it is.
+    """
+    if keeper.faults:
+        return "; ".join(repr(fault) for fault in keeper.faults)
+    link = coordinator.diagnostics()["link"]
+    if link["primed"]:
+        return None
+    what = (
+        "a link is held, and the first exchange was not made on it"
+        if link["connected"]
+        else "no link is held after the first connect"
+    )
+    return f"{what}. The integration's log says how it ended (--debug)"
+
+
 def _coordinator(
     address: str, name: str, keeper: BenchKeeper, dial: Dial
 ) -> GlowriumCoordinator:
@@ -468,15 +502,12 @@ async def _drive(
     The connect Home Assistant makes at start-up - the link, then the first
     exchange on it: the state, the clock, the device info - is work the
     keeper is handed by the start. The bench waits for it to be done. How it
-    ended is not an error to catch here; the link says whether it is held.
+    ended is not an error to catch here (see ``_what_went_wrong``).
     """
     await coordinator.async_start()
     await keeper.idle()
-    if not coordinator.diagnostics()["link"]["connected"]:
-        print(
-            "connect failed: no link is held after the first connect. "
-            "The integration's log says how it ended (--debug)"
-        )
+    if (wrong := _what_went_wrong(coordinator, keeper)) is not None:
+        print(f"connect failed: {wrong}")
         await coordinator.async_stop()
         await keeper.idle()
         return 1

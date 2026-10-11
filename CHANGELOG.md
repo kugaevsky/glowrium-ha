@@ -76,12 +76,16 @@ All notable changes to this project are documented here. The format is based on
   a lamp. It starts the coordinator now, as the setup of a config entry
   does, and says where it builds it that no lamp is to be brought up. Two
   things change with that for whoever runs it, and nothing for the owner of
-  a lamp. A first connect that fails is reported as no link being held, and
-  the error it ended in is the integration's to log (`--debug` shows it).
-  And the link is looked over every thirty seconds while the bench runs, so
-  a link that drops during `--watch` is dialled again. Inside, the part that
-  knows the lamp no longer knows Home Assistant: what it needs of whatever
-  runs it, it asks of one object it is built with
+  a lamp. A first connect that fails is reported from what the link says of
+  itself - no link is held, or one is held that the lamp was never asked on
+  - and the lost link it ended in is the integration's to log (`--debug`
+  shows it); an error of another kind is printed as before. And the link is
+  looked over every thirty seconds while the bench runs, so a link that
+  drops during `--watch` is dialled again. A third change no run of the
+  bench reaches: without Home Assistant, Sync location is refused as a home
+  that was never set is, where it did nothing and said nothing. Inside, the
+  part that knows the lamp is no longer handed Home Assistant: what it needs
+  of whatever runs it, it asks of one object it is built with
   ([#54](https://github.com/kugaevsky/glowrium-ha/issues/54)).
 
 ### Added

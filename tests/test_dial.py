@@ -1,9 +1,9 @@
-"""The coordinator's dial: handed in, and Home Assistant's when it is not.
+"""The coordinator's dial: always handed in, and Home Assistant's for an entry.
 
 The dial is the seam the link stands on (#21): a callable that is given the
 callback for a link that is lost and returns a connected client. Tests hand
-the coordinator a scripted lamp's; the integration hands it nothing, and it
-then dials through Home Assistant's Bluetooth as it always has.
+the coordinator a scripted lamp's; the setup of a config entry hands it one
+that dials through Home Assistant's Bluetooth, as the integration always has.
 """
 
 from __future__ import annotations
@@ -499,7 +499,7 @@ async def test_a_lamp_out_of_range_fails_the_command_as_one_that_cannot_connect(
     assert lamp.written == []
 
 
-async def test_handed_no_dial_the_coordinator_dials_by_bluetooth(
+async def test_the_dial_by_bluetooth_connects_to_what_bluetooth_finds(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """The dial the integration itself uses: what Bluetooth finds, connected.

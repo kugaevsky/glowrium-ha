@@ -2044,6 +2044,28 @@ async def test_the_repair_shows_no_more_of_a_name_than_it_takes_to_know_it(
     assert issue.translation_placeholders["name"] == "Glowrium " + "x" * 39
 
 
+async def test_the_repair_names_the_lamp_as_it_was_set_up(
+    hass: HomeAssistant, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The name in a repair is the one the coordinator goes by: the title at setup.
+
+    An entry renamed since goes on under its old name wherever the
+    integration says it - the log, the messages of a refused command - until
+    it is loaded again, and the repair says that name with them.
+    """
+    entry = _an_entry(hass, title="Glowrium-G7_DDEEFF")
+    coordinator, _host, clock, _dialled = _coordinator_on_a_clock(
+        hass, monkeypatch, entry
+    )
+    entry.title = "The lamp over the desk"
+
+    await _ticks(link_of(coordinator), clock, 3, hass=hass)
+
+    issue = _stack_issue(hass)
+    assert issue is not None
+    assert issue.translation_placeholders["name"] == "Glowrium-G7_DDEEFF"
+
+
 async def test_the_repair_goes_when_the_lamp_answers_again(
     hass: HomeAssistant, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -2190,7 +2212,7 @@ async def test_a_stopped_coordinator_ends_no_episode_and_takes_down_no_repair(
     await successor.async_stop()
 
 
-async def test_a_wedged_stack_is_said_to_whatever_keeps_the_coordinator() -> None:
+async def test_a_stack_fault_is_said_to_whatever_keeps_the_coordinator() -> None:
     """The device half raises no repair: it tells its keeper, and tells it the end.
 
     Home Assistant's keeper has a dashboard to put it on. The bench has

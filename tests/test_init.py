@@ -167,8 +167,9 @@ def _a_lamp_that_never_connects(
 ) -> Iterator[asyncio.Event]:
     """Put a lamp in range whose connect never returns; yield "it is being dialled".
 
-    The integration's own setup hands the coordinator no dial, so what stands
-    in for the lamp is what that dial is made of: Home Assistant's lookup of
+    The integration's own setup hands the coordinator the dial of a config
+    entry, so what stands in for the lamp is what that dial is made of: Home
+    Assistant's lookup of
     the device, and the library's connect. ``cancelled`` is set if the connect
     is cancelled while it waits.
     """

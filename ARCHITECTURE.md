@@ -34,7 +34,7 @@ stateless views over that coordinator.
   `coordinator.async_set_*` method to write.
 - **No polling for state.** `iot_class` is `local_push`: the lamp pushes state
   via notify, and entities re-render from a coordinator listener callback. The
-  coordinator's 30-second tick is for the link, not the state: it rebuilds one
+  keeper's 30-second tick is for the link, not the state: it rebuilds one
   that was lost, and asks one that has been silent for five minutes whether it
   is still there (see [Reconnect](#reconnect)).
 
@@ -44,7 +44,7 @@ stateless views over that coordinator.
 | --- | --- |
 | `__init__.py` | `async_setup_entry` / `async_unload_entry` / `async_remove_entry`; builds the coordinator with its keeper and its dial, stores it in `entry.runtime_data`, forwards platforms, has the coordinator hang up when Home Assistant stops, keeps for each lamp what could not be closed, and takes the notice about unconfirmed presets down when an entry is removed |
 | `config_flow.py` | Bluetooth auto-discovery + manual picker for `Glowrium-*` devices |
-| `coordinator.py` | The device: the intake of frames into the mirror, all command methods, the clock, activation, the telling of the entities - and what is said to the lamp: the first exchange on a link, the question for a silent one, each command. It names no Home Assistant: what it needs of whatever runs it, it asks of its keeper (`Keeper`, declared here) |
+| `coordinator.py` | The device: the intake of frames into the mirror, all command methods, the clock, activation, the telling of the entities - and what is said to the lamp: the first exchange on a link, the question for a silent one, each command. It is handed no Home Assistant: what it needs of whatever runs it, it asks of its keeper (`Keeper`, declared here) |
 | `keeper.py` | What keeps a coordinator in Home Assistant, for one config entry (`EntryKeeper`): both lifetimes of background work, the three watchers, the repair for a stack that will not hang up, the notice about unconfirmed presets, the device registry, the remembered model id, the home's coordinates - and the dial to the lamp as Home Assistant's Bluetooth finds it (`dial_for`) |
 | `mirror.py` | The state mirror: what the lamp has said, frame by frame, and what was written to it, as a read-only mapping. Takes a frame - never raises; the decoder's outcomes, their log lines and the blanking of a printed frame are its - counts the reports and what each carried, dates the lamp's clock |
 | `link.py` | The link: the client and the lock around it, the dial, the hang-up and the closing of the client's bus, the stack that will not hang up, whether the lamp is in reach - and when the lamp is spoken to: the background connect, the first exchange, the question for a silent link, the delivery of a command with its one retry, and every deadline. No client leaves it. No Home Assistant in it and no protocol |
@@ -707,7 +707,7 @@ available = connected or advertising  # Link.in_reach
   seeded with `bluetooth.async_address_present` as the watching begins
   (`Link.begin`), set by the advertisement callback, and cleared by
   `bluetooth.async_track_unavailable` (device powered off / out of range). The
-  callbacks are the coordinator's; they hand what they see to `Link.advertising`.
+  callbacks are the keeper's; they hand what they see to `Link.advertising`.
 - Reconnects happen **silently underneath** an entity that stays `available`.
 - When `available` changes, the log says so at INFO, once each way: `is out of
   reach`, `is back in reach` (`Link.log_reach`). It is judged by the same
@@ -758,7 +758,7 @@ one object of seven entry points, declared where it is asked for
 
 | Asked of the keeper | What for |
 | --- | --- |
-| `spawn(work, name)` | Work that ends no later than the keeper's watching does: a connect, a first exchange, a probe. |
+| `spawn(work, name)` | Work that does not outlive what the coordinator is kept for - the config entry, the bench's run: a connect, a first exchange, a probe. |
 | `run_lasting(work, name)` | Work that nothing which ends the coordinator ends: a hang-up. Its task is handed back. |
 | `watch(advertising, tick)` | Watch the air for the lamp, and the clock; say whether the lamp is there now. Called once, by the start. |
 | `unwatch()` | Cease. More than once does no harm, nor on a keeper that never watched. |
@@ -1466,12 +1466,12 @@ with its reason. A reach that is not on the list is a test to be moved.
 | `_ingest`, `_mirror`, `_new_mirror` | The mirror's seam (ADR 0013). A frame is handed to the one intake, as the link hands it one; a test that needs the lamp to have said something says it through the mirror's own two ways in, never by assignment; a test that wants nothing heard is given a new mirror, built as the coordinator builds its own. |
 | `_request_state`, `_async_read_state`, `_async_read_device_info`, `_async_activate_if_needed`, `_async_activate`, `_async_sync_clock_if_needed` | The steps of the first exchange, each called on a turn over the scripted lamp's link (`turn_over`). The exchange as a whole is run by the link, through its connect; a step is run alone where the test is of that step. |
 | `_state_request_failures`, `_state_request_muted`, `_state_request_muted_until`, `_state_request_given_up` | A lamp that has refused the state request before - set down, where refusing three times over would be the test of something else. |
-| `_activation_checked` | A lamp taken for activated, so that the bring-up does not run, in tests of other things. |
+| `_activation_checked` | Read, to see whether the bring-up was settled for the session. |
 | `_desired_ramp`, `_writes_sent` | What was remembered of the ramp, and how many commands were written: neither has a reader but the coordinator's next step and the diagnostics. |
 | `_async_notify_listeners`, `_async_write` | The telling of the entities, where a test counts the tellings, and a command with a payload of the test's own. |
 | `_link` | The door itself: `link_of`, for the tests. The bench reaches for nothing, and a test holds it to that. |
 | `keeper.bluetooth`, `keeper.async_track_time_interval` | Home Assistant's scanners and its timer, replaced where the keeper of a config entry finds them, in the tests of what it registers and ends. |
-| `bench._coordinator`, `bench._drive`, `bench._report`, `bench._TICK` | The bench's own steps: its run is made of them, and a test runs them against a scripted lamp. |
+| `bench._coordinator`, `bench._drive`, `bench._report`, `bench._TICK`, `bench._Masked`, `bench._PRIVACY`, `bench._address` | The bench's own steps and what it prints through: its run is made of them, and a test runs them against a scripted lamp, or reads what goes out through them. |
 | The ceilings and counts of the link and of the device half: `link._CONFIRM_TIMEOUT` and thirteen more | Shortened, so that the test of a deadline takes milliseconds; or read, so that a test moves the clock by exactly that much. |
 | `coordinator._parse_device_info` | What the parser makes of a device-info string, set as what the lamp said about itself where a test needs a coordinator that knows its model and firmware - or a string cut in an odd place - and reading it over a link would be the test of something else. |
 | `diagnostics._clock` | How the file words a clock with no record of when it came: a branch no path of the integration reaches, kept as a guard and held on its own (ADR 0013). |

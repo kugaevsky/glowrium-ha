@@ -49,8 +49,8 @@ last thing the first exchange does (ADR 0002).
   (ADR 0012). The lamp's name goes into the text as text. The model id goes in
   only when it has the shape of one; for one that has not, a second text does
   without it.
-- A coordinator that has stopped watching raises none, as it announces no
-  stack fault (ADR 0004): nobody would be left to answer for it.
+- Once the watching has stopped none is raised, as no stack fault is
+  announced then (ADR 0004): nobody would be left to answer for it.
 
 ## Consequences
 

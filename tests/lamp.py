@@ -151,7 +151,7 @@ class ScriptedKeeper:
         self._told: tuple[Callable[[bool], None], Callable[[], None]] | None = None
 
     def spawn(self, work: Coroutine[Any, Any, None], name: str) -> None:
-        """Start work that ends with the watching."""
+        """Start work asked for as work that is not to outlive the keeping."""
         self.spawned.append(name)
         self._start(work, name)
 
@@ -437,7 +437,7 @@ class ScriptedLamp:
         unclosed: Unclosed | None = None,
         keeper: Keeper | None = None,
         *,
-        bring_up: bool = True,
+        bring_up: bool | None = None,
     ) -> GlowriumCoordinator:
         """Return a coordinator that dials this lamp.
 
@@ -445,8 +445,8 @@ class ScriptedLamp:
         not let go of, when a test has two of them in turn. ``keeper`` is
         what keeps the coordinator; left out, a ``ScriptedKeeper`` on
         ``hass``, which ``keeper_of`` hands back. ``bring_up`` is whether a
-        lamp that says it is not activated is brought up, as it is unless
-        the coordinator is told otherwise.
+        lamp that says it is not activated is brought up; left out, the
+        coordinator is not told, and is built as the integration builds one.
         """
         if keeper is None:
             keeper = ScriptedKeeper(hass)
@@ -457,7 +457,7 @@ class ScriptedLamp:
             keeper=keeper,
             dial=self.dial,
             unclosed=unclosed,
-            bring_up=bring_up,
+            **({} if bring_up is None else {"bring_up": bring_up}),
         )
         _LAMPS[coordinator] = self
         if isinstance(keeper, ScriptedKeeper):
@@ -492,8 +492,9 @@ class ScriptedLamp:
 def in_range(lamp: ScriptedLamp) -> Iterator[None]:
     """Put ``lamp`` where the integration's own dial finds it and connects to it.
 
-    For a coordinator the integration's setup made, which is handed no dial:
-    what stands in for the lamp is what that dial is made of - Home
+    For a coordinator the integration's setup made, which is handed the dial
+    of a config entry: what stands in for the lamp is what that dial is made
+    of - Home
     Assistant's lookup of the device, and the library's connect, which here
     hands out the lamp's links. With the tests of the dial itself, the one
     place either is replaced at module level.

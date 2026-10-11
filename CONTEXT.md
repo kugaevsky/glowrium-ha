@@ -171,9 +171,9 @@ on a turn (held by `tests/test_bus_lifetime.py`, `_OF_THE_LINK`).
 
 **Keeper**:
 What keeps a coordinator, and all that the device half asks of whatever runs
-it: to start work that ends with the keeper's watching and work that outlives
-it, to watch the air and the clock, to hear of a stack fault and of what the
-lamp said it is, and to say where home is. Home Assistant keeps a coordinator
+it: to start work that does not outlive what the coordinator is kept for, and
+work that does; to watch the air and the clock; to hear of a stack fault and
+of what the lamp said it is; and to say where home is. Home Assistant keeps a coordinator
 for one config entry (`keeper.py`, `EntryKeeper`), the bench for one run, the
 tests with a scripted one; there is no coordinator without one
 (`coordinator.Keeper`, ADR 0016).

@@ -56,8 +56,8 @@ async def async_setup_entry(hass: HomeAssistant, entry: GlowriumConfigEntry) -> 
         # set up again is the same lamp, under another entry.
         unclosed=hass.data.setdefault(_UNCLOSED, {}).setdefault(address, Unclosed()),
     )
-    # Published before it is started, not after: async_start registers the
-    # bluetooth callbacks and the reconnect poll, so a setup cancelled part-way
+    # Published before it is started, not after: async_start has the keeper
+    # register the bluetooth callbacks and the timer, so a setup cancelled part-way
     # through it would otherwise leave a live coordinator that async_unload_entry
     # cannot reach - one more of them competing for the single BLE connection on
     # every cancelled attempt.
@@ -65,8 +65,8 @@ async def async_setup_entry(hass: HomeAssistant, entry: GlowriumConfigEntry) -> 
     # Registered before starting, and relied on for BOTH teardown paths: Home
     # Assistant does not call async_unload_entry for an entry that never
     # reached LOADED, so a setup that fails after this point would otherwise
-    # leave the coordinator's bluetooth callbacks and reconnect poll running
-    # with no owner - one more of them on every retry.
+    # leave the bluetooth callbacks and the timer its keeper registered
+    # running with no owner - one more of them on every retry.
     entry.async_on_unload(coordinator.async_stop)
     # Home Assistant stopping is not an unload: it does not run the callback
     # above, so the lamp's link would be left to whatever the process manages

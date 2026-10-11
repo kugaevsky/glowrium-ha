@@ -18,10 +18,9 @@ with no client outside none of them can be broken from there.
 
 Some of the link's state is public. Nothing of the integration outside this
 module reads it but through ``in_reach`` and ``diagnostics``; the tests of
-the link read it, to say what the link holds after what they did. The
-coordinator imports one underscored name from here, the interval of the
-poll: the timer that ticks is Home Assistant's, and so the coordinator's
-to set.
+the link read it, to say what the link holds after what they did. One
+underscored name is imported from here, the interval of the poll: the timer
+that ticks is Home Assistant's, and so its keeper's to set (``keeper.py``).
 """
 
 from __future__ import annotations
