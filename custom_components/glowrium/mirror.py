@@ -40,10 +40,11 @@ _LOGGER = logging.getLogger(f"{__package__}.coordinator")
 # request reports no such id; a read of the state, on a G7 or a G8, brings
 # eleven.
 _OTHERS_KEPT: Final = 64
-# Said where the log tells of a frame it could not use in full: where the
-# frame is, and what was done to it there (see _for_the_log). No line above
-# debug prints a frame: its bytes are the lamp's to choose, and the default
-# log is posted for reasons that have nothing to do with this integration.
+# Said where the log tells of a frame it could not use, whole or in part:
+# where the frame is, and what was done to it there (see _for_the_log). No
+# line above debug prints a frame: its bytes are the lamp's to choose, and
+# the default log is posted for reasons that have nothing to do with this
+# integration.
 _IN_THE_DEBUG_LOG = (
     "With debug logging enabled for this integration the frame is in the log, "
     "where what reads as the coordinates stored in the lamp, or as the sunrise "
@@ -268,9 +269,13 @@ class Mirror(Mapping[int, Any]):
         self.clock_heard_at: datetime | None = None
         # Set once a frame has been rejected for trailing bytes, so the warning
         # is raised once per session instead of on every notification; and the
-        # same for a frame that was read only in part.
+        # same for a frame that was read only in part, for one that could not
+        # be decoded at all, and for one that decoded to nothing of use. Each
+        # on a count of its own: one having been said says nothing of another.
         self._trailing_warned = False
         self._unreadable_warned = False
+        self._undecodable_warned = False
+        self._nothing_usable_warned = False
         # Whoever is waiting for the next report (next_report).
         self._waiters: list[asyncio.Future[None]] = []
 
@@ -325,7 +330,7 @@ class Mirror(Mapping[int, Any]):
             self._log_trailing_bytes(frame, err.count)
             return frozenset()
         except ValueError as err:  # the decoder raises nothing else
-            _LOGGER.debug("Undecodable frame %s: %s", _Printed(frame), err)
+            self._log_undecodable(frame, err)
             return frozenset()
         carried = decoded if isinstance(decoded, dict) else {}
         kept = self._kept_of(carried)
@@ -335,12 +340,7 @@ class Mirror(Mapping[int, Any]):
         elif not carried:
             # Decoded without a fault, and still of no use: every frame that
             # is dropped is named, or nobody can ask what it was.
-            _LOGGER.debug(
-                "%s: frame %s decodes to nothing that can be used: it is "
-                "not a map of properties, or is one with nothing in it",
-                self._address,
-                _Printed(frame),
-            )
+            self._log_nothing_usable(frame)
         elif not kept:
             # There was room for none of it. Dropped, then, and named too.
             _LOGGER.debug(
@@ -506,5 +506,54 @@ class Mirror(Mapping[int, Any]):
             self._described(),
             err,
             kept,
+            _IN_THE_DEBUG_LOG,
+        )
+
+    def _log_undecodable(self, data: bytes, err: ValueError) -> None:
+        """Report a frame that could not be decoded: once loudly, each time at debug.
+
+        Such a frame is no report, and to the state request it is no answer:
+        the lamp is read as a silent one is, on every connect, and on BlueZ a
+        read ends the link. The owner of a lamp that sends nothing else sees
+        entities that read unknown and a link that keeps dropping, so the
+        first such frame of a session says why - what was wrong, in the
+        decoder's own words, and where the frame is.
+        """
+        _LOGGER.debug("Undecodable frame %s: %s", _Printed(data), err)
+        if self._undecodable_warned:
+            return
+        self._undecodable_warned = True
+        _LOGGER.warning(
+            "%s (%s) sent a frame that could not be decoded (%s) and it was "
+            "dropped. Please report this, with the frame. %s",
+            self._address,
+            self._described(),
+            err,
+            _IN_THE_DEBUG_LOG,
+        )
+
+    def _log_nothing_usable(self, data: bytes) -> None:
+        """Report a frame of no use: once loudly, each time at debug.
+
+        Something other than a map of properties, or a map with nothing in
+        it. It decoded without a fault, and it leaves the lamp where a frame
+        that did not decode leaves it, so it is said the same way - on a
+        count of its own, being another thing for a lamp to do.
+        """
+        _LOGGER.debug(
+            "%s: frame %s decodes to nothing that can be used: it is "
+            "not a map of properties, or is one with nothing in it",
+            self._address,
+            _Printed(data),
+        )
+        if self._nothing_usable_warned:
+            return
+        self._nothing_usable_warned = True
+        _LOGGER.warning(
+            "%s (%s) sent a frame that decodes to nothing this integration can "
+            "use - it is not a map of properties, or is one with nothing in "
+            "it - and it was dropped. Please report this, with the frame. %s",
+            self._address,
+            self._described(),
             _IN_THE_DEBUG_LOG,
         )

@@ -523,12 +523,13 @@ def test_no_line_of_the_mirror_carries_the_coordinates(
 def test_malformed_frame_is_not_reported_as_trailing_bytes(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
-    """A truncated frame keeps the generic message and raises no warning."""
+    """A truncated frame keeps the generic message, and its own warning."""
     mirror = _a_mirror()
     with caplog.at_level(logging.DEBUG, logger=_LOG):
         assert mirror.take(bytes.fromhex("81")) == frozenset()
     assert "Undecodable frame" in caplog.text
-    assert not _warnings(caplog)
+    (said,) = _warnings(caplog)
+    assert "trailing bytes" not in said
 
 
 @pytest.mark.parametrize(
@@ -570,6 +571,7 @@ def test_a_frame_the_decoder_refuses_is_dropped_and_nothing_is_raised(
         pytest.param("80", id="an empty array"),
         pytest.param("8206f5", id="an array"),
         pytest.param("a0", id="a map with nothing in it"),
+        pytest.param("a1", id="a map that promises a pair and brings none"),
         pytest.param("05", id="a number"),
         pytest.param("f6", id="null"),
     ],
@@ -583,14 +585,110 @@ def test_a_frame_that_decodes_to_nothing_usable_is_named_as_well(
     frame that is anything else, or a map with nothing in it, was dropped
     without a line - while the documents tell whoever reports a problem that
     every frame the integration could not use is in the debug log.
+
+    And as the only answer to the state request it leaves the lamp where
+    noise does: read on every connect, which on BlueZ costs it the link. So
+    the first of a session is said where somebody looks - the lamp, what the
+    frame was, where it is - and each is in the debug log.
     """
     mirror = _a_mirror()
+    raw = bytes.fromhex(frame)
     with caplog.at_level(logging.DEBUG, logger=_LOG):
-        assert mirror.take(bytes.fromhex(frame)) == frozenset()
-    assert not mirror
-    assert mirror.reports == 0
-    assert f"frame {frame} decodes to nothing that can be used" in caplog.text
-    assert not _warnings(caplog)
+        assert mirror.take(raw) == frozenset()
+        assert not mirror
+        assert mirror.reports == 0
+        assert f"frame {frame} decodes to nothing that can be used" in caplog.text
+        (said,) = _warnings(caplog)
+        assert said.startswith(
+            f"{_ADDRESS} ({_DESCRIBED}) sent a frame that decodes to nothing"
+        )
+        assert "not a map of properties, or is one with nothing in it" in said
+        assert "was dropped" in said
+        assert "Please report this" in said
+        assert "debug logging" in said  # where the frame is
+        assert "coordinates" in said  # and what to look it over for
+
+        caplog.clear()
+        assert mirror.take(raw) == frozenset()
+        assert not _warnings(caplog)  # the lamp sends them all day
+        assert f"frame {frame} decodes to nothing that can be used" in caplog.text
+
+
+@pytest.mark.parametrize(
+    ("frame", "why"),
+    [
+        pytest.param(
+            "c0a106f5", "unsupported CBOR major type 6", id="a map behind a tag"
+        ),
+        pytest.param(
+            "bf06f5ff", "unsupported CBOR length 31", id="a map of indefinite length"
+        ),
+        pytest.param("ffee0102", "unsupported CBOR simple value 31", id="noise"),
+        pytest.param("8406f50818", "truncated CBOR", id="an array that ran out"),
+    ],
+)
+def test_a_frame_that_cannot_be_decoded_is_said_once_and_without_the_frame(
+    caplog: pytest.LogCaptureFixture, frame: str, why: str
+) -> None:
+    """A lamp whose frames cannot be decoded is told so where somebody looks.
+
+    Such a frame is no answer to the state request: the lamp is read instead,
+    on every connect, and on BlueZ a read ends the link. Its owner saw
+    entities that read unknown and a link that kept dropping, and no line
+    above debug said why. The first such frame of a session is said: the
+    lamp, what was wrong in the decoder's own words, where the frame is, and
+    the caution that goes with posting bytes. The frame is in the debug log
+    every time, and in no line above it.
+    """
+    mirror = _a_mirror()
+    raw = bytes.fromhex(frame)
+    with caplog.at_level(logging.DEBUG, logger=_LOG):
+        assert mirror.take(raw) == frozenset()
+        assert not mirror
+        assert mirror.reports == 0
+        (said,) = _warnings(caplog)
+        assert said.startswith(
+            f"{_ADDRESS} ({_DESCRIBED}) sent a frame that could not be decoded"
+        )
+        assert why in said
+        assert "was dropped" in said
+        assert "Please report this" in said
+        assert "debug logging" in said  # where the frame is
+        assert "coordinates" in said  # and what to look it over for
+        assert frame not in said
+        assert f"Undecodable frame {frame}" in caplog.text  # the first one too
+
+        caplog.clear()
+        assert mirror.take(raw) == frozenset()
+        assert not _warnings(caplog)  # the lamp sends them all day
+        assert f"Undecodable frame {frame}" in caplog.text
+
+
+@pytest.mark.parametrize(
+    ("first", "then"),
+    [
+        pytest.param("c000", "a0", id="the one that cannot be decoded first"),
+        pytest.param("a0", "c000", id="the one of no use first"),
+    ],
+)
+def test_what_a_dropped_frame_was_is_said_for_each_kind_of_its_own(
+    caplog: pytest.LogCaptureFixture, first: str, then: str
+) -> None:
+    """One kind of frame having been said does not keep the other unsaid.
+
+    A frame that cannot be decoded and one that decodes to nothing of use
+    are two things a lamp can do, and a report of one says nothing of the
+    other: each is said the first time it comes, whichever came first.
+    """
+    mirror = _a_mirror()
+    with caplog.at_level(logging.WARNING, logger=_LOG):
+        for frame in (first, then, first, then):
+            mirror.take(bytes.fromhex(frame))
+
+    said = _warnings(caplog)
+    assert len(said) == 2
+    assert sorted("could not be decoded" in line for line in said) == [False, True]
+    assert sorted("decodes to nothing" in line for line in said) == [False, True]
 
 
 # {power: on, brightness: 70, 0x09: <a tag, which nothing here can read> ...
@@ -843,6 +941,7 @@ def test_no_bytes_of_a_frame_are_logged_above_debug(
     assert said in caplog.text
     assert raw.hex() in caplog.text  # with debug logging on, the frame is there
     louder = [r.getMessage() for r in caplog.records if r.levelno >= logging.INFO]
+    assert louder  # each of these frames is said above debug as well
     assert not [line for line in louder if _bytes_of(raw, line)]
 
 

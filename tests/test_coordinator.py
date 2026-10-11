@@ -2971,9 +2971,10 @@ async def _the_warnings_that_name_the_lamp(
 ) -> list[str]:
     """Draw each warning that names the lamp's model, and return what was said.
 
-    Five of them: a frame with trailing bytes, one with an item that cannot be
-    read, more properties than are kept, a value that cannot be used, and a
-    refused state request.
+    Seven of them: a frame with trailing bytes, one with an item that cannot
+    be read, one that cannot be decoded, one that decodes to nothing of use,
+    more properties than are kept, a value that cannot be used, and a refused
+    state request.
     """
     lamp = lamp_of(coordinator)
     await coordinator.async_set_indicator(True)  # a link to be asked on
@@ -2982,17 +2983,21 @@ async def _the_warnings_that_name_the_lamp(
     with caplog.at_level(logging.WARNING, logger=coordinator_module.__name__):
         lamp.say(bytes.fromhex("a106f5deadbeef"))  # trailing bytes
         lamp.say(_PARTLY_READABLE)
+        lamp.say(bytes.fromhex("c0a106f5"))  # a map behind a tag: not decoded
+        lamp.say(bytes.fromhex("a0"))  # a map with nothing in it
         flood(lamp.say, ids=65)  # one more than there is room for
         lamp.say(cbor.encode({KEY_INDICATOR: "on"}))  # text where a flag belongs
         for _ in range(coordinator_module._STATE_REQUEST_ATTEMPTS):
             await coordinator._request_state(turn_over(coordinator, link))
     said = [r.getMessage() for r in caplog.records if r.levelno == logging.WARNING]
-    assert len(said) == 5
+    assert len(said) == 7
     assert "trailing bytes" in said[0]
     assert "cannot read" in said[1]
-    assert "reports more properties than" in said[2]
-    assert "cannot be used" in said[3]
-    assert "refused the batched state request" in said[4]
+    assert "could not be decoded" in said[2]
+    assert "decodes to nothing" in said[3]
+    assert "reports more properties than" in said[4]
+    assert "cannot be used" in said[5]
+    assert "refused the batched state request" in said[6]
     return said
 
 
@@ -3039,7 +3044,7 @@ async def test_a_warning_names_a_model_and_a_firmware_that_are_what_they_claim(
     Both come out of the device-info string, where the serial number and the
     address sit beside them, and where one field ends is only what the
     parser made of the string. A lamp that separates its fields differently
-    hands over one long field with the others inside it. Five warnings name
+    hands over one long field with the others inside it. Seven warnings name
     the model and the firmware, and each of them asks to be reported: the
     log is held to the shapes the diagnostics file is held to. Until the
     lamp is read, its model is what an earlier session stored (``known_by``
