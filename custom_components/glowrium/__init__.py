@@ -14,8 +14,8 @@ from homeassistant.helpers import issue_registry as ir
 from homeassistant.util.hass_dict import HassKey
 
 from .const import DOMAIN
-from .coordinator import GlowriumCoordinator, presets_issue_id
-from .keeper import EntryKeeper
+from .coordinator import GlowriumCoordinator
+from .keeper import EntryKeeper, presets_issue_id
 from .link import Unclosed
 
 PLATFORMS: list[Platform] = [
@@ -76,7 +76,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: GlowriumConfigEntry) -> 
     entry.async_on_unload(
         hass.bus.async_listen(EVENT_HOMEASSISTANT_STOP, coordinator.async_shutdown)
     )
-    await coordinator.async_start(entry)
+    await coordinator.async_start()
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
     return True
 

@@ -12,12 +12,8 @@ from typing import Any, Final, NamedTuple, Protocol
 
 from bleak.backends.device import BLEDevice
 from homeassistant.components import bluetooth
-from homeassistant.config_entries import ConfigEntry
-from homeassistant.const import CONF_MODEL_ID
 from homeassistant.core import Event, HomeAssistant, callback
 from homeassistant.exceptions import HomeAssistantError, ServiceValidationError
-from homeassistant.helpers import device_registry as dr, issue_registry as ir
-from homeassistant.helpers.typing import UNDEFINED
 from homeassistant.util import dt as dt_util
 
 from . import cbor, identity, protocol
@@ -62,16 +58,10 @@ from .link import (
     dial_by_bluetooth,
 )
 from .mirror import Mirror
-from .models import GlowriumModel, has_profile, resolve_model
+from .models import GlowriumModel, resolve_model
 from .protocol import UNUSABLE, Unusable, usable
 
 _LOGGER = logging.getLogger(__name__)
-# What to send of a lamp nobody here owns, and how: where the notice about
-# unconfirmed presets points.
-_PROTOCOL_DATA_URL = (
-    "https://github.com/kugaevsky/glowrium-ha/blob/main/"
-    "CONTRIBUTING.md#sending-protocol-data-for-a-device"
-)
 # How long the lamp gets to report once it has acknowledged the state request.
 # On a G7 the report arrives inside the write call itself. The wait is for a
 # model that splits its map across notifications, and with the dial before it
@@ -146,17 +136,6 @@ _NO_LIGHTING_MODE: Final = _Refusal("lighting_mode_not_read", "lighting_mode_unu
 _NO_SCHEDULE: Final = _Refusal("schedule_not_read", "schedule_unusable")
 
 
-def presets_issue_id(entry_id: str) -> str:
-    """Name the repair about unconfirmed presets by the config entry.
-
-    Never by the lamp's address: Home Assistant lists the ids of an
-    integration's open repairs in its diagnostics download, which is a file
-    people post. A function of the module, and not of the coordinator: the
-    repair goes when the entry is removed, and no coordinator is left then.
-    """
-    return f"presets_unconfirmed_{entry_id}"
-
-
 class Keeper(Protocol):
     """What keeps a coordinator, and what the device half asks of it.
 
@@ -212,6 +191,18 @@ class Keeper(Protocol):
         Assistant's raises a repair and takes it down.
         """
 
+    def lamp_described(
+        self, model_id: str | None, firmware: str | None, serial: str | None
+    ) -> None:
+        """Hear what the lamp said it is: its model, firmware and serial number.
+
+        Each as the device half has it, and ``None`` for what the lamp did
+        not say; the model is the one an earlier session read when this one
+        did not name it. Said once the device-info string has been read,
+        which can be after the keeper has ceased to watch: an unload ends
+        the exchange that reads it, and Home Assistant stopping does not.
+        """
+
 
 class GlowriumCoordinator:
     """Maintain a BLE connection and mirror the device's CBOR property state.
@@ -235,8 +226,7 @@ class GlowriumCoordinator:
 
         ``hass`` is None when there is no Home Assistant behind it: that is
         how tools/bench.py drives the real coordinator against a real lamp.
-        It then connects, primes and commands as it does anywhere, and
-        cannot be started (see ``async_start``).
+        It then connects, primes and commands as it does anywhere.
 
         ``keeper`` is what keeps this coordinator (see ``Keeper``).
 
@@ -273,15 +263,6 @@ class GlowriumCoordinator:
         # The properties under which the lamp has reported something that
         # cannot be used, and of which the log has said so (once each).
         self._unusable_said: set[int] = set()
-        # Set by async_start: what the repairs are filed under, and where
-        # what the lamp says it is gets remembered.
-        self._entry: ConfigEntry | None = None
-        # Set where the watching ends. What is learnt of the lamp after that
-        # is kept, and no longer said. An unload cancels the exchange on its
-        # way; Home Assistant stopping does not, so the answer to the read of
-        # the device info can come in to a coordinator that nobody is left to
-        # answer for (see _async_review_presets_notice).
-        self._stopped = False
         # The link to the lamp: the client, the lock around it, and how it is
         # let go of (link.py). It is handed its dial; left out, that is the
         # lamp as Home Assistant's Bluetooth finds it.
@@ -592,34 +573,19 @@ class GlowriumCoordinator:
             else:
                 self._listeners_failing.discard(update_callback)
 
-    async def async_start(self, entry: ConfigEntry) -> None:
+    async def async_start(self) -> None:
         """Watch for the device and keep it connected.
 
-        Returns as soon as the watchers are in place. The first connect runs as
-        a background task rather than being awaited: setup awaits this method,
+        Returns as soon as the keeper is watching. The first connect runs as
+        background work rather than being awaited: setup awaits this method,
         and a lamp that is out of range would otherwise hold the entry open for
         the whole connect budget - long enough for a reload to land inside it,
         cancel the setup and leave the entry in ``setup_error``. Waiting buys
         nothing, because entity availability follows advertisement presence
-        rather than the GATT link. Tying the task to ``entry`` means it is
-        cancelled on unload, so a half-finished connect cannot outlive us.
+        rather than the GATT link. The work is the keeper's to end with its
+        watching (``Keeper.spawn``), so a half-finished connect cannot outlive
+        us.
         """
-        hass = self.hass
-        if hass is None:
-            # Watching is done through Home Assistant's Bluetooth: its
-            # advertisement callbacks, its presence tracking, its timer.
-            raise RuntimeError(
-                f"{self.address}: async_start needs Home Assistant to watch the "
-                "lamp through; without one, connect directly (tools/bench.py)"
-            )
-        # Before anything is registered. Home Assistant replays the last
-        # advertisement from inside async_register_callback when it already
-        # knows the device - every reload, for a lamp that advertises all the
-        # time - and the reconnect that callback starts needs the entry to be
-        # put on. Without it the task lands on hass and outlives the unload.
-        self._entry = entry
-        # From what the entry remembers: the lamp may not be heard for hours.
-        self._async_review_presets_notice(hass, entry)
         # What the keeper hears of the lamp, and its clock, go to the link as
         # they are: when to dial is the link's to decide.
         self._link.begin(self._keeper.watch(self._link.advertising, self._link.tick))
@@ -635,7 +601,6 @@ class GlowriumCoordinator:
     @callback
     def _async_stop_watching(self) -> None:
         """Stop reacting to the lamp, and take no new link from here on."""
-        self._stopped = True
         # Said to the link before anything else: a command may be in flight
         # and outlast this, and from here on it is refused a new link.
         self._link.halt()
@@ -657,63 +622,6 @@ class GlowriumCoordinator:
         # Before anything is awaited.
         self._async_stop_watching()
         await self._link.let_go()
-
-    @callback
-    def _async_review_presets_notice(
-        self, hass: HomeAssistant, entry: ConfigEntry
-    ) -> None:
-        """Say that the presets are unconfirmed for this lamp's model, or unsay it.
-
-        A model without a profile is driven by the reference presets - the
-        G7's - and the select shows what was chosen whether or not the lamp
-        took it as that preset. Its owner is told, in a repair that asks for
-        nothing and points at what would settle it.
-
-        Only while the model is known: a lamp that has not named itself yet
-        is driven by the same presets, and may well be a G7.
-
-        Raised at every start and over itself, and not taken down where the
-        watching stops: Home Assistant keeps "ignored" with the repair, and one
-        that is deleted and raised afresh comes back as new - on every reload,
-        and on every restart. It is taken down in two places only: here, once
-        the model has a profile, and where the entry is removed
-        (``async_remove_entry``). Not kept across a restart of Home Assistant,
-        so an entry that is not loaded then shows nothing.
-
-        Called by whoever has the entry in hand: the bench has neither an
-        entry nor a Home Assistant, and does not come here.
-        """
-        model_id = self.model_id
-        if self._stopped or not model_id:
-            return
-        issue_id = presets_issue_id(entry.entry_id)
-        if has_profile(model_id):
-            # Its presets are its own: by an update that brought the profile,
-            # or because the lamp names another model than was remembered.
-            ir.async_delete_issue(hass, DOMAIN, issue_id)
-            return
-        # As text: the description is rendered as Markdown, and the name comes
-        # off the air.
-        said = {"name": identity.as_text(self._plain_name)}
-        key = "presets_unconfirmed_unnamed_model"
-        # The model id only when it is one from end to end: what the parser
-        # made of a device-info string can have the serial number inside it.
-        # A placeholder is not translated, so nothing can stand in for it:
-        # the text that does without the model id is a text of its own.
-        if (model := identity.as_model_id(model_id)) is not None:
-            said["model"] = model
-            key = "presets_unconfirmed"
-        ir.async_create_issue(
-            hass,
-            DOMAIN,
-            issue_id,
-            is_fixable=False,
-            is_persistent=False,
-            severity=ir.IssueSeverity.WARNING,
-            learn_more_url=_PROTOCOL_DATA_URL,
-            translation_key=key,
-            translation_placeholders=said,
-        )
 
     def _ble_device(self) -> BLEDevice | None:
         if self.hass is None:  # the bench scans for itself and hands in a dial
@@ -766,43 +674,10 @@ class GlowriumCoordinator:
             "%s: device info read; on BlueZ this link does not outlive a read",
             self.address,
         )
-        self._async_publish_device_info()
-
-    @callback
-    def _async_publish_device_info(self) -> None:
-        """Hand what the lamp said about itself on to Home Assistant.
-
-        The entities described the device when they were built, which is
-        before anything was read, and Home Assistant takes that description
-        once. So what is learned afterwards is put into the device registry
-        here, and the model is kept with the config entry so that the next
-        start knows it before the first entity exists.
-        """
-        entry = self._entry
-        if self.hass is None or entry is None:  # the bench has neither
-            return
-        registry = dr.async_get(self.hass)
-        # The device is found through the config entry it belongs to, not by
-        # its address: since Home Assistant 2026.10 a connection no longer
-        # names one device across config entries, and looking one up that way
-        # is deprecated. There is one, once the first entity has been added.
-        for device in dr.async_entries_for_config_entry(registry, entry.entry_id):
-            # Only what the lamp actually said. The registry takes None as a
-            # value; UNDEFINED is how a field is left as it is.
-            registry.async_update_device(
-                device.id,
-                model=self.model.name if self.model_id else UNDEFINED,
-                model_id=self.model_id or UNDEFINED,
-                sw_version=self.sw_version or UNDEFINED,
-                serial_number=self.serial_number or UNDEFINED,
-            )
-        model_id = self.device_info.get("pkey")
-        if model_id and entry.data.get(CONF_MODEL_ID) != model_id:
-            self.hass.config_entries.async_update_entry(
-                entry, data={**entry.data, CONF_MODEL_ID: model_id}
-            )
-        # The model is known from here on, in this session and not the next.
-        self._async_review_presets_notice(self.hass, entry)
+        # The entities described the device when they were built, which is
+        # before anything was read: what is learned now is the keeper's to
+        # put where it is shown, and to remember for the next start.
+        self._keeper.lamp_described(self.model_id, self.sw_version, self.serial_number)
 
     async def _request_state(self, turn: Turn) -> bool:
         """Prime the state mirror: ask the lamp to report, read only if it will not.

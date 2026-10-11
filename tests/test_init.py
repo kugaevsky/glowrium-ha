@@ -70,6 +70,7 @@ from custom_components.glowrium.coordinator import (
     _parse_device_info as _parsed,
 )
 from custom_components.glowrium.entity import GlowriumEntity
+from custom_components.glowrium.keeper import EntryKeeper
 from custom_components.glowrium.light import GlowriumLight
 from custom_components.glowrium.models import GlowriumModel
 from custom_components.glowrium.number import (
@@ -112,13 +113,14 @@ async def test_coordinator_is_reachable_before_it_is_started(
     entry.add_to_hass(hass)
     seen: list[object] = []
 
-    async def _record(_self: object, started_with: object) -> None:
-        # The entry is also what ties the background connect to the entry's
-        # lifecycle, so pin that the right one is handed over.
-        assert started_with is entry
+    async def _record(_self: object) -> None:
         seen.append(entry.runtime_data)
 
     with (
+        # The entry is what ties the background connect to the entry's
+        # lifecycle, and it is the keeper that has it: pin that the keeper
+        # is built for this one, and before anything is started.
+        patch("custom_components.glowrium.EntryKeeper", wraps=EntryKeeper) as kept,
         patch(
             "custom_components.glowrium.GlowriumCoordinator.async_start",
             autospec=True,
@@ -134,6 +136,7 @@ async def test_coordinator_is_reachable_before_it_is_started(
 
     assert len(seen) == 1
     assert seen[0] is entry.runtime_data  # already published when start ran
+    kept.assert_called_once_with(hass, entry)
 
 
 async def test_unload_stops_the_coordinator(hass: HomeAssistant) -> None:
@@ -255,10 +258,9 @@ async def _setup_without_bluetooth(
     ):
         assert await hass.config_entries.async_setup(entry.entry_id)
         await hass.async_block_till_done()
-    # The stubbed start took neither the entry nor a look at the air.
-    # Availability follows advertisement presence; these tests are about the
-    # entities, not about that.
-    entry.runtime_data._entry = entry
+    # The stubbed start took no look at the air. Availability follows
+    # advertisement presence; these tests are about the entities, not about
+    # that.
     link_of(entry.runtime_data).begin(present=True)
     entry.runtime_data._async_notify_listeners()
     await hass.async_block_till_done()
@@ -1473,7 +1475,7 @@ async def test_an_entity_built_after_the_lamp_was_read_describes_it_in_full(
     entry = _entry()
     entry.add_to_hass(hass)
 
-    def _already_read(coordinator: object, _entry: object) -> None:
+    def _already_read(coordinator: object) -> None:
         coordinator.device_info = _parsed(G7_INFO)
 
     with patch(
@@ -2130,8 +2132,10 @@ async def test_a_coordinator_that_was_stopped_raises_no_notice(
     The device info is read last on a link, and Home Assistant can stop
     while the answer to that read is on its way: the coordinator hangs up at
     once, and the exchange is not cancelled with it. A notice raised then
-    would have nobody left to answer for it. What was read is kept with the
-    entry all the same, and the next start raises the notice from that.
+    would have nobody left to answer for it. What was read is kept all the
+    same - with the entry, from which the next start raises the notice, and
+    in the device registry, where the device page reads it after the restart.
+    Withholding the notice is easy to turn into withholding everything.
     """
     entry = await _setup_without_bluetooth(hass)
     lamp = ScriptedLamp()
@@ -2150,6 +2154,12 @@ async def test_a_coordinator_that_was_stopped_raises_no_notice(
         await connecting
 
     assert entry.data[CONF_MODEL_ID] == "Glowrium-C064"  # read, and kept
+    assert _described(_device(hass)) == (
+        "Glowrium",  # the name of a model nobody has a profile for
+        "Glowrium-C064",
+        "2",
+        "CST-0009",
+    )
     assert _notices(hass) == []
 
 

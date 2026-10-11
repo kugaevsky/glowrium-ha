@@ -139,6 +139,9 @@ class ScriptedKeeper:
         # What was said of a stack that will not hang up: each count, and
         # ``None`` for each time it was said to be over.
         self.stack_faults: list[int | None] = []
+        # What the lamp was said to be, each time: model id, firmware,
+        # serial number.
+        self.described: list[tuple[str | None, str | None, str | None]] = []
         # Whether the lamp is on the air when the watching begins.
         self.present = True
         # What the device half handed over to be told through, while it
@@ -171,6 +174,12 @@ class ScriptedKeeper:
     def stack_fault(self, count: int | None) -> None:
         """Note what was said of a stack that will not hang up."""
         self.stack_faults.append(count)
+
+    def lamp_described(
+        self, model_id: str | None, firmware: str | None, serial: str | None
+    ) -> None:
+        """Note what the lamp was said to be."""
+        self.described.append((model_id, firmware, serial))
 
     @property
     def watching(self) -> bool:

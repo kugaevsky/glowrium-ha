@@ -39,8 +39,8 @@ class GlowriumEntity(Entity):
         # Only what is known at this point, which on a first start is nothing:
         # the lamp has not been read yet. A field left out is left alone in
         # the device registry, while a None is taken as the value and wipes
-        # what an earlier session learned. The coordinator fills the rest in
-        # once the lamp has said it (_async_publish_device_info).
+        # what an earlier session learned. The rest is filled in once the
+        # lamp has said it (EntryKeeper.lamp_described).
         if coordinator.model_id:
             info["model"] = coordinator.model.name
             info["model_id"] = coordinator.model_id

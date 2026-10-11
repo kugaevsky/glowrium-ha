@@ -2110,7 +2110,7 @@ async def test_stopping_tears_everything_down(
     # The first connect is left out: the link here is one a command takes.
     entry.async_create_background_task = lambda _hass, coro, _name: coro.close()
     coordinator, lamp = _kept_for(hass, entry)
-    await coordinator.async_start(entry)
+    await coordinator.async_start()
     await coordinator.async_set_indicator(True)
     link = lamp.links[-1]
     monkeypatch.setattr(link_module, "_CONFIRM_TIMEOUT", 0.01)
@@ -2155,7 +2155,7 @@ async def test_a_start_that_fails_part_way_leaves_no_watcher_behind(
     coordinator, _lamp = _kept_for(hass, entry)
 
     with pytest.raises(RuntimeError, match="no scanner"):
-        await coordinator.async_start(entry)
+        await coordinator.async_start()
     await coordinator.async_stop()
 
     assert ended.call_count == 1
@@ -2413,7 +2413,7 @@ async def test_a_lamp_that_is_advertising_at_start_is_in_reach_from_the_start(
     monkeypatch.setattr(keeper_module, "bluetooth", fake)
 
     with caplog.at_level(logging.INFO, logger=coordinator_module.__name__):
-        await coordinator.async_start(entry)
+        await coordinator.async_start()
     try:
         assert coordinator.available is present
         if present:
@@ -2460,7 +2460,7 @@ async def test_starting_watches_for_the_device(
     fake.BluetoothScanningMode = MagicMock()
     monkeypatch.setattr(keeper_module, "bluetooth", fake)
 
-    await coordinator.async_start(entry)
+    await coordinator.async_start()
     try:
         assert sorted(calls) == ["advertisement", "presence", "unavailable"]
         # Each for this lamp, by the address its entry was set up with.
@@ -2830,7 +2830,7 @@ async def test_the_lamp_is_watched_through_the_keeper(
     keeper = keeper_of(coordinator)
     keeper.present = False
 
-    await coordinator.async_start(MagicMock())
+    await coordinator.async_start()
     await hass.async_block_till_done()  # the first connect, failing
 
     assert keeper.spawned == ["glowrium initial connect AA:BB:CC:DD:EE:FF"]
@@ -3732,36 +3732,49 @@ async def test_a_hang_up_is_not_tied_to_the_entry(hass: HomeAssistant) -> None:
     assert link.hung_up == 1
 
 
-async def test_reading_the_device_info_does_not_need_home_assistant() -> None:
-    """What the lamp says about itself is kept even with nowhere to publish it.
+@pytest.mark.parametrize(
+    ("remembered", "info", "said"),
+    [
+        pytest.param(
+            None,
+            b"brand:INLEDCO;pkey:Glowrium-C051;devid:CST-0001;version:4;;",
+            ("Glowrium-C051", "4", "CST-0001"),
+            id="all of it",
+        ),
+        pytest.param(
+            None,
+            b"pkey:Glowrium-C051;version:4;;",
+            ("Glowrium-C051", "4", None),
+            id="what it said, and no more",
+        ),
+        pytest.param(
+            "Glowrium-C051",
+            b"version:4;;",
+            ("Glowrium-C051", "4", None),
+            id="the model as an earlier session read it",
+        ),
+    ],
+)
+async def test_what_the_lamp_says_it_is_is_kept_and_handed_to_the_keeper(
+    remembered: str | None, info: bytes, said: tuple[str | None, ...]
+) -> None:
+    """What the lamp says about itself is kept, and whatever keeps it is told.
 
-    Home Assistant gets it in its device registry and its config entry; the
-    bench has neither, and reads the string all the same.
+    Home Assistant's keeper puts it in the device registry and remembers the
+    model with the config entry; the bench has neither, and the string is
+    read and kept all the same. The model is said as the device half knows
+    it: read now, or as it was remembered when the lamp does not name it.
     """
-    coordinator, lamp, link = await _holding_a_link(None, "bench")
-    lamp.readable(INFO_UUID, b"pkey:Glowrium-C051;version:4;;")
+    lamp = ScriptedLamp()
+    coordinator = lamp.coordinator(None, "bench", model_id=remembered)
+    await coordinator.async_set_indicator(True)  # a link, taken by a command
+    lamp.readable(INFO_UUID, info)
 
-    await coordinator._async_read_device_info(turn_over(coordinator, link))
+    await coordinator._async_read_device_info(turn_over(coordinator, lamp.links[-1]))
 
     assert coordinator.model_id == "Glowrium-C051"
     assert coordinator.sw_version == "4"
-
-
-async def test_watching_the_lamp_needs_home_assistant() -> None:
-    """Starting registers with Home Assistant's Bluetooth; without one it says so.
-
-    It failed a few lines in, inside Home Assistant's own code and in its
-    words, with the entry already taken. It is refused at the door instead,
-    with nothing put on and nothing registered.
-    """
-    coordinator = GlowriumCoordinator(
-        None, "AA:BB:CC:DD:EE:FF", "bench", keeper=ScriptedKeeper(None)
-    )
-
-    with pytest.raises(RuntimeError, match="needs Home Assistant"):
-        await coordinator.async_start(MagicMock())
-
-    assert coordinator._entry is None
+    assert keeper_of(coordinator).described == [said]
 
 
 async def test_stopping_does_not_cut_the_hang_up_short(
@@ -4179,7 +4192,7 @@ async def test_what_the_watchers_hear_reaches_the_link(
     coordinator, lamp = _kept_for(hass, entry)
     lamp.out_of_range()  # every dial fails at once, and is counted
 
-    await coordinator.async_start(entry)
+    await coordinator.async_start()
     try:
         await hass.async_block_till_done()  # the initial connect, failing
         assert not coordinator.available
@@ -4240,7 +4253,7 @@ async def test_a_reconnect_started_while_starting_belongs_to_the_entry(
     fake.async_address_present.return_value = True
     monkeypatch.setattr(keeper_module, "bluetooth", fake)
 
-    await coordinator.async_start(entry)
+    await coordinator.async_start()
     try:
         await hass.async_block_till_done()
         assert len(handed_over) == 2
