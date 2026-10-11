@@ -2,7 +2,8 @@
 
 - **Status:** accepted
 - **Date:** 2026-07-19 (initial release); the rule and its warning to reviewers
-  written into ARCHITECTURE.md on 2026-07-20
+  written into ARCHITECTURE.md on 2026-07-20; amended 2026-10-12 (the lamp
+  was seen not to advertise while it is connected; the rule is unchanged)
 
 ## Context
 
@@ -15,8 +16,19 @@ link itself two seconds after making it (ADR 0002): about a hundred an hour.
 
 `available` is what every entity shows and what the recorder keeps. Tied to
 the connection, every entity would flap to `unavailable` on each reconnect and
-spray that into the history while the lamp was fine: it advertises
-continuously, at about 1 Hz, whether or not anyone is connected.
+spray that into the history while the lamp was fine: it advertises at about
+1 Hz whenever nobody is connected to it.
+
+This said until 2026-10-12 that the lamp advertises whether or not anyone is
+connected. Measured on 2026-10-06, on one G7 under BlueZ: with a link held
+for an hour, the last advertisement Home Assistant had of the lamp was from
+1.7 s before the connect completed. Presence held all the same, because the
+host's scanner goes on listing a device it is connected to. The rule below
+never leaned on the lamp advertising under a link: a held link is the other
+half of its expression.
+Through a Bluetooth proxy, whose list of devices follows advertisements, it
+is not known whether presence holds under a link (CONTRIBUTING.md, "What
+nobody here can find out").
 
 ## Decision
 

@@ -197,7 +197,7 @@ that ended the asking on a perfectly good G7 forty seconds after start-up.
 Where the error is bleak's own it says which ATT error it was
 (`BleakGATTProtocolError.code`), and that code alone decides; the text is
 what is left to go by for anything else, a Bluetooth proxy's error for one.
-After `_STATE_REQUEST_ATTEMPTS` (3) refusals in a row the lamp is not asked
+After `_REFUSALS_THAT_END_THE_ASKING` (3) refusals in a row the lamp is not asked
 again for as long as the coordinator lives: it is only read, on every
 connect, and the log says so once - the lamp, its model and firmware, that
 commands still work, that what a read does not carry stays unknown, and a
@@ -700,7 +700,9 @@ Notes:
   connect"). If a G8 does the same, the bring-up of one that is only read
   fails on such a host, the exchange ends without the lamp being called one
   that answers, and the next connect tries again. No G8 has been at hand to
-  say. Through macOS or a Bluetooth proxy the write goes through.
+  say. On macOS the lamp's stray answer to a read is dropped and the channel
+  stays, so nothing stands in the way of the write there. Through a
+  Bluetooth proxy it is not known - nothing has been measured through one.
 - The **Activated** `binary_sensor` (diagnostic) surfaces this flag so users can
   see provisioning status.
 
@@ -721,8 +723,12 @@ ended each link itself, two seconds after making it (see
 [Priming state on connect](#priming-state-on-connect)).
 If `available` were tied to the connection, every entity would flap to
 `unavailable` on each reconnect, spraying noise into HA history.
-Since the device advertises continuously, presence is a far better availability
-signal.
+Since the device advertises about once a second whenever nobody is connected
+to it, presence is a far better availability signal. While a link is held it
+was seen not to advertise at all (one G7 under BlueZ, a link of an hour,
+2026-10-06), and presence held all the same: the host's scanner goes on
+listing a device it is connected to. Through a Bluetooth proxy, whose list
+follows advertisements, that is not known.
 
 ```python
 available = connected or advertising  # Link.in_reach
@@ -891,7 +897,7 @@ entities `unknown`, the settings showing what they showed before the restart;
 that blip is the cost of not blocking setup. The entry is known *before*
 anything registers for advertisements: Home Assistant replays the last
 advertisement from inside that registration when it already knows the device —
-every reload, for a lamp that advertises all the time — and the reconnect the
+every reload, for a lamp it has heard — and the reconnect the
 replay starts needs an entry to be put on, or it lands on `hass` and outlives
 the unload. That held by the order of two lines in the coordinator's start; it
 holds by construction now, since the keeper is built with its entry and a
@@ -1473,6 +1479,9 @@ Unit tests live in `tests/` and **never touch real Bluetooth**:
   says when that is not what is installed, that the environment the tests
   are running in is such a one, and that the workflows and the dependabot
   configuration agree with it.
+- `test_readme.py` — the automations the README shows can be run as they are
+  written, and every heading of the contributor guide that the README links
+  to is there.
 - `test_conftest.py` — what every test here runs with (`conftest.py`): one
   thing so far. asyncio's note on a step of the loop that took long is kept
   out of every test's log. The loop runs in debug mode, a busy machine draws

@@ -6,7 +6,8 @@
   item that cannot be read keeps the pairs ahead of it); 2026-10-11 (a frame
   that cannot be decoded, and one that decodes to nothing of use, is said
   once a session; the two ways of reading a frame in part are left to
-  differ: #41)
+  differ: #41); 2026-10-12 ("Revisit when" says where the brief for
+  carrying on behind an item that cannot be read is kept)
 
 ## Context
 
@@ -102,3 +103,8 @@ A model is found whose reports legitimately nest deeper than four, or carry an
 item the subset should learn to read: the warning is how it was found. Or a
 lamp is seen to send a frame with trailing bytes, or one that is read only in
 part: what that frame is settles whether the two ways should agree.
+
+What carrying on behind an item that cannot be read would take is written
+down, as a brief, on a ticket of its own
+([#40](https://github.com/kugaevsky/glowrium-ha/issues/40)). It is not built
+before a lamp is seen to send such an item.

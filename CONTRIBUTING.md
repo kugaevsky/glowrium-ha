@@ -99,7 +99,12 @@ the lamp by its address, and the Bluetooth libraries name the other devices
 they hear. What the integration writes into the diagnostics download (the
 first item below) has none of this in it; Home Assistant adds a header of
 its own to that file — version, time zone, the names of your custom
-integrations — so look it over all the same.
+integrations — so look it over all the same. The journal of the host's
+Bluetooth service can name any device the host hears or talks to, by its
+address and often by its name: that is why a count is asked for below, and
+not the journal. And a picture taken of the vendor app should show its list
+of presets and nothing else: the app holds an account, and the place the
+lamp was set to.
 
 What is worth sending, roughly in order of usefulness:
 
@@ -115,25 +120,46 @@ What is worth sending, roughly in order of usefulness:
    eleven valid properties because the frame promised twelve pairs and
    carried eleven.
 3. **The debug log of the first few minutes after a restart**, from any model
-   other than a G7. Since 0.3.0 a lamp is asked for its state before anything
-   is read, and that has only been run on a G7: the log shows whether your
-   lamp answered, refused or stayed silent, and how long each link then
+   other than a G7 — and from a G7 as well where the lamp is reached through
+   an ESPHome Bluetooth proxy: then an hour of it, with the lamp reachable
+   through the proxy only, and the diagnostics download taken while the lamp
+   is connected, which says what kind of client the link runs on. Since
+   0.3.0 a lamp is asked for its state before anything is read, and that has
+   only been run on a G7, and never through a proxy: the log shows whether
+   your lamp answered, refused or stayed silent, and how long each link then
    lasted. Say what the host is — Home Assistant OS, a Linux box with its own
    adapter, an ESPHome proxy — because the Bluetooth stack turned out to
    matter as much as the lamp.
-4. **A read of `facebd02`**, as hex or decoded. This is the lamp's whole
+4. **What the journal of the Bluetooth service shows on a host with BlueZ
+   5.84 or later** — a Linux host whose own adapter talks to the lamp; Home
+   Assistant OS has had 5.85 since 17.0. Three things, and not the journal:
+   the version (`bluetoothctl --version`); how many times
+   `Failed to disconnect device: Disconnected (0x0e)` stands in a week of the
+   journal with the integration running
+   (`journalctl -u bluetooth --since "1 week ago" | grep -cF "Disconnected (0x0e)"`);
+   and whether Home Assistant raised its repair about a Bluetooth stack
+   holding on to a dead link in that week. Without a shell on the host the
+   last of the three is still worth sending, with the version of the
+   operating system.
+5. **A read of `facebd02`**, as hex or decoded. This is the lamp's whole
    property map. It is how we learned that the read stops short of the
    indicator, lighting mode, ramp and DST keys, which changed how state is
    primed. Take it last: through BlueZ a read of this lamp ends the link about
    two seconds later, so anything else you wanted from that connection has to
    come first.
-5. **The device-info string from `facebd80`** — `brand`, `pkey`, `version`,
+6. **The device-info string from `facebd80`** — `brand`, `pkey`, `version`,
    and the names of anything else your lamp puts there. Leave out the values
    of `devid` and `mac`; the `pkey` is what selects the model profile.
-6. **The GATT table** as your stack reports it (`bluetoothctl`, nRF Connect,
+7. **The GATT table** as your stack reports it (`bluetoothctl`, nRF Connect,
    BlueZ). Two characteristics were missing from `const.py` until a G8 owner
    listed them.
-7. **A btsnoop capture of the vendor app** switching circadian presets. This is
+8. **The names of the eight presets as the vendor app shows them in German,
+   Spanish, French, Russian or Chinese** — a picture of its list of presets,
+   or word that the app has no such language. Here the names are the app's
+   English ones in every language, on purpose: a translation made up here
+   would be harder to match with the app than the English name is. What Home
+   Assistant stores is a preset's key, so a name can be replaced at any time.
+9. **A btsnoop capture of the vendor app** switching circadian presets. This is
    the one thing that cannot be substituted: it pins the preset indices, and
    without it a model's entry in `models.py` would be a guess. How to take
    one is in [ARCHITECTURE.md](ARCHITECTURE.md#how-to-add-a-new-model),
@@ -142,6 +168,50 @@ What is worth sending, roughly in order of usefulness:
 Please say which model and firmware the data came from, and whether it is one
 lamp or several — a value seen on one device is a datapoint, not a protocol
 guarantee, and the docs mark it accordingly.
+
+### What nobody here can find out
+
+These are open because nobody working on this has what it takes to find
+out. Each is settled by something from the list above, sent by whoever has
+the lamp, the proxy, the host or the app. An issue with it is all that is
+asked; if it turns into work, that issue is where the work gets described.
+
+- **Through an ESPHome Bluetooth proxy, with any model, a G7 included.**
+  What the documents say of the link was measured through an adapter of the
+  host's own, under BlueZ and on macOS. Through a proxy three things are not
+  known. Whether a read of the lamp ends the link, as it does under BlueZ
+  two seconds later. Whether the lamp reports its state when asked, so that
+  nothing has to be read. And whether the entities stay available between
+  one link and the next: a G7 was seen not to advertise while it is
+  connected, and a proxy's list of devices follows advertisements, so the
+  lamp may count as gone by the time a link drops. *What settles it:* the
+  debug log and the diagnostics download, as the list asks for them of a
+  proxy. The log is read for `device info read` with `disconnected` two
+  seconds after it; for anything said of the state request ahead of `primed`
+  (that it was refused, that it failed, or that it was acknowledged and
+  nothing reported), each of which means the lamp had to be read; and for
+  `is out of reach` right after a `disconnected` while the lamp stood where
+  it was.
+- **A G8 since 0.3.0.** How long a link lives, and on which Bluetooth stack;
+  and whether the lamp is asked three times and from then on only read, as
+  the changelog says it is. *What settles it:* the debug log and the
+  diagnostics download.
+- **BlueZ 5.84 or later.** Before 5.84 the stack can leave a request to
+  disconnect unanswered while it holds a link that no longer exists. From
+  5.84 on such a request is answered - as read in BlueZ's source: no host
+  that has it has been watched through that. *What settles it:* what the
+  journal of the Bluetooth service shows. Whichever way it comes out is
+  worth an issue: the count says whether the fault still shows in the
+  journal, the repair whether the integration still met it. It bears on what
+  the README's troubleshooting says of 5.84, and on the one thing
+  [ADR 0004](docs/adr/0004-a-stack-that-will-not-hang-up-is-a-state.md)
+  could only read from BlueZ's code.
+- **The names of the presets in the vendor app in another language.**
+  *What settles it:* a picture of the app's list of presets. With it the
+  names in the translations can be the app's own.
+- **The preset indices of any model other than the G7.** *What settles it:*
+  the capture of the vendor app switching presets on that model. With it the
+  model gets a profile, and the notice about unconfirmed presets goes.
 
 ## Testing on hardware
 

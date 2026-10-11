@@ -125,7 +125,9 @@ state instead of being read, because on a Linux host a read turned out to end
 the link (see the [changelog](CHANGELOG.md)). A G8 refuses to be asked, so it
 is still read, as before — which should leave a G8 working as it did, and on
 such a host still reconnecting after every read. Neither half of that has been
-run on a G8 since the change; a report from one, good or bad, is very welcome.
+run on a G8 since the change;
+[a report from one](CONTRIBUTING.md#what-nobody-here-can-find-out),
+good or bad, is very welcome.
 Since then the order has been made the same for every lamp: a G8 is asked
 first and read after, three times, and from then on only read - where it was
 read first from its first refusal on. That has not been run on a G8 either.
@@ -171,7 +173,11 @@ a clear write-up is enough, and I'll help with the rest.
    logging) and paste the relevant lines.
 5. **Preset differences (optional).** If the lighting-mode names or order differ
    from the G7, note them. A btsnoop capture from the vendor app pins the exact
-   indices — see [CONTRIBUTING.md](CONTRIBUTING.md).
+   indices — see [CONTRIBUTING.md](CONTRIBUTING.md). The names themselves are
+   the vendor app's English ones in every language, on purpose; if you use
+   the app in another language,
+   [a picture of its list of presets](CONTRIBUTING.md#what-nobody-here-can-find-out)
+   is welcome.
 
 **What the pull request should change**
 
@@ -189,7 +195,10 @@ a clear write-up is enough, and I'll help with the rest.
 - Home Assistant **2026.7** or newer.
 - A **Bluetooth adapter on the Home Assistant host**, or an
   [ESPHome Bluetooth Proxy](https://esphome.io/components/bluetooth_proxy.html)
-  within range of the lamp.
+  within range of the lamp. What these pages say of the link was measured
+  through an adapter of the host's own; through a proxy none of it has been,
+  and [a log from one](CONTRIBUTING.md#what-nobody-here-can-find-out)
+  would settle it.
 - The lamp allows a **single BLE connection** at a time — keep the vendor app
   disconnected while Home Assistant is in control.
 
@@ -370,7 +379,10 @@ messages worth acting on, and two symptoms that come without one.
   minutes, with `the lamp answers again` in the log. Restarting Home
   Assistant alone does not clear it. BlueZ before 5.84 can get into this
   state — `Failed to disconnect device: Disconnected (0x0e)` in the journal
-  of the bluetooth service is how it shows there. The same thing is raised
+  of the bluetooth service is how it shows there. That 5.84 ends it was read
+  in its source and has not been seen on a host:
+  [word from one that runs it](CONTRIBUTING.md#what-nobody-here-can-find-out)
+  is welcome. The same thing is raised
   under **Settings → System → Repairs**, and goes from there by itself when
   the lamp answers again.
 - **`refused the batched state request`** — the lamp will not report its state
