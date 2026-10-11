@@ -42,9 +42,10 @@ stateless views over that coordinator.
 
 | File (`custom_components/glowrium/…`) | Responsibility |
 | --- | --- |
-| `__init__.py` | `async_setup_entry` / `async_unload_entry` / `async_remove_entry`; builds the coordinator, stores it in `entry.runtime_data`, forwards platforms, has the coordinator hang up when Home Assistant stops, keeps for each lamp what could not be closed, and takes the notice about unconfirmed presets down when an entry is removed |
+| `__init__.py` | `async_setup_entry` / `async_unload_entry` / `async_remove_entry`; builds the coordinator with its keeper and its dial, stores it in `entry.runtime_data`, forwards platforms, has the coordinator hang up when Home Assistant stops, keeps for each lamp what could not be closed, and takes the notice about unconfirmed presets down when an entry is removed |
 | `config_flow.py` | Bluetooth auto-discovery + manual picker for `Glowrium-*` devices |
-| `coordinator.py` | The device: the intake of frames into the mirror, all command methods, the clock, activation, the telling of the entities - and what is said to the lamp: the first exchange on a link, the question for a silent one, each command. Home Assistant's watchers stand here and tell the link what they see |
+| `coordinator.py` | The device: the intake of frames into the mirror, all command methods, the clock, activation, the telling of the entities - and what is said to the lamp: the first exchange on a link, the question for a silent one, each command. It names no Home Assistant: what it needs of whatever runs it, it asks of its keeper (`Keeper`, declared here) |
+| `keeper.py` | What keeps a coordinator in Home Assistant, for one config entry (`EntryKeeper`): both lifetimes of background work, the three watchers, the repair for a stack that will not hang up, the notice about unconfirmed presets, the device registry, the remembered model id, the home's coordinates - and the dial to the lamp as Home Assistant's Bluetooth finds it (`dial_for`) |
 | `mirror.py` | The state mirror: what the lamp has said, frame by frame, and what was written to it, as a read-only mapping. Takes a frame - never raises; the decoder's outcomes, their log lines and the blanking of a printed frame are its - counts the reports and what each carried, dates the lamp's clock |
 | `link.py` | The link: the client and the lock around it, the dial, the hang-up and the closing of the client's bus, the stack that will not hang up, whether the lamp is in reach - and when the lamp is spoken to: the background connect, the first exchange, the question for a silent link, the delivery of a command with its one retry, and every deadline. No client leaves it. No Home Assistant in it and no protocol |
 | `cbor.py` | Minimal CBOR encoder/decoder (only the subset the device uses) — the *wire* format |
@@ -244,9 +245,9 @@ once, when the entity is added. So three things hold it together:
   a `DeviceInfo` is left alone in the device registry; a field given as `None`
   *is* the value, and wipes what an earlier session learned. (That is what
   0.2.0 and 0.2.1 did on every start.)
-- When the string has been read, the coordinator writes model, model id,
-  firmware and serial number into the device registry itself
-  (`_async_publish_device_info`), passing `UNDEFINED` for anything the lamp
+- When the string has been read, the coordinator tells its keeper, which
+  writes model, model id, firmware and serial number into the device registry
+  (`EntryKeeper.lamp_described`), passing `UNDEFINED` for anything the lamp
   did not say.
 - The model id is kept with the config entry (`CONF_MODEL_ID` in
   `entry.data`), and handed to the next coordinator when it is built. That is
@@ -747,8 +748,33 @@ which the link calls when it decides to, and inside a command, which it hands
 to `Link.send`. The link is handed its dial, so that it can stand on
 something other than a Bluetooth adapter: in the tests, a scripted lamp.
 Home Assistant's watchers - the advertisement callback, the presence tracker,
-the timer - are the coordinator's, and tell the link two things: the lamp is
-advertising or is not (`Link.advertising`), and a tick (`Link.tick`).
+the timer - are the keeper's (below), and tell the link two things: the lamp
+is advertising or is not (`Link.advertising`), and a tick (`Link.tick`).
+
+The device half is **kept** ([#54](https://github.com/kugaevsky/glowrium-ha/issues/54),
+ADR 0016). Everything it needs of whatever runs it, it asks of its **keeper**:
+one object of seven entry points, declared where it is asked for
+(`coordinator.Keeper`), as the link's module declares its dial.
+
+| Asked of the keeper | What for |
+| --- | --- |
+| `spawn(work, name)` | Work that ends no later than the keeper's watching does: a connect, a first exchange, a probe. |
+| `run_lasting(work, name)` | Work that nothing which ends the coordinator ends: a hang-up. Its task is handed back. |
+| `watch(advertising, tick)` | Watch the air for the lamp, and the clock; say whether the lamp is there now. Called once, by the start. |
+| `unwatch()` | Cease. More than once does no harm, nor on a keeper that never watched. |
+| `stack_fault(count)` | A stack that will not hang up; `None` once the lamp has answered. |
+| `lamp_described(model_id, firmware, serial)` | What the lamp said it is, once the device-info string is read. |
+| `coordinates()` | Where home is; zero and zero from a keeper with no home. |
+
+A coordinator cannot be built without a keeper and a dial, so nothing in it
+asks whether Home Assistant is there, and its module names of Home Assistant
+its two exceptions, `callback`, `Event` and the clock - a test reads the
+source and holds exactly that list. Home Assistant's keeper is `EntryKeeper`
+(`keeper.py`), built from the instance and the config entry: it has the entry
+before anything can be asked of it. `tools/bench.py` has one of its own,
+which holds the work it starts and ticks, and has no dashboard, no registry
+and no home. The tests have a scripted one (`tests/lamp.py`), which starts
+the work where a test waits for it and notes what it was told.
 
 The code moved as it stood, and most of it kept its name without the
 underscore: `Link.open()` is the first half of what `_connect_locked` was (the
@@ -758,7 +784,7 @@ refusals, the dial, subscribe-then-keep), `Link.hang_up()` is `_hang_up`,
 what the poll decided, `Link.send()` is the delivery of a command. The old
 names are gone: the tests stand a scripted lamp at the dial (`tests/lamp.py`)
 and reach the link a coordinator holds through one door, `link_of`; the bench
-connects through that link and speaks through the coordinator's commands. A
+starts the coordinator as a setup does and speaks through its commands. A
 test reads the coordinator's source to hold that it names no client and
 reaches the link for what the link offers it and nothing else.
 
@@ -837,11 +863,14 @@ window cancelled the setup and left the entry in `setup_error`. Availability
 follows advertisement presence, so an advertising lamp comes up **available with
 nothing read** until the first state arrives - the light and the diagnostic
 entities `unknown`, the settings showing what they showed before the restart;
-that blip is the cost of not blocking setup. The coordinator takes its entry *before* it registers for
-advertisements: Home Assistant replays the last advertisement from inside that
-registration when it already knows the device — every reload, for a lamp that
-advertises all the time — and the reconnect the replay starts needs an entry to
-be put on, or it lands on `hass` and outlives the unload.
+that blip is the cost of not blocking setup. The entry is known *before*
+anything registers for advertisements: Home Assistant replays the last
+advertisement from inside that registration when it already knows the device —
+every reload, for a lamp that advertises all the time — and the reconnect the
+replay starts needs an entry to be put on, or it lands on `hass` and outlives
+the unload. That held by the order of two lines in the coordinator's start; it
+holds by construction now, since the keeper is built with its entry and a
+coordinator is built with its keeper.
 
 A connect caps `establish_connection` at `_CONNECT_ATTEMPTS` (3) rather than the
 library default of 4: against an unreachable device each attempt can burn a 20 s
@@ -942,12 +971,11 @@ It was so before, and takes a command in flight at the moment of a reload.
 
 **A hang-up is the one piece of background work not tied to the config entry.**
 Everything else dies with the entry, because a connect that outlives its
-coordinator claims the lamp's single slot for nobody. (Where there is no `hass`
-there is no entry to die with either: the coordinator keeps those tasks itself,
-as it keeps a hang-up there.) A hang-up is the
+coordinator claims the lamp's single slot for nobody. (The bench has no entry:
+its keeper ends that work where it ceases to watch.) A hang-up is the
 opposite: cancelled part-way, it has asked BlueZ to drop the link and left the
-bus open, which is the leak again. So it runs as a task on `hass` — or, in
-`tools/bench.py`, where there is no `hass`, as a task the coordinator keeps
+bus open, which is the leak again. So it runs as a task on `hass` — the
+keeper's `run_lasting`; the bench's keeper holds such a task to its end
 itself — and the deadline of whoever gave the client up ends at most their
 *wait* for it, never the hang-up. Unload waits up to `_STOP_TIMEOUT` (3 s) for
 the lock and as long again for the hang-up; a link that answers nothing is
@@ -1203,8 +1231,8 @@ the two it has before it. `has_profile(pkey)` is asked that, and of a model id
 only; the name `Glowrium` is not read for the answer.
 
 While a lamp's model id is known - read in this session, or remembered with
-the config entry - and has no profile, the coordinator keeps one **repair**
-open for the entry (`_async_review_presets_notice`). It says that the presets
+the config entry - and has no profile, the keeper of the config entry keeps
+one **repair** open for it (`EntryKeeper._review_presets_notice`). It says that the presets
 offered under *Lighting mode* are the G7's and unconfirmed for this model,
 that on it a name may select another preset or none, that the select shows
 what was chosen either way, and that a report or a capture from the vendor app
@@ -1231,10 +1259,11 @@ they are for any lamp (ADR 0014).
   brought one, or the lamp names another model than was remembered - and when
   the entry is removed (`async_remove_entry`): Home Assistant does not delete
   an integration's repairs with its entry.
-- **A stopped coordinator raises none.** The device-info string is read last
-  on a link, and Home Assistant can stop while the answer is on its way: an
-  unload cancels the exchange, a stop does not. What was read is kept with
-  the entry all the same, and the next start raises the notice from it.
+- **A keeper that has ceased to watch raises none.** The device-info string
+  is read last on a link, and Home Assistant can stop while the answer is on
+  its way: an unload cancels the exchange, a stop does not. What was read is
+  kept all the same - with the entry, from which the next start raises the
+  notice, and in the device registry. Only the notice is withheld.
 - **What goes into its text is held to a shape.** Its id is built from the
   config entry's id (`presets_issue_id`), as the other repair's is and for the
   same reason (see [Diagnostics](#diagnostics)). The lamp's name passes
@@ -1360,9 +1389,14 @@ Unit tests live in `tests/` and **never touch real Bluetooth**:
   operating mode, indicator, DST, schedule) checked against real device bytes,
   and the connection logic around it: priming by asking, the fallbacks to a
   read, retries and confirmation of a failed write, the clock, activation,
-  unload and stop.
-- `test_dial.py` — the dial the coordinator is handed, and the one it uses when
-  handed none. A link is made through a callable that is given the callback
+  unload and stop. And the seam with the keeper: what the device half asks
+  of it, on a scripted keeper, and what Home Assistant's does with each -
+  work on the entry and a hang-up not, the three watchers, the home - on
+  `EntryKeeper` over a stand-in for an entry. The repairs, the registry and
+  the remembered model id are held where a real entry is set up
+  (`test_init.py`) and with the stack fault (`test_bus_lifetime.py`).
+- `test_dial.py` — the dial the coordinator is handed, and the one the setup
+  of a config entry hands it. A link is made through a callable that is given the callback
   for a link that is lost and returns a connected client. In the tests that is
   a scripted lamp's (`tests/lamp.py`): it hands out a link, says a frame,
   answers the state request as a G7 does, can be given something to read,
@@ -1375,7 +1409,7 @@ Unit tests live in `tests/` and **never touch real Bluetooth**:
   watchers drive: the tick, an advertisement, a connect. Nothing replaces the
   library's connect, except the tests of the dial that is made of it - and
   `in_range`, for a coordinator the integration's own setup made and handed
-  no dial: there the lamp stands where that dial finds it.
+  the dial of a config entry: there the lamp stands where that dial finds it.
 - `test_bus_lifetime.py` — what is left behind when a link is let go of. It
   counts open bus connections rather than calls to `disconnect()`, and runs
   the same against bleak's own BlueZ client with a stub bus, so a bleak
@@ -1402,7 +1436,9 @@ Unit tests live in `tests/` and **never touch real Bluetooth**:
 - `test_identity.py` — what is shown of the lamp's own words about itself:
   its name as text, its model id and firmware only when they are what they
   claim to be.
-- `test_bench.py` — what `tools/bench.py` prints, and what it leaves out.
+- `test_bench.py` — what `tools/bench.py` prints, and what it leaves out; its
+  keeper, held to the protocol the type checker does not read it against; and
+  its run against a scripted lamp, from the start to the hang-up.
 - `test_translations.py` — every translation carries exactly the keys and
   placeholders of `strings.json`. hassfest checks the same in CI, on a push.
 - `test_stack.py` — `tools/stack.py`, which installs what all of the above run
@@ -1430,11 +1466,12 @@ with its reason. A reach that is not on the list is a test to be moved.
 | `_ingest`, `_mirror`, `_new_mirror` | The mirror's seam (ADR 0013). A frame is handed to the one intake, as the link hands it one; a test that needs the lamp to have said something says it through the mirror's own two ways in, never by assignment; a test that wants nothing heard is given a new mirror, built as the coordinator builds its own. |
 | `_request_state`, `_async_read_state`, `_async_read_device_info`, `_async_activate_if_needed`, `_async_activate`, `_async_sync_clock_if_needed` | The steps of the first exchange, each called on a turn over the scripted lamp's link (`turn_over`). The exchange as a whole is run by the link, through its connect; a step is run alone where the test is of that step. |
 | `_state_request_failures`, `_state_request_muted`, `_state_request_muted_until`, `_state_request_given_up` | A lamp that has refused the state request before - set down, where refusing three times over would be the test of something else. |
-| `_activation_checked` | A lamp taken for activated, so that the bring-up does not run: in tests of other things, and on the bench always. |
+| `_activation_checked` | A lamp taken for activated, so that the bring-up does not run, in tests of other things. |
 | `_desired_ramp`, `_writes_sent` | What was remembered of the ramp, and how many commands were written: neither has a reader but the coordinator's next step and the diagnostics. |
-| `_entry`, `_spawn`, `_kept_tasks` | Where background work runs: on the config entry, or kept by the coordinator itself when there is no Home Assistant. |
-| `_async_notify_listeners`, `_async_write`, `_cancel_bluetooth`, `_cancel_unavailable`, `_cancel_poll` | The telling of the entities and the three watchers, where a test counts the tellings or sees that a watcher was let go of. |
-| `_link` | The door itself: `link_of` for the tests, and the bench's own - each held to that one name by a test. |
+| `_async_notify_listeners`, `_async_write` | The telling of the entities, where a test counts the tellings, and a command with a payload of the test's own. |
+| `_link` | The door itself: `link_of`, for the tests. The bench reaches for nothing, and a test holds it to that. |
+| `keeper.bluetooth`, `keeper.async_track_time_interval` | Home Assistant's scanners and its timer, replaced where the keeper of a config entry finds them, in the tests of what it registers and ends. |
+| `bench._coordinator`, `bench._drive`, `bench._report`, `bench._TICK` | The bench's own steps: its run is made of them, and a test runs them against a scripted lamp. |
 | The ceilings and counts of the link and of the device half: `link._CONFIRM_TIMEOUT` and thirteen more | Shortened, so that the test of a deadline takes milliseconds; or read, so that a test moves the clock by exactly that much. |
 | `coordinator._parse_device_info` | What the parser makes of a device-info string, set as what the lamp said about itself where a test needs a coordinator that knows its model and firmware - or a string cut in an odd place - and reading it over a link would be the test of something else. |
 | `diagnostics._clock` | How the file words a clock with no record of when it came: a branch no path of the integration reaches, kept as a guard and held on its own (ADR 0013). |

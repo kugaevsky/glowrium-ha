@@ -59,8 +59,11 @@ last thing the first exchange does (ADR 0002).
 - The notice has two texts in each of the six languages, which differ in their
   first sentence. The value of a placeholder is not translated, so no word
   could stand where the model id would be.
-- The coordinator carries its own mark of having stopped. The link has one,
-  and it is not the coordinator's to read (ADR 0008).
+- Whoever raises the notice carries its own mark of having stopped. The link
+  has one, and it is not the coordinator's to read (ADR 0008). The coordinator
+  carried it until 2026-10-11; the keeper of the config entry does since, with
+  the whole of the notice, and after it has ceased to watch it still writes
+  the registry and the remembered model id (ADR 0016).
 - The owner of such a lamp gets words and no more: the presets are as
   unconfirmed as they were, until a capture arrives.
 

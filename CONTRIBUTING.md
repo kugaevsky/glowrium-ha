@@ -147,7 +147,9 @@ guarantee, and the docs mark it accordingly.
 
 A macOS/Linux machine with a Bluetooth adapter can drive the coordinator against a real lamp
 (keep the vendor app disconnected — the lamp allows a single BLE connection):
-`tools/bench.py` connects, primes and reports, and never writes a setting of its own accord.
+`tools/bench.py` starts the integration's coordinator as Home Assistant does, reports what the
+lamp said, and never writes a setting of its own accord - nor brings up a lamp that says it is
+not activated.
 What it prints can be shown to others as it is: the coordinates, the sunrise and sunset times
 and the serial number are left out, and the lamp's address is printed by its last characters
 only, in the integration's own log lines and in the Bluetooth stack's errors too. The name the

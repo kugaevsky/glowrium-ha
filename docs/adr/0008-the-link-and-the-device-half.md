@@ -1,7 +1,8 @@
 # The link and the device half: no client and no library error leaves `link.py`
 
 - **Status:** accepted
-- **Date:** 2026-10-08 (the design chosen); built 2026-10-08 to 2026-10-09 (#21)
+- **Date:** 2026-10-08 (the design chosen); built 2026-10-08 to 2026-10-09
+  (#21); amended 2026-10-11 (the watchers are the keeper's, ADR 0016)
 
 ## Context
 
@@ -36,13 +37,17 @@ cannot be broken from the other module, and no test has to catch it.
 - The link knows neither Home Assistant nor the protocol. It is handed, by
   name: `dial`, `notify_uuid`, `heard`, `greet`, `probe`, `reach_changed`,
   `stack_fault`, `spawn` (tied to the entry), `run_lasting` (a hang-up, on
-  `hass`), `unclosed`. HA's watchers stay in the coordinator and tell it two
-  things: `advertising(present)` and `tick()`.
+  `hass`), `unclosed`. HA's watchers tell it two things:
+  `advertising(present)` and `tick()`. They stayed in the coordinator until
+  2026-10-11 and are the keeper's since, as `spawn`, `run_lasting` and
+  `stack_fault` are (ADR 0016); the link is handed the same callables.
 - The coordinator reaches the link by twelve names only: `send`,
   `advertising`, `tick`, `initial_connect`, `let_go`, `shut_down`, `begin`,
   `halt`, `in_reach`, `log_reach`, `note_answer`, `diagnostics`.
 - The dial is handed in (`Dial`: given the lost-link callback, returns a
-  connected client; `dial_by_bluetooth` by default); the tests stand a
+  connected client; for a config entry `dial_by_bluetooth` over Home
+  Assistant's scanners, put together where the entry is set up); the tests
+  stand a
   scripted lamp at it (`tests/lamp.py`) and patch `establish_connection`
   nowhere but in the tests of the default dial and, through `in_range`, for a
   coordinator the integration's own setup made.
@@ -68,4 +73,5 @@ cannot be broken from the other module, and no test has to catch it.
 ## Revisit when
 
 A second transport appears that cannot be expressed as a `Dial`, or a caller
-outside the integration needs more of the link than the connect the bench makes.
+outside the integration needs anything of the link at all: the bench needed
+its connect until 2026-10-11, and starts the coordinator since (ADR 0016).

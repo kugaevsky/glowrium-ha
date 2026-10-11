@@ -2,7 +2,9 @@
 
 - **Status:** accepted
 - **Date:** 2026-08-24 (setup returns at once); 2026-10-04 (a hang-up runs on
-  `hass`; the entry is taken before advertisements; HA's own stop hangs up)
+  `hass`; the entry is taken before advertisements; HA's own stop hangs up);
+  amended 2026-10-11 (the entry and both lifetimes of work are the keeper's,
+  ADR 0016)
 
 ## Context
 
@@ -23,15 +25,19 @@ the lamp reading as connected and answering nothing until a power cycle.
 
 - `async_setup_entry` builds the coordinator, starts it and returns in
   milliseconds. The first connect is a background task tied to the config
-  entry (`entry.async_create_background_task`, through the coordinator's
+  entry (`entry.async_create_background_task`, through the keeper's
   `spawn`), as is every connect, first exchange and probe: they die with it.
-- The coordinator takes its entry before it registers for advertisements: Home
+- The entry is known before anything registers for advertisements: Home
   Assistant replays the last advertisement from inside that registration for a
   lamp it already knows, and the connect the replay starts needs an entry to
-  be put on, or it lands on `hass` and outlives the unload.
+  be put on, or it lands on `hass` and outlives the unload. Until 2026-10-11
+  the coordinator took its entry in the first line of its start; since then
+  the keeper is built with it, and a coordinator is built with its keeper
+  (ADR 0016).
 - A hang-up is the one task not tied to the entry. It runs on `hass`
-  (`run_lasting`; with no `hass`, in `tools/bench.py`, the coordinator keeps
-  it itself), and the deadline of whoever gave the client up ends only their
+  (the keeper's `run_lasting`; the bench's keeper holds its own - until
+  2026-10-11 the coordinator kept it itself there), and the deadline of
+  whoever gave the client up ends only their
   wait for it. Unload waits up to `_STOP_TIMEOUT` (3 s) for the lock and as
   long again for the hang-up.
 - A stopped coordinator holds no link and takes no new one; the check sits
@@ -46,7 +52,7 @@ the lamp reading as connected and answering nothing until a power cycle.
   diagnostic entities read `unknown` until the first state arrives, the
   settings show what they showed before the restart (ADR 0011).
 - The device-info string arrives after the entities exist and is carried to
-  the device registry by the coordinator (`_async_publish_device_info`); the
+  the device registry by the keeper (`EntryKeeper.lamp_described`); the
   model id is kept with the entry (`CONF_MODEL_ID`) so the next session's
   entities know their presets before anything is read.
 

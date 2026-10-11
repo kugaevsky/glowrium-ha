@@ -54,7 +54,7 @@ the generic profile is also what a lamp not yet read is driven by.
 The repair that tells the owner of a lamp whose model id is known and has no
 profile that the presets on offer are the reference ones, unconfirmed for
 that model; one for a config entry, and left standing through an unload so
-that "ignored" is kept (`coordinator._async_review_presets_notice`, ADR 0014).
+that "ignored" is kept (`keeper.py`, `EntryKeeper`; ADR 0014).
 
 **Lighting mode**:
 One circadian preset of the lamp, named by a key (`sunrise_sync`) that maps to
@@ -82,9 +82,9 @@ taking a client, holding it, letting it go, every deadline (`link.py`, `Link`).
 
 **Dial**:
 The one act of making a connected client, handed to the link as a callable
-that is given the lost-link callback; by default the lamp as Home Assistant's
-Bluetooth finds it, in the tests a scripted lamp (`link.py`, `Dial`,
-`dial_by_bluetooth`).
+that is given the lost-link callback; for a config entry the lamp as Home
+Assistant's Bluetooth finds it (`keeper.dial_for`), in the tests a scripted
+lamp (`link.py`, `Dial`, `dial_by_bluetooth`).
 
 **Connect**:
 The link's background flow around a dial: take the lock, open (dial, subscribe,
@@ -114,7 +114,8 @@ is an answer and does not count (`Link.note_stuck_hang_up`).
 **Stack fault**:
 The state the host's Bluetooth stack is in from the third stuck hang-up in a
 row: it holds a link that no longer exists, and nothing a client does ends it
-(`link.py`, `_STACK_FAULT_AFTER`; the repair is raised in `coordinator.py`).
+(`link.py`, `_STACK_FAULT_AFTER`; the repair is raised by the keeper of the
+config entry, `keeper.py`).
 _Avoid_: "wedged", "stuck stack" - older prose and test names.
 
 **Episode**:
@@ -147,7 +148,7 @@ The lamp is present or a connected client is held: what every entity's
 by (`Link.in_reach`, `Link.log_reach`).
 
 **Tick**:
-The link looked over every thirty seconds by the coordinator's timer: unclosed
+The link looked over every thirty seconds, on the keeper's clock: unclosed
 clients hung up again, a dropped link dialled, a doubted link let go, an
 unprimed link given its first exchange, a silent one probed (`Link.tick`).
 
@@ -167,6 +168,16 @@ half" is its role at the seam.
 The split between the link and the device half (#21): no client and no library
 error crosses it; the device half reaches the link by twelve names and speaks
 on a turn (held by `tests/test_bus_lifetime.py`, `_OF_THE_LINK`).
+
+**Keeper**:
+What keeps a coordinator, and all that the device half asks of whatever runs
+it: to start work that ends with the keeper's watching and work that outlives
+it, to watch the air and the clock, to hear of a stack fault and of what the
+lamp said it is, and to say where home is. Home Assistant keeps a coordinator
+for one config entry (`keeper.py`, `EntryKeeper`), the bench for one run, the
+tests with a scripted one; there is no coordinator without one
+(`coordinator.Keeper`, ADR 0016).
+_Avoid_: "host" - that is the machine whose Bluetooth stack it is.
 
 **Turn**:
 One go at the lamp on a client the link holds, given to the device half in
@@ -270,4 +281,6 @@ hang-up, is slow to be found, loses the link, and is silent once hung up -
 each only as far as a test asks of it; the tests run the real link over it
 (`tests/lamp.py`, `ScriptedLamp`). `link_of` is the tests' one door to the
 link a coordinator holds; `in_range` puts the lamp where the integration's
-own dial finds it, for a coordinator the setup made.
+own dial finds it, for a coordinator the setup made. A coordinator built at a
+scripted lamp is kept by a scripted keeper, which starts the work where a
+test waits for it and notes what it was told (`ScriptedKeeper`, `keeper_of`).

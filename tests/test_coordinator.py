@@ -3738,13 +3738,14 @@ async def test_a_link_the_lamp_dropped_is_hung_up_as_well(
     reference.
 
     With no Home Assistant behind the coordinator too. tools/bench.py builds
-    the real one with ``hass=None`` and takes the paths the integration
-    takes; with the hang-up scheduled on hass, every path that lets go of a
-    client - a link the lamp drops, a connect that answers nothing, a write
-    that needs its retry - ended in "'NoneType' object has no attribute
-    'async_create_task'", with the client still connected. Found by walking
-    those three paths on a coordinator built the way the bench builds it;
-    0.2.1 took all three.
+    the real one, keeps it itself, and takes the paths the integration
+    takes; when the hang-up was scheduled on a hass that was not there,
+    every path that lets go of a client - a link the lamp drops, a connect
+    that answers nothing, a write that needs its retry - ended in
+    "'NoneType' object has no attribute 'async_create_task'", with the
+    client still connected. Found by walking those three paths on a
+    coordinator built the way the bench built it; 0.2.1 took all three.
+    A hang-up is its keeper's to run since (``Keeper.run_lasting``).
     """
     with_hass = behind_it == "Home Assistant"
     coordinator, _lamp, link = await _holding_a_link(
