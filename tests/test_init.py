@@ -755,8 +755,9 @@ async def test_an_entry_unloaded_after_the_stop_is_no_error_to_home_assistant(
     event comes. Taken off a second time, with the entry, it has Home
     Assistant log an error about a listener it does not know. Home Assistant
     unloads nothing on its way down, so that is an entry reloaded while it
-    stops - and every test here that fires the stop, when its entry is
-    unloaded behind it.
+    stops, or one whose setup fails after the stop has come - a setup that
+    fails runs the same callbacks - and every test here that fires the stop,
+    when its entry is unloaded behind it.
     """
     entry = await _setup_without_bluetooth(hass)
     hass.bus.async_fire(EVENT_HOMEASSISTANT_STOP)

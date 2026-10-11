@@ -31,11 +31,17 @@ def slow_steps_go_unsaid() -> Iterator[None]:
     """Keep asyncio's note on a slow step of the loop out of every test's log.
 
     The test plugin runs the loop in debug mode, where asyncio writes a
-    WARNING for each step that took longer than a tenth of a second. That is
-    a fact about the machine and what else it was doing, not about the code,
-    and a test that holds the integration to having warned of nothing reads
-    every WARNING there is: one failed for a step of 0.2 s, once in 22 runs.
-    Only that note is dropped. Whatever else asyncio logs is heard.
+    WARNING for each step that took longer than a tenth of a second. A step
+    takes that long when code blocks the loop, and as well when the machine
+    was busy with something else: the note does not say which. Tests that
+    read every WARNING there is, whoever wrote it, cannot have it - one
+    failed for a step of 0.2 s, once in 22 runs, with neither the test nor
+    the code it holds changed.
+
+    So the note is dropped, and that has its price: a step this
+    integration's own code made slow goes unsaid in the tests as well, in
+    the log of a failing test too. Only that note is dropped. Whatever else
+    asyncio logs is heard.
     """
     asyncio_says = logging.getLogger("asyncio")
     asyncio_says.addFilter(_is_not_about_a_slow_step)

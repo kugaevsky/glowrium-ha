@@ -29,8 +29,10 @@ All notable changes to this project are documented here. The format is based on
   error.** The integration listens for the stop, to hang the lamp's link
   up, and had Home Assistant forget that listener with the entry even when
   the stop had already used it up: the log got "Unable to remove unknown
-  job listener" and a traceback. Nothing went wrong behind it. The
-  listener is now one that can be dropped whenever the entry goes.
+  job listener" and a traceback. That takes an entry reloaded while Home
+  Assistant stops, or one whose setup fails after the stop has come.
+  Nothing went wrong behind it. The listener is now one that can be
+  dropped whenever the entry goes.
 
 ### Changed
 

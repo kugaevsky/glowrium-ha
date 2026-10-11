@@ -11,12 +11,12 @@ async def test_a_slow_step_of_the_loop_is_not_a_warning_a_test_hears(
 ) -> None:
     """What asyncio says of a slow step is kept from the tests; the rest is not.
 
-    The tests run on a loop in debug mode, and there asyncio writes a WARNING
-    for every step that took longer than a tenth of a second. That says how
-    busy the machine was. Fifteen tests of the bus lifetime hold the
-    integration to having warned of nothing by looking at every WARNING there
-    is, whoever wrote it, and one of them failed for that note once in 22
-    runs. Here every step is made a slow one.
+    Why, and at what price, is said at the fixture (``slow_steps_go_unsaid``).
+    Fifteen cases in the tests of the bus lifetime read every WARNING there
+    is, whoever wrote it - to hold the integration to having warned of
+    nothing, or of exactly so much - and each fails with that note among
+    them. Here every step is made a slow one, so the note is certain to be
+    written.
     """
     loop = asyncio.get_running_loop()
     assert loop.get_debug()  # the test plugin's doing, and where the note is from

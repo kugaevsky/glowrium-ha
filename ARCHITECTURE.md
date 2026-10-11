@@ -1381,6 +1381,12 @@ Unit tests live in `tests/` and **never touch real Bluetooth**:
   says when that is not what is installed, that the environment the tests
   are running in is such a one, and that the workflows and the dependabot
   configuration agree with it.
+- `test_conftest.py` — what every test here runs with (`conftest.py`): one
+  thing so far. asyncio's note on a step of the loop that took long is kept
+  out of every test's log. The loop runs in debug mode, a busy machine draws
+  that note out of nothing, and the tests that read every WARNING there is
+  fail for it. The price: a step this integration's own code made slow goes
+  unsaid in the tests as well.
 
 ### What the tests reach that is not public
 
