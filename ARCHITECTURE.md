@@ -582,9 +582,9 @@ encoders, which return the whole slot with one field changed).
 | `9`–`10` | gradual | fade duration, seconds, **big-endian** |
 
 For example, `01 00 00 00 06 00 12 00 64 00 00` → enabled, 06:00 → 18:00,
-100 %, no fade. A value under `0x11` of any other length than the 11 bytes
-(`TIMER_SLOT_LENGTH`) is not read as a slot, and neither is one whose bytes
-are not what their places mean (see [What a value is](#what-a-value-is)).
+100 %, no fade. A value under `0x11` of any other length than the 11 bytes is
+not read as a slot, and neither is one whose bytes are not what their places
+mean (see [What a value is](#what-a-value-is)).
 
 ### Lighting-mode command
 

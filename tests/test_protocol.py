@@ -8,8 +8,6 @@ import pytest
 
 from custom_components.glowrium import cbor, protocol
 from custom_components.glowrium.const import (
-    DST_OFF,
-    DST_ON,
     KEY_ACTIVATED,
     KEY_BRIGHTNESS,
     KEY_CIRCADIAN,
@@ -27,8 +25,12 @@ from custom_components.glowrium.const import (
     MODE_CIRCADIAN,
     MODE_MANUAL,
     MODE_SCHEDULE,
-    TIMER_SLOT_LENGTH,
 )
+
+# The two values of the daylight-saving flag as the lamp takes them, from a
+# capture of the vendor app: the flag, then an hour in seconds.
+_DST_ON = bytes.fromhex("0100000e10")
+_DST_OFF = bytes.fromhex("0000000e10")
 
 # A schedule slot: enabled, 06:00 to 18:00, 100 %, no fade.
 _A_SLOT = bytes.fromhex("0100000006001200640000")
@@ -53,7 +55,7 @@ def test_timer_slot_guards() -> None:
     """timer_slot returns bytes only for a slot of the length a slot has."""
     assert protocol.timer_slot({}) is None
     assert protocol.timer_slot({KEY_TIMER: b"\x00\x00"}) is protocol.UNUSABLE
-    assert len(_A_SLOT) == TIMER_SLOT_LENGTH
+    assert len(_A_SLOT) == 11  # a slot is eleven bytes
     assert protocol.timer_slot({KEY_TIMER: _A_SLOT[:-1]}) is protocol.UNUSABLE
     assert protocol.timer_slot({KEY_TIMER: _A_SLOT}) == _A_SLOT
 
@@ -149,8 +151,8 @@ def test_no_schedule_setter_invents_a_slot_that_was_never_read() -> None:
 
 def test_dst_is_read_from_the_flag_byte() -> None:
     """The 0x35 slot is a flag and an offset; only the flag says on or off."""
-    assert protocol.dst_enabled({KEY_DST: DST_ON}) is True
-    assert protocol.dst_enabled({KEY_DST: DST_OFF}) is False
+    assert protocol.dst_enabled({KEY_DST: _DST_ON}) is True
+    assert protocol.dst_enabled({KEY_DST: _DST_OFF}) is False
     assert protocol.dst_enabled({}) is None
     assert protocol.dst_enabled({KEY_DST: b""}) is protocol.UNUSABLE
     assert protocol.dst_enabled({KEY_DST: "on"}) is protocol.UNUSABLE
@@ -164,14 +166,14 @@ def test_setting_dst_keeps_the_offset_the_lamp_reported() -> None:
     """A fixed hour would turn a half-hour region into a full one at a touch."""
     half_hour = bytes.fromhex("0000000708")  # off, 1800 s
     assert protocol.with_dst({KEY_DST: half_hour}, True) == bytes.fromhex("0100000708")
-    assert protocol.with_dst({KEY_DST: DST_ON}, False) == DST_OFF
+    assert protocol.with_dst({KEY_DST: _DST_ON}, False) == _DST_OFF
 
 
 def test_setting_dst_on_a_lamp_that_has_not_reported_uses_the_hour() -> None:
     """One field with a near-universal default: the switch works before priming."""
-    assert protocol.with_dst({}, True) == DST_ON
-    assert protocol.with_dst({}, False) == DST_OFF
-    assert protocol.with_dst({KEY_DST: b"\x01"}, False) == DST_OFF  # not a whole slot
+    assert protocol.with_dst({}, True) == _DST_ON
+    assert protocol.with_dst({}, False) == _DST_OFF
+    assert protocol.with_dst({KEY_DST: b"\x01"}, False) == _DST_OFF  # not a whole slot
 
 
 def test_the_device_clock_is_year_month_day_hour_minute_second() -> None:
@@ -444,7 +446,7 @@ def test_daylight_saving_is_a_flag_byte_and_an_offset_in_five_bytes() -> None:
 
     One byte used to read as on, and a flag byte of 2 as off.
     """
-    on = protocol.daylight_saving({KEY_DST: DST_ON})
+    on = protocol.daylight_saving({KEY_DST: _DST_ON})
     assert on == protocol.DaylightSaving(enabled=True, offset_seconds=3600)
     half_hour_off = protocol.daylight_saving({KEY_DST: bytes.fromhex("0000000708")})
     assert half_hour_off == protocol.DaylightSaving(enabled=False, offset_seconds=1800)
@@ -477,9 +479,9 @@ def test_the_switch_writes_the_hour_over_a_slot_that_cannot_be_used() -> None:
     those bytes for an offset.
     """
     for odd in (b"\xff" * 5, bytes.fromhex("0200000e10"), bytes.fromhex("0100001c21")):
-        assert protocol.with_dst({KEY_DST: odd}, True) == DST_ON, odd.hex()
-        assert protocol.with_dst({KEY_DST: odd}, False) == DST_OFF, odd.hex()
-    assert protocol.with_dst({KEY_DST: [None]}, True) == DST_ON
+        assert protocol.with_dst({KEY_DST: odd}, True) == _DST_ON, odd.hex()
+        assert protocol.with_dst({KEY_DST: odd}, False) == _DST_OFF, odd.hex()
+    assert protocol.with_dst({KEY_DST: [None]}, True) == _DST_ON
 
 
 # The slot in the one frame of a G8 on record: three bytes a G7 leaves at

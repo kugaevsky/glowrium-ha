@@ -29,8 +29,6 @@ from custom_components.glowrium import (
     protocol,
 )
 from custom_components.glowrium.const import (
-    DST_OFF,
-    DST_ON,
     INFO_UUID,
     KEY_ACTIVATED,
     KEY_BRIGHTNESS,
@@ -49,12 +47,6 @@ from custom_components.glowrium.const import (
     KNOWN_KEYS,
     NOTIFY_UUID,
     STATE_KEYS,
-    TIMER_BRIGHTNESS,
-    TIMER_END_H,
-    TIMER_END_M,
-    TIMER_GRADUAL,
-    TIMER_START_H,
-    TIMER_START_M,
     WRITE_UUID,
 )
 from custom_components.glowrium.coordinator import (
@@ -73,6 +65,11 @@ from .lamp import (
     nothing_heard,
     turn_over,
 )
+
+# The two values of the daylight-saving flag as the lamp takes them, from a
+# capture of the vendor app: the flag, then an hour in seconds.
+_DST_ON = bytes.fromhex("0100000e10")
+_DST_OFF = bytes.fromhex("0000000e10")
 
 
 def _at_a_lamp(
@@ -160,7 +157,7 @@ _BUS_CLOSED = (EOFError(), OSError(9, "Bad file descriptor"))
             "async_set_indicator", False, bytes.fromhex("a117f4"), id="indicator off"
         ),
         pytest.param(
-            "async_set_dst", False, cbor.encode({KEY_DST: DST_OFF}), id="dst off"
+            "async_set_dst", False, cbor.encode({KEY_DST: _DST_OFF}), id="dst off"
         ),
     ],
 )
@@ -332,7 +329,10 @@ async def test_mode_allows_when_mode_unknown(hass: HomeAssistant) -> None:
     ("reported", "slot", "frame"),
     [
         pytest.param(
-            None, DST_ON, bytes.fromhex("a11835450100000e10"), id="nothing reported yet"
+            None,
+            _DST_ON,
+            bytes.fromhex("a11835450100000e10"),
+            id="nothing reported yet",
         ),
         pytest.param(
             bytes.fromhex("0000000708"),  # flag off, offset 1800 s
@@ -451,22 +451,20 @@ async def test_the_home_sync_location_writes_is_home_assistants(
         pytest.param(
             "async_set_timer_start",
             (7, 30),
-            {TIMER_START_H: 7, TIMER_START_M: 30},
+            {4: 7, 5: 30},  # the start: bytes 4 and 5 of the slot
             id="start",
         ),
         pytest.param(
             "async_set_timer_end",
             (19, 45),
-            {TIMER_END_H: 19, TIMER_END_M: 45},
+            {6: 19, 7: 45},  # the end: bytes 6 and 7
             id="end",
         ),
-        pytest.param(
-            "async_set_timer_brightness", (37,), {TIMER_BRIGHTNESS: 37}, id="brightness"
-        ),
+        pytest.param("async_set_timer_brightness", (37,), {8: 37}, id="brightness"),
         pytest.param(
             "async_set_timer_gradual",
             (5,),
-            {TIMER_GRADUAL: 0x01, TIMER_GRADUAL + 1: 0x2C},  # 5 min = 300 s = 0x012c
+            {9: 0x01, 10: 0x2C},  # bytes 9 and 10: 5 min = 300 s = 0x012c
             id="gradual",
         ),
     ],

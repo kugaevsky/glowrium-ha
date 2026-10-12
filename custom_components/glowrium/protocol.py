@@ -29,8 +29,6 @@ import enum
 from typing import Any, Final
 
 from .const import (
-    DST_OFF,
-    DST_ON,
     KEY_ACTIVATED,
     KEY_BRIGHTNESS,
     KEY_CIRCADIAN,
@@ -48,13 +46,6 @@ from .const import (
     MODE_CIRCADIAN,
     MODE_MANUAL,
     MODE_SCHEDULE,
-    TIMER_BRIGHTNESS,
-    TIMER_END_H,
-    TIMER_END_M,
-    TIMER_GRADUAL,
-    TIMER_SLOT_LENGTH,
-    TIMER_START_H,
-    TIMER_START_M,
 )
 
 
@@ -273,6 +264,17 @@ def ramp_minutes(state: Mapping[int, Any]) -> int | Unusable | None:
 
 # --- schedule slot (0x11) ---
 
+# The slot is eleven bytes: [enabled, 00, 00, 00, start_h, start_m, end_h,
+# end_m, brightness, fade_seconds_be(2)]. A value of any other length under
+# the id is no slot.
+_TIMER_START_H: Final = 4
+_TIMER_START_M: Final = 5
+_TIMER_END_H: Final = 6
+_TIMER_END_M: Final = 7
+_TIMER_BRIGHTNESS: Final = 8
+_TIMER_GRADUAL: Final = 9  # two bytes, big-endian seconds
+_TIMER_SLOT_LENGTH: Final = 11
+
 
 @dataclass(frozen=True)
 class Schedule:
@@ -294,21 +296,21 @@ def _schedule_in(raw: bytes) -> Schedule | None:
     if raw[0] not in (0, 1):
         return None
     try:
-        start = datetime.time(raw[TIMER_START_H], raw[TIMER_START_M])
-        end = datetime.time(raw[TIMER_END_H], raw[TIMER_END_M])
+        start = datetime.time(raw[_TIMER_START_H], raw[_TIMER_START_M])
+        end = datetime.time(raw[_TIMER_END_H], raw[_TIMER_END_M])
     except ValueError:  # an hour of 25 is no time of day
         return None
-    fade = _seconds(raw[TIMER_GRADUAL : TIMER_GRADUAL + 2])
-    if raw[TIMER_BRIGHTNESS] > _PERCENT or fade is None:
+    fade = _seconds(raw[_TIMER_GRADUAL : _TIMER_GRADUAL + 2])
+    if raw[_TIMER_BRIGHTNESS] > _PERCENT or fade is None:
         return None
-    return Schedule(bool(raw[0]), start, end, raw[TIMER_BRIGHTNESS], fade)
+    return Schedule(bool(raw[0]), start, end, raw[_TIMER_BRIGHTNESS], fade)
 
 
 def _slot(state: Mapping[int, Any]) -> tuple[bytes, Schedule] | Unusable | None:
     """Read the slot both ways at once: its bytes, and what they mean."""
     if KEY_TIMER not in state:
         return None
-    raw = _octets(state[KEY_TIMER], TIMER_SLOT_LENGTH)
+    raw = _octets(state[KEY_TIMER], _TIMER_SLOT_LENGTH)
     read = None if raw is None else _schedule_in(raw)
     if raw is None or read is None:
         return UNUSABLE
@@ -380,31 +382,35 @@ def with_schedule_start(
     state: Mapping[int, Any], hour: int, minute: int
 ) -> bytes | Unusable | None:
     """Return the 0x11 slot with a new start (on) time, the rest carried over."""
-    return _slot_with(state, TIMER_START_H, bytes([hour, minute]))
+    return _slot_with(state, _TIMER_START_H, bytes([hour, minute]))
 
 
 def with_schedule_end(
     state: Mapping[int, Any], hour: int, minute: int
 ) -> bytes | Unusable | None:
     """Return the 0x11 slot with a new end (off) time, the rest carried over."""
-    return _slot_with(state, TIMER_END_H, bytes([hour, minute]))
+    return _slot_with(state, _TIMER_END_H, bytes([hour, minute]))
 
 
 def with_schedule_brightness(
     state: Mapping[int, Any], percent: int
 ) -> bytes | Unusable | None:
     """Return the 0x11 slot with a new target brightness, kept within 0..100."""
-    return _slot_with(state, TIMER_BRIGHTNESS, bytes([max(0, min(100, percent))]))
+    return _slot_with(state, _TIMER_BRIGHTNESS, bytes([max(0, min(100, percent))]))
 
 
 def with_schedule_gradual(
     state: Mapping[int, Any], minutes: int
 ) -> bytes | Unusable | None:
     """Return the 0x11 slot with a new gradual-fade duration in minutes."""
-    return _slot_with(state, TIMER_GRADUAL, be2_minutes_to_bytes(minutes))
+    return _slot_with(state, _TIMER_GRADUAL, be2_minutes_to_bytes(minutes))
 
 
 # --- daylight saving (0x35): a flag, then the offset to apply ---
+
+# Five bytes: the flag, then the offset in seconds - an hour.
+_DST_ON: Final = bytes.fromhex("0100000e10")
+_DST_OFF: Final = bytes.fromhex("0000000e10")
 
 
 @dataclass(frozen=True)
@@ -419,7 +425,7 @@ def daylight_saving(state: Mapping[int, Any]) -> DaylightSaving | Unusable | Non
     """Read the daylight-saving slot (0x35): a flag byte, then seconds."""
     if KEY_DST not in state:
         return None
-    raw = _octets(state[KEY_DST], len(DST_ON))
+    raw = _octets(state[KEY_DST], len(_DST_ON))
     if raw is None or raw[0] not in (0, 1):
         return UNUSABLE
     offset = _seconds(raw[1:])
@@ -445,7 +451,7 @@ def with_dst(state: Mapping[int, Any], enabled: bool) -> bytes:
     """
     slot = daylight_saving(state)
     if slot is None or slot is UNUSABLE:
-        return DST_ON if enabled else DST_OFF
+        return _DST_ON if enabled else _DST_OFF
     return bytes([int(enabled)]) + bytes(state[KEY_DST][1:])
 
 

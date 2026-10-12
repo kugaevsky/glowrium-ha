@@ -27,7 +27,7 @@ KEY_LATITUDE: Final = (
 )
 KEY_LONGITUDE: Final = 0x0B  # float64 degrees
 KEY_SCHEDULE: Final = 0x0D  # bool - schedule/timer mode (exclusive w/ circadian)
-KEY_TIMER: Final = 0x11  # Pro schedule slot (see TIMER_* offsets below)
+KEY_TIMER: Final = 0x11  # Pro schedule slot; its layout is read in protocol.py
 KEY_ACTIVATED: Final = 0x14  # bool - device enabled/paired; False on a factory reset
 KEY_INDICATOR: Final = 0x17  # bool - status indicator LED
 KEY_LIGHTING_MODE: Final = 0x2B  # int - circadian lighting-mode index
@@ -90,16 +90,6 @@ KNOWN_KEYS: Final = frozenset(
     }
 )
 
-# 0x11 timer slot: [enabled, 00,00,00, start_h, start_m, end_h, end_m,
-#                   brightness, gradual_seconds_be(2)] - 11 bytes.
-TIMER_START_H: Final = 4
-TIMER_START_M: Final = 5
-TIMER_END_H: Final = 6
-TIMER_END_M: Final = 7
-TIMER_BRIGHTNESS: Final = 8
-TIMER_GRADUAL: Final = 9  # 2-byte big-endian seconds at [9:11]
-TIMER_SLOT_LENGTH: Final = 11  # a value of any other length under 0x11 is no slot
-
 # A lighting-mode command is {mode, 0x2c, ramp(0x2f), 0x32} in this key order.
 # 0x2c/0x32 are constant; 0x2f is the ramp time and is preserved from state.
 MODE_PARAM_2C: Final = bytes.fromhex("02d0")
@@ -107,10 +97,6 @@ MODE_PARAM_32: Final = bytes.fromhex("001e")
 RAMP_DEFAULT: Final = bytes.fromhex("0e10")  # 3600s = 60 min
 
 # Circadian lighting-mode presets are model-specific - see models.py.
-
-# DST is a 5-byte struct: byte0 = enabled, bytes1-4 = offset seconds (1 hour).
-DST_ON: Final = bytes.fromhex("0100000e10")
-DST_OFF: Final = bytes.fromhex("0000000e10")
 
 # Operating mode is the mutually-exclusive Circadian/Schedule pair.
 MODE_MANUAL: Final = "manual"
