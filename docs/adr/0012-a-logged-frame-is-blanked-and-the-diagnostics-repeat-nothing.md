@@ -2,7 +2,8 @@
 
 - **Status:** accepted
 - **Date:** 2026-10-05; 2026-10-09 (no frame above debug; the place found under
-  more of its spellings)
+  more of its spellings); 2026-10-12 (the diagnostics name the sunrise and
+  sunset times as hidden; one list of what places the lamp)
 
 ## Context
 
@@ -60,8 +61,10 @@ each ends. A deny-list over the mirror would be a list of what one lamp sent.
   reads it and written out from that reading (a schedule as its times, a ramp
   as seconds, the clock as its offset from the host's at the moment it came
   into the mirror, with the age of that reading); one that does not read as
-  what its name means is `not as expected`; the coordinates are marked
-  redacted; whatever has no name is only counted - not its id, not its size;
+  what its name means is `not as expected`; the coordinates, and the sunrise
+  and sunset times, are marked redacted - the ids of the one list the logged
+  frame is blanked by; whatever has no name is only counted - not its id, not
+  its size;
   the device-info fields are counted, and the model id and firmware are shown
   only in their strict shapes (`identity.as_model_id`, `identity.as_firmware`).
   No raw bytes, no hex, no serial number, no address.

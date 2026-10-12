@@ -37,6 +37,7 @@ from custom_components.glowrium.const import (
     KEY_SCHEDULE,
     KEY_TIME,
     KEY_TIMER,
+    PLACE_KEYS,
 )
 from custom_components.glowrium.coordinator import _parse_device_info
 from custom_components.glowrium.diagnostics import async_get_config_entry_diagnostics
@@ -325,11 +326,13 @@ async def test_what_the_integration_cannot_name_is_only_counted(
 ) -> None:
     """Nothing the lamp chose is repeated: not a value, not a size, not an id.
 
-    The lamp decides which properties it reports, so a list of the two ids
-    that hold the coordinates is not a guard: the sunrise and sunset times it
-    computes from them give the place away just as well, and a property
-    nobody has decoded could hold anything. An id is a number the lamp picks
-    and so is a length. What has no name here is counted, and that is all.
+    The lamp decides which properties it reports, so a list of the ids that
+    give the place away is not a guard: a property nobody has decoded could
+    hold anything. An id is a number the lamp picks and so is a length. What
+    has no name here is counted, and that is all. The sunrise and sunset
+    times the lamp computes from the coordinates do have a name: they are
+    said to be there and hidden, as the coordinates are, and are not among
+    what is counted.
     """
     entry = await _a_lamp_that_has_reported(hass)
     before = (await _downloaded(hass, entry))["state"]
@@ -345,8 +348,46 @@ async def test_what_the_integration_cannot_name_is_only_counted(
 
     data = await _downloaded(hass, entry)
 
-    assert data["state"] == before | {"other_properties": 5}
-    _nothing_private_in(data, CURVE.hex(), UNKNOWN_TEXT, "aabbccddeeff", "0x34")
+    assert data["state"] == before | {
+        "0x34 sunrise and sunset times": "**REDACTED**",
+        "other_properties": 4,
+    }
+    _nothing_private_in(data, CURVE.hex(), UNKNOWN_TEXT, "aabbccddeeff", "0x77")
+
+
+# What the file calls each id of the list. The two coordinates share an entry,
+# named for both whichever of them was reported. An id put on the list has to
+# be given its words here.
+_SAID_TO_BE_HIDDEN = {
+    KEY_LATITUDE: "0x0a 0x0b coordinates",
+    KEY_LONGITUDE: "0x0a 0x0b coordinates",
+    0x34: "0x34 sunrise and sunset times",
+}
+
+
+@pytest.mark.parametrize("key", sorted(PLACE_KEYS), ids=lambda key: f"0x{key:02x}")
+async def test_what_gives_the_place_away_is_said_to_be_there_and_never_shown(
+    hass: HomeAssistant, key: int
+) -> None:
+    """Every id on the list of what places the lamp is named as hidden.
+
+    It is the list the state mirror blanks a logged frame by and the bench
+    prints by. An id on it is hidden here whatever stands under it, and is
+    not left among what is only counted - so that a file posted in public
+    says what it kept back.
+    """
+    entry = await _a_lamp_that_has_reported(hass)
+    nothing_heard(entry.runtime_data)
+    entry.runtime_data._mirror.echo({key: UNKNOWN_TEXT})
+
+    data = await _downloaded(hass, entry)
+
+    assert data["state"] == {
+        _SAID_TO_BE_HIDDEN[key]: "**REDACTED**",
+        "other_properties": 0,
+        "times_a_property_was_not_kept": 0,
+    }
+    _nothing_private_in(data, UNKNOWN_TEXT)
 
 
 async def test_the_fields_of_the_device_info_string_are_only_counted(

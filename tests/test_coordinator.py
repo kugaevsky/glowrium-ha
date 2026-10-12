@@ -1063,13 +1063,13 @@ def test_every_property_the_integration_names_is_known_to_the_mirror() -> None:
 
     The ids it asks the lamp for, every id it has a constant for - the ones
     only its commands write among them - and every id the diagnostics read
-    out. A name added and left out of the set would be an id the mirror may
-    have no room for.
+    out or say is hidden. A name added and left out of the set would be an
+    id the mirror may have no room for.
     """
     named = {value for name, value in vars(const).items() if name.startswith("KEY_")}
     assert named <= KNOWN_KEYS
     assert set(STATE_KEYS) <= KNOWN_KEYS
-    assert {*diagnostics._READ, *diagnostics._WHERE} <= KNOWN_KEYS
+    assert {*diagnostics._READ, *const.PLACE_KEYS} <= KNOWN_KEYS
 
 
 async def test_every_id_a_command_writes_is_known_to_the_mirror(

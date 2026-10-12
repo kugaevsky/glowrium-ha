@@ -37,6 +37,11 @@ KEY_DST: Final = 0x35  # bytes: [enabled, offset_be_4] (offset 0x0e10 = 3600s = 
 # coordinates: seconds from midnight, four bytes each. Nothing reads them; the
 # id has a name because the times give the place away as the coordinates do.
 KEY_CURVE: Final = 0x34
+# What gives away where the lamp is: the coordinates of the home, and the
+# times of sunrise and sunset the lamp works out from them. The one list for
+# everything that keeps such a thing from being shown: the frames the state
+# mirror logs, the diagnostics, the bench.
+PLACE_KEYS: Final = frozenset({KEY_LATITUDE, KEY_LONGITUDE, KEY_CURVE})
 # The two fixed parameters the lighting-mode command carries beside the mode
 # and the ramp (their values: MODE_PARAM_* below). The lamp never reports
 # them back.

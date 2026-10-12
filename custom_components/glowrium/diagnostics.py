@@ -38,6 +38,7 @@ from .const import (
     KEY_ACTIVATED,
     KEY_BRIGHTNESS,
     KEY_CIRCADIAN,
+    KEY_CURVE,
     KEY_DST,
     KEY_INDICATOR,
     KEY_LATITUDE,
@@ -48,6 +49,7 @@ from .const import (
     KEY_SCHEDULE,
     KEY_TIME,
     KEY_TIMER,
+    PLACE_KEYS,
 )
 
 # Past this the clock is simply wrong, and by how much says nothing more.
@@ -138,11 +140,16 @@ _READ: Final[dict[int, Callable[[Any], Any]]] = {
     KEY_RAMP: _ramp,
     KEY_DST: _dst,
 }
-# Known by name and private: the home's coordinates, which the lamp keeps for
-# its circadian curve. Said to be there, so that it can be seen the lamp has
-# them, and never read out.
-_WHERE: Final = (KEY_LATITUDE, KEY_LONGITUDE)
-_WHERE_NAME: Final = " ".join(f"0x{key:02x}" for key in _WHERE) + " coordinates"
+# Known by name and private: what gives the lamp's place away (``PLACE_KEYS``)
+# - the home's coordinates, and the times of sunrise and sunset the lamp works
+# out from them. Each is said to be there, so that it can be seen the lamp has
+# it, and never read out. Which ids those are is the list's to say; here is
+# only what each is called in the file.
+_HIDDEN_AS: Final = {
+    KEY_LATITUDE: "coordinates",
+    KEY_LONGITUDE: "coordinates",
+    KEY_CURVE: "sunrise and sunset times",
+}
 
 
 def _as_claimed(read: Callable[[object], str | None], value: Any) -> Any:
@@ -180,9 +187,12 @@ def _state(
             _NOT_AS_EXPECTED if reading is protocol.UNUSABLE else word(reading)
         )
     named = len(shown)
-    if any(key in reported for key in _WHERE):
-        shown[_WHERE_NAME] = REDACTED
-        named += sum(key in reported for key in _WHERE)
+    for called in dict.fromkeys(_HIDDEN_AS[key] for key in sorted(PLACE_KEYS)):
+        ids = [key for key in sorted(PLACE_KEYS) if _HIDDEN_AS[key] == called]
+        there = sum(key in reported for key in ids)
+        if there:
+            shown[" ".join(f"0x{key:02x}" for key in ids) + f" {called}"] = REDACTED
+            named += there
     shown["other_properties"] = len(reported) - named
     shown["times_a_property_was_not_kept"] = not_kept
     return dict(sorted(shown.items()))

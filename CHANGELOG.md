@@ -108,6 +108,13 @@ All notable changes to this project are documented here. The format is based on
   part that knows the lamp is no longer handed Home Assistant: what it needs
   of whatever runs it, it asks of one object it is built with
   ([#54](https://github.com/kugaevsky/glowrium-ha/issues/54)).
+- **The diagnostics say that the sunrise and sunset times are there and
+  hidden.** The times a lamp works out from its coordinates give the place
+  away as the coordinates do. The file never showed them, and did not say
+  that it kept them back either: they were counted among the properties it
+  has no name for. They are named now, as the coordinates are, and marked
+  as redacted; that count is one lower for a lamp that reports them
+  ([#58](https://github.com/kugaevsky/glowrium-ha/issues/58)).
 
 ### Added
 

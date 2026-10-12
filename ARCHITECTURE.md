@@ -1376,10 +1376,12 @@ written in:
   judgement the device page shows as `unknown`: the file has none of its
   own.
 - The coordinates are marked as redacted, so that it can be seen the lamp has
-  them.
+  them, and so are the sunrise and sunset times the lamp computes from them
+  (`0x34`): the times give the place away as well as the coordinates do.
+  Which ids those are is one list (`PLACE_KEYS`), the same one a logged frame
+  is blanked by and the bench prints by.
 - Whatever has no name here is **counted**, and neither its value, its size
-  nor its id is shown. The sunrise and sunset times the lamp computes
-  (`0x34`) would give the place away as well as the coordinates do.
+  nor its id is shown.
 - The model id and the firmware are shown only when each is, from end to end,
   what it claims to be: the family's name, a dash, a letter and three digits;
   one to three small numbers with dots between them. Where a field of the

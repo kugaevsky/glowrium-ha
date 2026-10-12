@@ -25,7 +25,7 @@ import logging
 from typing import Any, Final
 
 from . import cbor
-from .const import KEY_CURVE, KEY_LATITUDE, KEY_LONGITUDE, KEY_TIME
+from .const import KEY_CURVE, KEY_TIME, PLACE_KEYS
 
 # The mirror's lines go out under the coordinator's name, as the link's do: the
 # log filters, and the tests' caplog, were set up on that name before either
@@ -51,10 +51,10 @@ _IN_THE_DEBUG_LOG = (
     "and sunset times it works out from them, is shown as xx; look the frame "
     "over all the same before posting it"
 )
-# The ids of what places the lamp, each looked for by its last byte. An id
-# above 23 is written in two bytes or more - 18 34, 19 00 34 and longer - and a
-# decoder takes them all for the same id; the last byte is the one they share.
-_PLACE = frozenset({KEY_LATITUDE, KEY_LONGITUDE, KEY_CURVE})
+# The ids of what places the lamp (``PLACE_KEYS``) are each looked for by
+# their last byte. An id above 23 is written in two bytes or more - 18 34,
+# 19 00 34 and longer - and a decoder takes them all for the same id; the last
+# byte is the one they share.
 # How many bytes follow the head of a CBOR float: double, single, half.
 _FLOAT_BYTES = {b"\xfb": 8, b"\xfa": 4, b"\xf9": 2}
 # The head of a CBOR item (RFC 8949, 3). Its three high bits say what the item
@@ -142,7 +142,7 @@ def _private_at(frame: bytes, at: int) -> tuple[int, int]:
     of the value - and how many the value itself takes: none, when nothing
     of the kind starts here.
     """
-    if frame[at] not in _PLACE:
+    if frame[at] not in PLACE_KEYS:
         return 1, 0
     value_at = _past_tags(frame, at + 1)
     if value_at is None:
