@@ -1162,7 +1162,7 @@ async def test_a_call_waiting_its_turn_when_the_link_drops_ends_as_a_lost_link(
     out of the exchange, and the bus is closed once.
     """
     coordinator, client, bus = await _on_a_busy_link(hass)
-    caplog.set_level(logging.DEBUG, logger=coordinator_module.__name__)
+    caplog.set_level(logging.DEBUG, logger=link_module.__name__)
     exchanges = {
         "the state request": link_of(coordinator).prime_held,
         "the state read": lambda: coordinator._async_read_state(
@@ -2127,7 +2127,7 @@ async def test_a_hang_up_that_outlives_the_entry_raises_no_repair(
     link_of(coordinator).tick()
     await asyncio.sleep(0.05)  # dialled, asked, dropped: the hang-up is in flight
 
-    with caplog.at_level(logging.WARNING, logger=coordinator_module.__name__):
+    with caplog.at_level(logging.WARNING, logger=link_module.__name__):
         await coordinator.async_stop()
         assert _stack_issue(hass) is None
         await asyncio.sleep(0.5)  # ...and it runs out, unanswered
@@ -2154,7 +2154,7 @@ async def test_the_hang_up_of_the_unload_itself_raises_no_repair(
     assert link_of(coordinator).stuck_hang_ups == 2
     await taken_bare(link_of(coordinator))  # a link held when the unload comes
 
-    with caplog.at_level(logging.WARNING, logger=coordinator_module.__name__):
+    with caplog.at_level(logging.WARNING, logger=link_module.__name__):
         await coordinator.async_stop()
         await asyncio.sleep(0.1)
         await hass.async_block_till_done()
@@ -2204,7 +2204,7 @@ async def test_a_stopped_coordinator_ends_no_episode_and_takes_down_no_repair(
     assert _stack_issue(hass) is not None
 
     caplog.clear()
-    with caplog.at_level(logging.WARNING, logger=coordinator_module.__name__):
+    with caplog.at_level(logging.WARNING, logger=link_module.__name__):
         link_of(coordinator).note_answer()
 
     assert _stack_issue(hass) is not None  # the successor's, and still standing

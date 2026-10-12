@@ -27,10 +27,7 @@ from typing import Any, Final
 from . import cbor
 from .const import KEY_CURVE, KEY_TIME, PLACE_KEYS
 
-# The mirror's lines go out under the coordinator's name, as the link's do: the
-# log filters, and the tests' caplog, were set up on that name before either
-# module existed.
-_LOGGER = logging.getLogger(f"{__package__}.coordinator")
+_LOGGER = logging.getLogger(__name__)
 
 # How many ids the integration has no name for are kept. The device chooses
 # the ids it reports, and whatever answers at the lamp's address is taken for

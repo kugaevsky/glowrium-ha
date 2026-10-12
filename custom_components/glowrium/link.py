@@ -38,9 +38,7 @@ from bleak.backends.device import BLEDevice
 from bleak.exc import BleakError, BleakGATTProtocolError, BleakGATTProtocolErrorCode
 from bleak_retry_connector import BleakClientWithServiceCache, establish_connection
 
-# Under the coordinator's name, as these lines always were: a log filter that
-# somebody set on it must not go half-blind because the code moved file.
-_LOGGER = logging.getLogger(f"{__package__}.coordinator")
+_LOGGER = logging.getLogger(__name__)
 _RECONNECT_INTERVAL = timedelta(seconds=30)
 # bleak-retry-connector defaults to 4 connect attempts, each of which can sit
 # through a 20 s bleak timeout plus a backoff. Against an unreachable device

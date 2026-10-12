@@ -24,7 +24,7 @@ from custom_components.glowrium.mirror import Mirror, _for_the_log
 
 _ADDRESS = "AA:BB:CC:DD:EE:FF"
 _DESCRIBED = "model Glowrium-C051, firmware 4"
-_LOG = mirror_module._LOGGER.name
+_LOG = mirror_module.__name__
 
 
 def _a_mirror(
@@ -178,6 +178,29 @@ def test_take_never_raises_whatever_the_bytes() -> None:
         carried = mirror.take(frame)
         assert isinstance(carried, frozenset)
         assert all(isinstance(key, int) for key in carried)
+
+
+def test_the_mirror_logs_under_its_own_name(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """What the mirror writes to the log carries the mirror's own name.
+
+    Whoever reads a log looks for a line in the module it names. Debug
+    logging turned on for the package shows it, which is what the documents
+    tell an owner to turn on.
+    """
+    mirror = _a_mirror()
+
+    with caplog.at_level(logging.DEBUG, logger="custom_components.glowrium"):
+        mirror.take(b"\xff")  # nothing a decoder can read: a line at each level
+
+    assert {record.levelno for record in caplog.records} == {
+        logging.DEBUG,
+        logging.WARNING,
+    }
+    assert {record.name for record in caplog.records} == {
+        "custom_components.glowrium.mirror"
+    }
 
 
 def test_the_warning_describes_the_lamp_as_it_is_known_when_written(

@@ -26,6 +26,7 @@ from custom_components.glowrium import (
     diagnostics,
     keeper as keeper_module,
     link as link_module,
+    mirror as mirror_module,
     protocol,
 )
 from custom_components.glowrium.const import (
@@ -1436,7 +1437,7 @@ async def test_no_line_in_the_log_carries_the_coordinates(
     """
     coordinator, _lamp = _at_a_lamp(hass)
 
-    with caplog.at_level(logging.DEBUG, logger=coordinator_module.__name__):
+    with caplog.at_level(logging.DEBUG, logger=mirror_module.__name__):
         coordinator._ingest(bytes.fromhex(frame))
         coordinator._ingest(bytes.fromhex(frame))
 
@@ -2339,12 +2340,39 @@ async def test_a_connect_that_waited_behind_a_command_dials_nothing(
     assert link_of(coordinator).client is lamp.links[0]
 
 
+async def test_the_link_and_the_device_half_each_log_under_their_own_name(
+    hass: HomeAssistant, caplog: pytest.LogCaptureFixture
+) -> None:
+    """A line of the log is found in the module its logger names.
+
+    That a link was made and primed is the link's to say; that the lamp
+    refused the state request is the device half's. Debug logging turned on
+    for the package shows both, which is what the documents tell an owner
+    to turn on.
+    """
+    coordinator, lamp = _at_a_lamp(hass)
+    _refusing(lamp)
+
+    with caplog.at_level(logging.DEBUG, logger="custom_components.glowrium"):
+        await link_of(coordinator).connect()
+
+    def said_by(words: str) -> set[str]:
+        return {
+            record.name for record in caplog.records if words in record.getMessage()
+        }
+
+    assert said_by("connected and primed") == {"custom_components.glowrium.link"}
+    assert said_by("state request refused") == {
+        "custom_components.glowrium.coordinator"
+    }
+
+
 def _info_lines(caplog: pytest.LogCaptureFixture) -> list[str]:
-    """Return what the coordinator logged at INFO, the level a user reads."""
+    """Return what the link logged at INFO, the level a user reads."""
     return [
         record.getMessage()
         for record in caplog.records
-        if record.levelno == logging.INFO and record.name == coordinator_module.__name__
+        if record.levelno == logging.INFO and record.name == link_module.__name__
     ]
 
 
@@ -2373,7 +2401,7 @@ async def test_going_out_of_reach_and_coming_back_are_each_said_once(
     lamp.out_of_range()  # this is about the log, not about dialling
     link_of(coordinator).begin(present=True)
 
-    with caplog.at_level(logging.INFO, logger=coordinator_module.__name__):
+    with caplog.at_level(logging.INFO, logger=link_module.__name__):
         link_of(coordinator).advertising(False)
         link_of(coordinator).advertising(False)
         coordinator._async_notify_listeners()
@@ -2401,7 +2429,7 @@ async def test_a_lamp_with_a_link_is_not_out_of_reach_for_being_quiet(
     coordinator, _lamp, link = await _holding_a_link(hass)
     link_of(coordinator).begin(present=True)
 
-    with caplog.at_level(logging.INFO, logger=coordinator_module.__name__):
+    with caplog.at_level(logging.INFO, logger=link_module.__name__):
         link_of(coordinator).advertising(False)
         assert coordinator.available
         assert _info_lines(caplog) == []
@@ -2433,7 +2461,7 @@ async def test_a_command_that_fails_says_the_link_is_gone(
     coordinator.async_add_listener(lambda: told.append(coordinator.available))
     assert coordinator.available
 
-    with caplog.at_level(logging.INFO, logger=coordinator_module.__name__):
+    with caplog.at_level(logging.INFO, logger=link_module.__name__):
         with pytest.raises(HomeAssistantError):
             await coordinator.async_set_power(True)
         await hass.async_block_till_done()
@@ -2454,7 +2482,7 @@ async def test_a_link_dropped_while_it_is_primed_is_said_to_be_gone(
     told: list[bool] = []
     coordinator.async_add_listener(lambda: told.append(coordinator.available))
 
-    with caplog.at_level(logging.INFO, logger=coordinator_module.__name__):
+    with caplog.at_level(logging.INFO, logger=link_module.__name__):
         await link_of(coordinator).prime_held()
         await hass.async_block_till_done()
 
@@ -2482,7 +2510,7 @@ async def test_a_stopped_coordinator_does_not_say_where_the_lamp_is(
     coordinator, _lamp, _link = await _holding_a_link(hass)  # held by its link alone
     monkeypatch.setattr(link_module, "_CONFIRM_TIMEOUT", 0.01)
 
-    with caplog.at_level(logging.INFO, logger=coordinator_module.__name__):
+    with caplog.at_level(logging.INFO, logger=link_module.__name__):
         if stopped_by == "an unload":
             await coordinator.async_stop()
         else:
@@ -2522,7 +2550,7 @@ async def test_a_lamp_that_is_advertising_at_start_is_in_reach_from_the_start(
     fake.async_address_present.return_value = present
     monkeypatch.setattr(keeper_module, "bluetooth", fake)
 
-    with caplog.at_level(logging.INFO, logger=coordinator_module.__name__):
+    with caplog.at_level(logging.INFO, logger=link_module.__name__):
         await coordinator.async_start()
     try:
         assert coordinator.available is present
@@ -3359,7 +3387,7 @@ async def _the_warnings_that_name_the_lamp(
     await coordinator.async_set_indicator(True)  # a link to be asked on
     link = lamp.links[-1]
     _refusing(lamp)
-    with caplog.at_level(logging.WARNING, logger=coordinator_module.__name__):
+    with caplog.at_level(logging.WARNING, logger=coordinator_module.__package__):
         lamp.say(bytes.fromhex("a106f5deadbeef"))  # trailing bytes
         lamp.say(_PARTLY_READABLE)
         lamp.say(bytes.fromhex("c0a106f5"))  # a map behind a tag: not decoded
@@ -3884,7 +3912,7 @@ async def test_a_hang_up_that_fails_or_hangs_troubles_nobody(
     by hand (tests/test_bus_lifetime.py is about the closing itself).
     """
     monkeypatch.setattr(link_module, "_HANG_UP_TIMEOUT", 0.05)
-    caplog.set_level(logging.DEBUG, logger=coordinator_module.__name__)
+    caplog.set_level(logging.DEBUG, logger=link_module.__name__)
     for failure in (BleakError("gone"), OSError(9, "Bad file descriptor"), EOFError()):
         coordinator, lamp, link = await _holding_a_link(hass)
         lamp.fails_hang_ups(failure)
@@ -4651,7 +4679,7 @@ async def test_shutting_down_says_so_in_the_log(
     whether the coordinator held a link at that moment and let go of it. On a
     host where the phantom link has been seen, that is the first question.
     """
-    caplog.set_level(logging.DEBUG, logger=coordinator_module.__name__)
+    caplog.set_level(logging.DEBUG, logger=link_module.__name__)
     coordinator, _lamp, _link = await _holding_a_link(hass)
 
     coordinator.async_shutdown()

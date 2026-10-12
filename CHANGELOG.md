@@ -108,6 +108,15 @@ All notable changes to this project are documented here. The format is based on
   part that knows the lamp is no longer handed Home Assistant: what it needs
   of whatever runs it, it asks of one object it is built with
   ([#54](https://github.com/kugaevsky/glowrium-ha/issues/54)).
+- **The link's and the state mirror's lines of the log carry their own
+  names.** Both were printed under `custom_components.glowrium.coordinator`,
+  from before either was a module of its own, and led whoever read a log to
+  the wrong file. They are `custom_components.glowrium.link` and
+  `custom_components.glowrium.mirror` now; no line's text has changed. Debug
+  logging turned on for `custom_components.glowrium`, as the README says,
+  shows them as before. A level set for the coordinator's name alone no
+  longer does
+  ([#58](https://github.com/kugaevsky/glowrium-ha/issues/58)).
 - **The diagnostics say that the sunrise and sunset times are there and
   hidden.** The times a lamp works out from its coordinates give the place
   away as the coordinates do. The file never showed them, and did not say
