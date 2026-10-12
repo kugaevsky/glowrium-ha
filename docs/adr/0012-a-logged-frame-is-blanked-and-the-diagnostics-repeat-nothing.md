@@ -103,6 +103,7 @@ each ends. A deny-list over the mirror would be a list of what one lamp sent.
   `::test_wherever_it_stands_in_whatever_noise_a_coordinate_is_blanked`;
   `tests/test_diagnostics.py::test_the_download_does_not_say_where_the_lamp_is_or_which_one_it_is`,
   `::test_what_the_integration_cannot_name_is_only_counted`,
+  `::test_what_gives_the_place_away_is_said_to_be_there_and_never_shown`,
   `::test_each_field_of_the_link_section_follows_its_own_source`.
 
 ## Revisit when

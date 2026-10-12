@@ -50,7 +50,7 @@ stateless views over that coordinator.
 | `link.py` | The link: the client and the lock around it, the dial, the hang-up and the closing of the client's bus, the stack that will not hang up, whether the lamp is in reach - and when the lamp is spoken to: the background connect, the first exchange, the question for a silent link, the delivery of a command with its one retry, and every deadline. No client leaves it. No Home Assistant in it and no protocol |
 | `cbor.py` | Minimal CBOR encoder/decoder (only the subset the device uses) — the *wire* format |
 | `protocol.py` | Semantic codec — one reader for each property, which says what its value is, or that nothing was reported, or that what was reported cannot be used; the byte layouts (`0x11` slot, `0x2f` ramp, `0x35` daylight saving, `0x05` clock) read and written; the coordinator's typed accessors and setters delegate here |
-| `const.py` | GATT UUIDs, CBOR property keys, byte-layout offsets, mode constants |
+| `const.py` | GATT UUIDs, CBOR property keys, the list of what gives the lamp's place away, mode constants |
 | `models.py` | Per-model registry (name, lighting-mode presets) keyed by `pkey` |
 | `diagnostics.py` | The diagnostics download: what the coordinator knows, rebuilt from what it read, with nothing in it the lamp chose |
 | `entity.py` | `GlowriumEntity` base — `DeviceInfo`, availability, update fan-out |

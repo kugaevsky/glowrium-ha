@@ -26,7 +26,6 @@ from custom_components.glowrium import (
     diagnostics,
     keeper as keeper_module,
     link as link_module,
-    mirror as mirror_module,
     protocol,
 )
 from custom_components.glowrium.const import (
@@ -56,6 +55,7 @@ from custom_components.glowrium.coordinator import (
 )
 from custom_components.glowrium.keeper import EntryKeeper
 
+from .conftest import DST_OFF, DST_ON
 from .lamp import (
     LampLink,
     ScriptedLamp,
@@ -66,11 +66,6 @@ from .lamp import (
     nothing_heard,
     turn_over,
 )
-
-# The two values of the daylight-saving flag as the lamp takes them, from a
-# capture of the vendor app: the flag, then an hour in seconds.
-_DST_ON = bytes.fromhex("0100000e10")
-_DST_OFF = bytes.fromhex("0000000e10")
 
 
 def _at_a_lamp(
@@ -158,7 +153,7 @@ _BUS_CLOSED = (EOFError(), OSError(9, "Bad file descriptor"))
             "async_set_indicator", False, bytes.fromhex("a117f4"), id="indicator off"
         ),
         pytest.param(
-            "async_set_dst", False, cbor.encode({KEY_DST: _DST_OFF}), id="dst off"
+            "async_set_dst", False, cbor.encode({KEY_DST: DST_OFF}), id="dst off"
         ),
     ],
 )
@@ -331,7 +326,7 @@ async def test_mode_allows_when_mode_unknown(hass: HomeAssistant) -> None:
     [
         pytest.param(
             None,
-            _DST_ON,
+            DST_ON,
             bytes.fromhex("a11835450100000e10"),
             id="nothing reported yet",
         ),
@@ -1437,7 +1432,9 @@ async def test_no_line_in_the_log_carries_the_coordinates(
     """
     coordinator, _lamp = _at_a_lamp(hass)
 
-    with caplog.at_level(logging.DEBUG, logger=mirror_module.__name__):
+    # The whole package is listened to: today only the mirror prints a frame,
+    # and a line of any other module that came to print one is held to this too.
+    with caplog.at_level(logging.DEBUG, logger=coordinator_module.__package__):
         coordinator._ingest(bytes.fromhex(frame))
         coordinator._ingest(bytes.fromhex(frame))
 

@@ -48,10 +48,6 @@ _IN_THE_DEBUG_LOG = (
     "and sunset times it works out from them, is shown as xx; look the frame "
     "over all the same before posting it"
 )
-# The ids of what places the lamp (``PLACE_KEYS``) are each looked for by
-# their last byte. An id above 23 is written in two bytes or more - 18 34,
-# 19 00 34 and longer - and a decoder takes them all for the same id; the last
-# byte is the one they share.
 # How many bytes follow the head of a CBOR float: double, single, half.
 _FLOAT_BYTES = {b"\xfb": 8, b"\xfa": 4, b"\xf9": 2}
 # The head of a CBOR item (RFC 8949, 3). Its three high bits say what the item
@@ -138,6 +134,11 @@ def _private_at(frame: bytes, at: int) -> tuple[int, int]:
     ``(head, value)``: how many bytes name it - the id, any tags and the head
     of the value - and how many the value itself takes: none, when nothing
     of the kind starts here.
+
+    An id of what places the lamp is looked for by its last byte. One above
+    23 is written in two bytes or more - 18 34, 19 00 34 and longer - and a
+    decoder takes them all for the same id; the last byte is the one they
+    share.
     """
     if frame[at] not in PLACE_KEYS:
         return 1, 0

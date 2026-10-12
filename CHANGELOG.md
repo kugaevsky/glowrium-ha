@@ -114,8 +114,8 @@ All notable changes to this project are documented here. The format is based on
   the wrong file. They are `custom_components.glowrium.link` and
   `custom_components.glowrium.mirror` now; no line's text has changed. Debug
   logging turned on for `custom_components.glowrium`, as the README says,
-  shows them as before. A level set for the coordinator's name alone no
-  longer does
+  shows them as before. A level or a filter set for the coordinator's name
+  alone no longer covers them
   ([#58](https://github.com/kugaevsky/glowrium-ha/issues/58)).
 - **The diagnostics say that the sunrise and sunset times are there and
   hidden.** The times a lamp works out from its coordinates give the place

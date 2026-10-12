@@ -12,6 +12,11 @@ import pytest
 
 ROOT = Path(__file__).resolve().parent.parent
 
+# The daylight-saving slot switched on and switched off, as the vendor app
+# writes it (from a capture): the flag, then an hour in seconds.
+DST_ON = bytes.fromhex("0100000e10")
+DST_OFF = bytes.fromhex("0000000e10")
+
 # What asyncio's debug mode says of a step of the loop that took long, as it
 # words it before the step and the time are filled in.
 _A_STEP_WAS_SLOW = "Executing %s took %.3f seconds"

@@ -143,8 +143,9 @@ _READ: Final[dict[int, Callable[[Any], Any]]] = {
 # Known by name and private: what gives the lamp's place away (``PLACE_KEYS``)
 # - the home's coordinates, and the times of sunrise and sunset the lamp works
 # out from them. Each is said to be there, so that it can be seen the lamp has
-# it, and never read out. Which ids those are is the list's to say; here is
-# only what each is called in the file.
+# it, and never read out. The list says which ids are hidden; here is what
+# each is called in the file, and ids called the same share an entry. An id
+# put on the list has to be given its words here, which a test holds.
 _HIDDEN_AS: Final = {
     KEY_LATITUDE: "coordinates",
     KEY_LONGITUDE: "coordinates",
@@ -187,8 +188,10 @@ def _state(
             _NOT_AS_EXPECTED if reading is protocol.UNUSABLE else word(reading)
         )
     named = len(shown)
-    for called in dict.fromkeys(_HIDDEN_AS[key] for key in sorted(PLACE_KEYS)):
-        ids = [key for key in sorted(PLACE_KEYS) if _HIDDEN_AS[key] == called]
+    hidden: dict[str, list[int]] = {}
+    for key in sorted(PLACE_KEYS):
+        hidden.setdefault(_HIDDEN_AS[key], []).append(key)
+    for called, ids in hidden.items():
         there = sum(key in reported for key in ids)
         if there:
             shown[" ".join(f"0x{key:02x}" for key in ids) + f" {called}"] = REDACTED

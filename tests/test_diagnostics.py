@@ -27,6 +27,7 @@ from custom_components.glowrium.const import (
     KEY_ACTIVATED,
     KEY_BRIGHTNESS,
     KEY_CIRCADIAN,
+    KEY_CURVE,
     KEY_DST,
     KEY_INDICATOR,
     KEY_LATITUDE,
@@ -361,7 +362,7 @@ async def test_what_the_integration_cannot_name_is_only_counted(
 _SAID_TO_BE_HIDDEN = {
     KEY_LATITUDE: "0x0a 0x0b coordinates",
     KEY_LONGITUDE: "0x0a 0x0b coordinates",
-    0x34: "0x34 sunrise and sunset times",
+    KEY_CURVE: "0x34 sunrise and sunset times",
 }
 
 
