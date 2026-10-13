@@ -1971,6 +1971,12 @@ async def test_a_wedged_stack_is_put_in_front_of_the_user(
             "Glowrium-G7_DDEEFF (11:22:33:44:55:66)",  # not this lamp's
             "Glowrium-G7_DDEEFF 11 22 33 44 55 66",
         ),
+        # Cut at a length that is still a name, not a paragraph.
+        pytest.param(
+            "Glowrium " + "x" * 200,
+            "Glowrium " + "x" * 39,
+            id="a name of two hundred letters",
+        ),
     ],
 )
 async def test_the_repair_shows_the_lamps_name_as_text_and_nothing_more(
@@ -1987,7 +1993,8 @@ async def test_the_repair_shows_the_lamps_name_as_text_and_nothing_more(
     a message the user has every reason to trust. So only letters, digits,
     spaces, dashes and underscores go in: enough to recognise the lamp by, in
     any script, and nothing Markdown or HTML acts on - not even a dot, which
-    is all it takes to make an address clickable.
+    is all it takes to make an address clickable. And no more of a name than
+    it takes to know the lamp by.
     """
     coordinator, _host, clock, _dialled = _coordinator_on_a_clock(
         hass, monkeypatch, _an_entry(hass, title=name)
@@ -2027,21 +2034,6 @@ async def test_the_repair_is_filed_under_the_entry_and_not_under_the_address(
 
     await coordinator.async_stop()
     assert _stack_issue(hass) is None  # taken down under the same id
-
-
-async def test_the_repair_shows_no_more_of_a_name_than_it_takes_to_know_it(
-    hass: HomeAssistant, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """A name is cut at a length that is still a name, not a paragraph."""
-    coordinator, _host, clock, _dialled = _coordinator_on_a_clock(
-        hass, monkeypatch, _an_entry(hass, title="Glowrium " + "x" * 200)
-    )
-
-    await _ticks(link_of(coordinator), clock, 3, hass=hass)
-
-    issue = _stack_issue(hass)
-    assert issue is not None
-    assert issue.translation_placeholders["name"] == "Glowrium " + "x" * 39
 
 
 async def test_the_repair_names_the_lamp_as_it_was_set_up(
