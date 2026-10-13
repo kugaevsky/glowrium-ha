@@ -816,21 +816,6 @@ async def test_nothing_is_kept_of_a_client_that_was_let_go(
     assert link.unclosed == set()
 
 
-async def test_a_client_with_nothing_known_behind_it_is_kept_too(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """No backend to look at, and a hang-up that failed: there is no telling.
-
-    So it is treated as the worse case. A client that may hold a bus is not
-    forgotten on the strength of not having been able to look.
-    """
-    link, host = _wedged_link(monkeypatch, behind=lambda _bus: None)
-
-    await _polls(link, 6)
-
-    assert len(host.clients) == 1
-
-
 class _StuckBus(_Bus):
     """A bus that will not close when told to."""
 
@@ -1803,11 +1788,15 @@ async def test_a_stack_is_no_less_stuck_for_a_bus_that_cannot_be_closed(
     assert faults == [3]  # and the repair was called for, with the count
 
 
-async def test_a_client_with_no_backend_on_record_is_not_blamed_on_bluez(
+async def test_a_client_with_no_backend_on_record_is_kept_and_not_blamed_on_bluez(
     monkeypatch: pytest.MonkeyPatch,
     caplog: pytest.LogCaptureFixture,
 ) -> None:
     """Kept, since there may be a bus behind it - and nobody's to call BlueZ's.
+
+    No backend to look at, and a hang-up that failed: it is treated as the
+    worse case, and a client that may hold a bus is not forgotten on the
+    strength of not having been able to look.
 
     The warning and the repair name BlueZ and what clears it. With no backend
     on record there is no telling whose client it is that went silent, and
