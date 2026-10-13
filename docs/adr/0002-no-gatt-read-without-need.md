@@ -3,17 +3,21 @@
 - **Status:** accepted
 - **Date:** 2026-10-05 (asking instead of reading); 2026-10-06 (the cause read
   off the controller; reading the device info in every session reaffirmed);
-  amended 2026-10-11 (one order, and three refusals end the asking, #55)
+  amended 2026-10-11 (one order, and three refusals end the asking, #55);
+  2026-10-13 (the runs of 2026-10-05 by what was done in each, and where the
+  later records are, #60)
 
 ## Context
 
 `facebd02` is readable, and from 0.2.0 the state was read first on every
 connect. Measured on a G7 (firmware 4) from a Linux host with BlueZ 5.82,
-outside the integration and between its ticks, on 2026-10-05: a link that was
-connected, subscribed and written the state request stayed up 9 runs of 9; a
-link on which any characteristic was read - `facebd02` (235 bytes),
-`facebd80` (93), `facebd81` (1) - was gone 2.02-2.04 s later, 6 of 6. The read
-succeeds; two seconds later, BlueZ's own timer, the link is reported dropped.
+outside the integration and between its ticks, on 2026-10-05: a link on which
+nothing was read stayed up 9 runs of 9 - connected and no more (1),
+subscribed (1), subscribed and written the state request (7); a link on
+which any characteristic was read - `facebd02` (235 bytes, 3 runs),
+`facebd80` (93, 1), `facebd81` (1, 2) - was gone 2.02-2.04 s later, 6 of 6.
+The read succeeds; two seconds later, BlueZ's own timer, the link is
+reported dropped.
 A read on every connect was a link made and lost on every tick, about a
 hundred an hour, taken for a lamp at the edge of range.
 
@@ -60,8 +64,10 @@ the stray response, so the bench on a laptop never showed it. No workaround.
 
 ## Evidence
 
-- ARCHITECTURE.md, "Priming state on connect" (the table of 2026-10-05; the
-  trace of 2026-10-06; three links in three hours) and "Device-info string".
+- ARCHITECTURE.md, "Priming state on connect" and "Device-info string". The
+  runs of 2026-10-05 are in the Context above, as far as this decision rests
+  on them; the trace of 2026-10-06 is on record in #20, and the one link
+  timed once nothing was read is in the Context of ADR 0001.
 - `tests/test_coordinator.py::test_a_lamp_that_reports_is_asked_and_never_read`,
   `::test_the_device_info_is_the_last_thing_read_and_read_once`,
   `tests/test_link.py::test_a_command_connect_reads_nothing`;

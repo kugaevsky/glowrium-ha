@@ -131,104 +131,45 @@ carrying a map of exactly those ids — on a G7 one 72-byte frame, which arrives
 before the write call has returned. That is the whole of priming on a lamp
 that answers: nothing is read.
 
-> ⚠️ **On BlueZ, a GATT read of this lamp ends the link.** `NOTIFY_UUID` is
-> readable, and from 0.2.0 it was read first, on every connect — which looked
-> sturdier than asking. Measured on a G7 (firmware 4) from a Linux host with
-> BlueZ 5.82, outside the integration and between its poll ticks, on
-> 2026-10-05:
->
-> | After connecting | Runs | Link |
-> | --- | --- | --- |
-> | nothing | 1 | still up when the test ended it |
-> | subscribe to notifications | 1 | still up |
-> | subscribe, then write the state request | 7 | still up, state reported at once |
-> | read `facebd02` (235 bytes) | 3 | gone 2.02–2.04 s later |
-> | read `facebd80` (93 bytes) | 1 | gone 2.02 s later |
-> | read `facebd81` (1 byte) | 2 | gone 2.02 s later |
->
-> The read itself succeeds. BlueZ takes the ATT channel down right after it —
-> the very next call answers `Not connected` — and two seconds later, which is
-> BlueZ's own disconnect timer, reports the device disconnected. With a read
-> on every connect that was a link made and lost on every poll tick, about a
-> hundred an hour, and it was taken for a lamp at the edge of range. **Why:**
-> the lamp answers a read twice — the value, then an error response (`0x1e`)
-> to the same request — and BlueZ closes the ATT channel on a response that
-> answers nothing (controller trace, 2026-10-06). macOS drops the stray
-> response, which is why `tools/bench.py` on a laptop never showed it.
+> ⚠️ **On BlueZ, a GATT read of this lamp ends the link** two seconds later,
+> each time it was tried (a G7 under BlueZ 5.82, 2026-10-05). The lamp answers
+> a read twice — the value, then an error response (`0x1e`) to the same
+> request — and BlueZ closes the ATT channel on a response that answers
+> nothing (controller trace, 2026-10-06). macOS drops the stray response,
+> which is why `tools/bench.py` on a laptop never showed it. With a read on
+> every connect that was about a hundred links an hour, taken for a lamp at
+> the edge of range. The measurement, and what was decided on it, is ADR 0002.
 
-**What the answer covers.** `STATE_KEYS` is what the vendor app asks for, plus
-the clock (`0x05`), which the app does not request and the lamp reports all
-the same: asked for alone, with the power, and with everything else, it was
-answered each time and the link stayed up. Other ids have not been tried. An
-earlier note here said that asking for an id the app does not request makes
-the lamp drop the link; that was written before it was known that a read
-does, and may have blamed the wrong thing. Add an id only after measuring it.
-
-**The answer is waited for, briefly.** `_REPORT_TIMEOUT` (3 s) is for a model
-that spreads its map over several notifications (see below): the keys of
-every notification since the request are collected, and priming is done when
-they cover `STATE_KEYS`. A lamp that answers in part has still answered. Only
-what arrives *after* the request counts — the lamp reports on its own whenever
-something changes, and a complete map from a moment earlier proves nothing.
-
-**Reading is what is left for a lamp that will not report.** A G8
-(`Glowrium-C064`) answers the request with ATT `Insufficient authorization`;
-another may acknowledge it and say nothing. Then the characteristic is read —
-at the price of the link on BlueZ, which for such a lamp is the price of
-having a state at all. The order is one, for every lamp and every time:
-asked, and read only then
-([#55](https://github.com/kugaevsky/glowrium-ha/issues/55)). Until then a
-lamp that had refused once was read *first* and asked afterwards, because it
-was reported of the G8 that the refused request takes the link with it.
-Whether that was the request or the read before it was never certain, and
-nobody has seen a refusal that passes; it cannot be checked without a G8.
-
-> ⚠️ **The read does not return the whole property map.** Measured directly on a
-> G7 at RSSI −40 and reported for a G8 in issue #3: it returns a complete,
-> twenty-pair map headed `0xb4`, carrying keys `0x00`–`0x15` and nothing above.
-> The indicator (`0x17`), lighting mode (`0x2b`), ramp (`0x2f`) and DST
-> (`0x35`) are absent from it on both models and arrive only through the
-> `STATE_KEYS` request. So one refusal does not end the asking.
-
-A refusal is **non-fatal**, and it is told by what the error says — an
-authorization or permission error — not by anything having worked before
-it: a link that is gone answers `Not connected` to everything, and counting
-that ended the asking on a perfectly good G7 forty seconds after start-up.
-Where the error is bleak's own it says which ATT error it was
-(`BleakGATTProtocolError.code`), and that code alone decides; the text is
-what is left to go by for anything else, a Bluetooth proxy's error for one.
-After `_REFUSALS_THAT_END_THE_ASKING` (3) refusals in a row the lamp is not asked
-again for as long as the coordinator lives: it is only read, on every
-connect, and the log says so once - the lamp, its model and firmware, that
-commands still work, that what a read does not carry stays unknown, and a
-request to report the model. A request the lamp accepts starts the count
-again, so one refusal does not add up with another an hour later. A link
-that drops under the request is a lost link: it is counted as nothing, and
-does not start the count again either. Three in a row are three requests,
-not three connects: the question put to a silent link is the same request.
-
-There was more to it until #55: the third refusal paused the request for ten
-minutes, and a second run of three after that gave it up for the session,
-each with a warning. The pause was from when any error counted as a refusal
-and a weak link "refused" by dropping. With only the lamp's own no counted,
-it gave the owner of a lamp that refuses two warnings for one fact, and no
-lamp has been seen to refuse and then stop refusing.
-
-**The device-info string is the one read left, and it comes last.** It is
-only to be had by a read (`facebd80`), so it is done once per session, after
-the state has arrived and whatever had to be written — the bring-up, a stale
-clock — has been. On BlueZ that link is then spent, and the poll makes
-another thirty seconds later, on which nothing is read at all. A command's
-own connect reads nothing, not even this.
-
-Seen on the host with this in place (2026-10-05, a G7 at RSSI −74…−76): the
-first link primed, read the device info, and was reported dropped 2.01 s
-later; the second, made on the next poll tick with nothing read, stayed up
-for 2 h 44 min, asked every five minutes and answering each time, and then
-went down by itself; the third was up and primed 43 s after that, again
-with nothing read. Three links in three hours, where the old rate was about
-a hundred an hour, and a state change made by the lamp's own circadian
-program arrived as a notification on the held link.
+- **What is asked for.** `STATE_KEYS` is what the vendor app asks for, plus
+  the clock (`0x05`), which the app does not request and the lamp reports all
+  the same. Other ids have not been tried: add one only after measuring it.
+- **The answer is waited for, briefly** (`_REPORT_TIMEOUT`, 3 s): a model may
+  spread its map over several notifications, so the keys of every
+  notification since the request are collected, and priming is done when they
+  cover `STATE_KEYS`. A lamp that answers in part has still answered. Only
+  what arrives *after* the request counts.
+- **Reading is what is left for a lamp that will not report.** A G8
+  (`Glowrium-C064`) answers the request with ATT `Insufficient authorization`;
+  another may acknowledge it and say nothing. Then the characteristic is
+  read, at the price of the link on BlueZ. The order is one, for every lamp
+  and every time: asked, and read only then. The read carries keys
+  `0x00`–`0x15` and nothing above, so the indicator, the lighting mode, the
+  ramp and DST arrive only through the request.
+- **A refusal is told by what the error says** — an authorization or
+  permission error: the ATT code where the error is bleak's own
+  (`BleakGATTProtocolError.code`), the text otherwise — and not by anything
+  having worked before it: a link that is gone answers `Not connected` to
+  everything. One does not end the asking. After
+  `_REFUSALS_THAT_END_THE_ASKING` (3) in a row the lamp is not asked again
+  for as long as the coordinator lives: it is only read, on every connect,
+  and the log says so once. A request the lamp accepts starts the count
+  again; a link that drops under the request counts as nothing and starts
+  nothing again. Three in a row are three requests, not three connects: the
+  question put to a silent link is the same request.
+- **The device-info string is the one read left, and it comes last,** once
+  per session (below). On BlueZ that link is then spent, and the tick makes
+  another thirty seconds later, on which nothing is read at all. A command's
+  own connect reads nothing, not even this.
 
 ### Device-info string (`facebd80`)
 
@@ -252,24 +193,18 @@ once, when the entity is added. So three things hold it together:
 
 - An entity describes only what is known when it is built. A field left out of
   a `DeviceInfo` is left alone in the device registry; a field given as `None`
-  *is* the value, and wipes what an earlier session learned. (That is what
-  0.2.0 and 0.2.1 did on every start.)
+  *is* the value, and wipes what an earlier session learned.
 - When the string has been read, the coordinator tells its keeper, which
   writes model, model id, firmware and serial number into the device registry
   (`EntryKeeper.lamp_described`), passing `UNDEFINED` for anything the lamp
   did not say.
 - The model id is kept with the config entry (`CONF_MODEL_ID` in
-  `entry.data`), and handed to the next coordinator when it is built. That is
-  what makes the per-model profile take effect: which presets a lamp has is
-  decided by its model, and the entity that offers them is built before this
-  session has read anything.
+  `entry.data`), and handed to the next coordinator when it is built: the
+  entity that offers a model's presets is built before the session has read
+  anything.
 
-It is still read once in every session. Firmware changes between starts, and
-what was remembered is not a reading.
-
-Two sibling characteristics exist but are unused: `facebd03` rejects reads
-(write-only command/OTA channel) and `facebd81` returns a single constant byte.
-The vendor app touches neither, and neither does this integration.
+It is still read once in every session: what was remembered is not a reading
+(ADR 0002).
 
 ---
 
@@ -308,8 +243,7 @@ real frames and deep nesting.
 
 A device frame may declare more pairs in its map header than the frame actually
 carries: a G8 sends 55 bytes headed `0xac` — a promise of 12 pairs — containing
-11. The G7 has never been observed to do this, which is why the case went unseen
-until a G8 owner reported every state entity reading `unknown`.
+11. The G7 has never been observed to do this.
 
 So device frames and our own payloads are decoded differently:
 
@@ -326,59 +260,25 @@ so the pair it sits in is dropped whole rather than kept with half a value.
 ### Frames with an item that cannot be read
 
 A pair that is there and cannot be read - its value a tag, its key anything
-but a property id - is not a pair that did not arrive, and the decoder does
-not pass one off as the other: it raises `cbor.UnreadableItemError`. It used
-to take such a pair for the end of a split map, so the frame was merged as far
-as it went and nothing said that the rest of it had not been understood.
-
-The decoder does not step over an item it has no reading for, so nothing
-behind it is found - though a tag, a half-precision float, a simple value and
-`undefined` each have a length it could go by
-([#40](https://github.com/kugaevsky/glowrium-ha/issues/40)). What was ahead
-of it was read as from any whole frame, and the error carries those pairs
-(`ahead`). The mirror keeps them (`Mirror.take`), and
-says so - once per session as a warning, with the frame in the debug log. Dropping the frame instead would cost more than its
-properties. A state request answered only by such a frame would count as
-unanswered; the connect would fall back on reading the state; and on BlueZ a
-read ends the link two seconds later. A model whose report carries a single
-item nobody has given a reading would lose its link on every connect - which
-is what 0.2.0 and 0.2.1 did to every lamp. A frame of which nothing at all
-could be read is still no report, and that lamp is read, as a silent one is.
-
-A frame is printed in the debug log and nowhere else. This warning, the one
-for trailing bytes and the two for a frame nothing is taken from (below) say
-what was wrong and where the frame is, and carry none of it: its bytes are
-the lamp's to choose, and the log a warning stands in is posted for reasons
-that have nothing to do with this integration.
-Wherever a frame is printed, it is printed without what says where the lamp
-is (`mirror._for_the_log`). The coordinates and the times the lamp works out
-from them are found by their bytes and not by decoding, since these are the
-frames that could not be decoded to their end, and are put down as `xx`: an
-id by its last byte, so under every width it can be written in; behind any
-tags; the times under every head a byte string can have. No more than four
-tags or pieces of a string are stepped over from one offset, and past that
-what is left of the frame is blanked: every offset is looked at, and the
-search has to stay linear in a frame built to make it walk. A value in a form
-nobody has met, or one that stands without its id, is not found by looking
-for it - the lines say to look the frame over, and cannot rest on that alone.
-
-The same warnings name the lamp's model and firmware, and so does the one for
-a refused state request. Both come out of the device-info string with the
-serial number beside them, so each is said only when it is what it claims to
-be (`identity.model_id`, `identity.firmware` - the shapes the diagnostics
-hold them to as well), as `unknown` while the lamp has not been read, and as
-`not as expected` otherwise. A model whose id
-has another shape is therefore not named in its own report; the device page
-still shows it.
+but a property id - is not a pair that did not arrive: the decoder raises
+`cbor.UnreadableItemError`. It does not step over the item, so nothing behind
+it is found ([#40](https://github.com/kugaevsky/glowrium-ha/issues/40)); what
+was ahead of it was read as from any whole frame, and the error carries those
+pairs (`ahead`). The mirror keeps them (`Mirror.take`), counts the frame as a
+report, and says so - once per session as a warning. Why the frame is not
+dropped instead is ADR 0007.
 
 Trailing bytes are an error on both paths, raised as `cbor.TrailingBytesError`
-(a `ValueError` subclass carrying the byte count). Accepting the remainder would
-let a corrupt frame decode to a short but plausible map — `{0x14: false}` among
-them, the one value that triggers the bring-up sequence. Because rejecting them
-is new as of the split-frame fix, the mirror reports the first such frame per
-session as a warning carrying the model, with the frame in the debug log, so a regression on a
-model that never produced them shows up as itself rather than as generic
-undecodable garbage.
+(a `ValueError` subclass carrying the byte count), and the frame is dropped
+whole (ADR 0007). The first such frame of a session is said in a warning.
+
+A frame is printed in the debug log and nowhere else, and without what says
+where the lamp is (`mirror._for_the_log`): the coordinates and the times the
+lamp works out from them are found by their bytes and put down as `xx`. The
+warnings say what was wrong and where the frame is, and carry none of it;
+they name the lamp's model and firmware only where each is what it claims to
+be (`unknown` while the lamp has not been read, `not as expected` otherwise).
+How the search goes, and what it cannot find, is ADR 0012.
 
 ### Frames that cannot be decoded, and frames of no use
 
@@ -391,19 +291,10 @@ and carries no byte of the frame, every one in the debug log.
 - One that decodes without a fault to nothing that can be used: something
   other than a map of properties, or a map with nothing in it.
 
-Each is said for itself: one having been said says nothing of another.
-None of the three is a report, and to the state request none is an answer.
-The lamp is read instead, as a silent one is, on every connect: the read is
-the only other way to a state, and on BlueZ it costs that lamp its link, as
-it costs a lamp that refuses. The owner of such a lamp sees entities that
-read `unknown` and a link that keeps dropping, and the warning is what says
-why.
-
-The two ways of reading a frame in part differ, and are left to (ADR 0007). A
-frame with trailing bytes is dropped whole; one with an item that cannot be
-read is kept as far as it was read, `0x14 = false` included - as it is from a
-map that ends early. Neither has been seen from a lamp, and a lamp seen to
-send either is what reopens it.
+None of the three is a report, and to the state request none is an answer:
+the lamp is read instead, as a silent one is, on every connect. That a frame
+with trailing bytes is dropped whole while one with an item that cannot be
+read is kept as far as it was read is left so on purpose (ADR 0007).
 
 ### The state mirror
 
@@ -411,28 +302,24 @@ What the lamp has said, frame by frame, and what was written to it, is a
 `Mirror` (`mirror.py`): a read-only mapping of property id to value that the
 coordinator exposes as `state`. A value gets in through `take` - a frame from
 the lamp; it returns the ids the frame carried, empty when the frame was no
-report, and never raises, since it runs inside the Bluetooth stack's notify
-handler - or through `echo`, the payload of a write the lamp acknowledged,
-which is no report: it moves no number and wakes nobody. Nothing is ever
-taken out, so what the mirror holds can be hours old; the lamp's clock is
-dated by the host's whenever it comes in, either way.
+report, and never raises - or through `echo`, the payload of a write the lamp
+acknowledged, which is no report: it moves no number and wakes nobody.
+Nothing is ever taken out, so what the mirror holds can be hours old; the
+lamp's clock is dated by the host's whenever it comes in.
 
 Reports are numbered. `reports` is how many there have been and
 `reported_since(n)` the ids the reports numbered above `n` carried: priming
 asks whether that covers `STATE_KEYS`, vouching for a failed write whether it
-meets what the write set (ADR 0005). `next_report()` returns on the first
-report after the call - never on an echo. The coordinator's one intake,
-`_ingest`, does the two things that are not the mirror's: it notes that the
-lamp answered, whatever the frame says, and tells the entities when the
-frame was a report (ADR 0013).
+meets what the write set. `next_report()` returns on the first report after
+the call - never on an echo. The coordinator's one intake, `_ingest`, notes
+that the lamp answered, whatever the frame says, and tells the entities when
+the frame was a report.
 
-The mirror is bounded. The device chooses the ids it reports, and whatever
-answers at the lamp's address is taken for the lamp, so the mirror is told
-which ids the integration knows (`const.KNOWN_KEYS`) and always keeps those,
-and every echo; of the ids nobody named it keeps the first 64 a session
-brings. A property beyond that is not stored, and counted each time it is
-reported - the log says so once, and the diagnostics say how many times -
-and a frame of which nothing was kept is no report.
+The mirror is bounded: it always keeps the ids the integration knows
+(`const.KNOWN_KEYS`) and every echo, and of the ids nobody named the first 64
+a session brings. A property beyond that is not stored, and counted each
+time it is reported. Why it is a module of its own, and bounded so, is ADR
+0013.
 
 ### What a value is
 
@@ -458,45 +345,22 @@ one of three answers:
 | schedule slot | eleven bytes: a flag byte of 0 or 1, a start and an end that are times of day, a brightness from 0 to 100, a fade in seconds of no more than two hours. The three bytes nobody has decoded may hold anything |
 | clock | seven bytes that are a date and a time |
 
-The check is made where a value is read, and not at the mirror's intake. A
-value turned away there could not be told from one never reported, and a
-known id with a bad value would stop counting as reported - which turns an
-answer to the state request into silence, and silence into a read (see
-[Priming state on connect](#priming-state-on-connect)).
+The check is made where a value is read, and not at the mirror's intake. What
+cannot be used is shown as `unknown` - never as what the entity showed before
+the last restart, which stands in only while nothing has been reported - and
+is never written back: a command sends a default where there is one, and is
+refused where there is nothing else to build its frame on. The log says it
+once a session for each property, without the value, and the diagnostics say
+`not as expected`. All of it, and why, is ADR 0015, and ADR 0011 for what an
+entity remembers. No platform reads `coordinator.state`: a test reads them.
 
-The two answers that are no value are kept apart, because what follows from
-them differs (ADR 0011, ADR 0015):
-
-- **An entity** shows a value; `unknown` for what cannot be used; and what it
-  showed before the last restart only while nothing has been reported - a
-  setting, that is: the light and the diagnostic entities show `unknown` for
-  both. The operating mode is the mode whose flag says yes, Manual when both
-  say no, and cannot be used where no flag says yes and one of them is no
-  flag; the entities of one mode stay available then, as they do while the
-  mode is not known. No platform reads `coordinator.state`: a test reads
-  them.
-- **A command** never writes back what cannot be used. Choosing a lighting
-  mode sends the ramp remembered, else the one reported if it is a ramp,
-  else the default. Setting the ramp, or a field of the schedule, is refused
-  - there is nothing to build the frame on - in words that do not promise
-  that waiting helps, as the refusal for a setting not yet reported does.
-  The daylight-saving switch writes the hour.
-- **The log** says it once a session for each property, at warning level:
-  the property by its name here, nothing of the value, and what to send. One
-  thing that cannot be used is not said: a clock of seven bytes that shows no
-  date. That is a clock that is wrong, and the first exchange sets it right.
-- **The diagnostics** say `not as expected` exactly where the reader says
-  the value cannot be used, and word what the reader returns.
-
-`UNUSABLE` cannot be taken for a value by leaving the check out. It is no
-number and no bytes, the type checker holds every caller to the three
-answers, and it refuses to be truth-tested: "true" is how a text under the
-power id used to read as on.
-
-No lamp has been seen to report a value of the wrong kind. A model whose
-layout differs from the table reads `unknown` where it differs, and the log
-says so: a new row, with the frame or the diagnostics download that shows
-it, is how that is mended.
+The operating mode is the mode whose flag says yes, Manual when both say no,
+and cannot be used where no flag says yes and one of them is no flag; the
+entities of one mode stay available then, as they do while it is not known.
+`UNUSABLE` is no number and no bytes, and refuses to be truth-tested. A model
+whose layout differs from the table reads `unknown` where it differs: a new
+row, with the frame or the diagnostics download that shows it, is how that
+is mended.
 
 ### Property-key table
 
