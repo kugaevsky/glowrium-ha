@@ -44,6 +44,17 @@ All notable changes to this project are documented here. The format is based on
 
 ### Changed
 
+- **HACS installs releases only, and a release is one file.** From the next
+  release on, a release carries `glowrium.zip` - the integration's directory
+  as it is at the tag - and HACS is told to take it, so that GitHub counts
+  how often each release is fetched. That count is fetches of the file, per
+  release, and not a number of installations. The price is that HACS no
+  longer offers the default branch: a commit that is not a release cannot
+  be installed through it. Copying the directory by hand works as it did.
+  On HACS 2.0.5 a first install that picks 0.4.0 or older is expected to
+  fail - install the latest and choose the older version afterwards; this
+  is read from HACS' code and has not been seen to happen
+  ([#28](https://github.com/kugaevsky/glowrium-ha/issues/28)).
 - **Ramp time and Schedule gradual are durations.** Both carry Home
   Assistant's `duration` device class. Left in minutes they are what they
   were: 0 to 90, under the same names and icons. What the class adds is

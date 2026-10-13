@@ -217,10 +217,38 @@ a clear write-up is enough, and I'll help with the rest.
 2. Add `https://github.com/kugaevsky/glowrium-ha` with category **Integration**.
 3. Install **Glowrium**, then restart Home Assistant.
 
+HACS installs **releases** only. A release after 0.4.0 carries one file,
+`glowrium.zip`, and that file is what HACS downloads. The default branch is
+not offered: a commit that is not a release cannot be installed through HACS.
+
+Releases up to 0.4.0 carry no such file, and for them HACS takes the tag's
+source, as it always has. One case is expected to fail on HACS 2.0.5, the
+latest there is in October 2026: installing the integration **for the first time** and
+picking one of those older versions. HACS then goes by the latest release's
+settings and looks for a file the older release does not have. This is read
+from HACS' code and has not been seen to happen. The way round it is to
+install the latest release first and choose the older version afterwards.
+
 ### Manual
 
 Copy `custom_components/glowrium/` into your Home Assistant
 `config/custom_components/` directory and restart Home Assistant.
+
+A release's `glowrium.zip` holds the same files with no directory above
+them: unpack it **into** `config/custom_components/glowrium/`, not into
+`config/custom_components/`.
+
+### What a release's download count is
+
+GitHub counts how many times a release's `glowrium.zip` was fetched
+(`download_count`, in its API). The number is **per release**: every install
+of that release, every update to it, every re-download, and anything else
+that fetched the file - a retry, a script, somebody looking. It is not a
+number of installations. One installation that follows five releases is
+counted on each of the five; a copy of the directory made by hand is not
+counted at all; and nothing says whether an installation still runs. Releases up to 0.4.0 have no
+count. How a release is made is in the
+[contributor guide](CONTRIBUTING.md#cutting-a-release).
 
 ## Configuration
 

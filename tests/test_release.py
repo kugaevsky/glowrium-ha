@@ -653,3 +653,33 @@ def test_ci_builds_the_archive_on_every_push_long_before_there_is_a_tag() -> Non
 
     assert _BUILD in _runs(loaded["jobs"]["test"])
     assert loaded["permissions"] == {"contents": "read"}
+
+
+# --- What HACS is told, and what the documents call the file ---
+
+
+def test_hacs_is_told_to_take_the_archive_and_not_to_offer_the_default_branch(
+    release: ModuleType,
+) -> None:
+    """Three keys that come together, beside the two there were.
+
+    Told to take a file, HACS looks for it on whatever it is asked to
+    install, and the default branch has none: so the branch is not offered.
+    """
+    told = json.loads((ROOT / "hacs.json").read_text())
+
+    assert told["zip_release"] is True
+    assert told["filename"] == release.ARCHIVE
+    assert told["hide_default_branch"] is True
+    assert set(told) - {"zip_release", "filename", "hide_default_branch"} == {
+        "name",
+        "homeassistant",
+    }
+
+
+@pytest.mark.parametrize("document", ["README.md", "CONTRIBUTING.md"])
+def test_the_documents_call_the_file_what_hacs_is_told_to_take(document: str) -> None:
+    """Whoever unpacks it by hand, or cuts a release, looks for it by name."""
+    filename = json.loads((ROOT / "hacs.json").read_text())["filename"]
+
+    assert f"`{filename}`" in (ROOT / document).read_text()

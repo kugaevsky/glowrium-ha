@@ -42,7 +42,8 @@ requires.
   coverage of the integration to 95 %.
 - **Translations:** `strings.json` is the source of truth; `translations/{en,ru,zh-Hans,es,de,fr}.json`
   must stay key-for-key in sync (hassfest checks this).
-- **Manifest:** key order follows hassfest; bump `version` when cutting a release.
+- **Manifest:** key order follows hassfest; bump `version` when
+  [cutting a release](#cutting-a-release) - its tag is `v` and that version.
 - **Quality scale:** `custom_components/glowrium/quality_scale.yaml` records where the
   integration stands on each rule of Home Assistant's
   [Integration Quality Scale](https://developers.home-assistant.io/docs/core/integration-quality-scale/),
@@ -237,3 +238,53 @@ which stack it was run on.
 
 Run `ruff` and `pytest` before opening a PR, keep changes focused, and note whether the change
 was tested on hardware.
+
+## Cutting a release
+
+A release is one file, `glowrium.zip`: the integration's directory as it is at the tag, with
+`manifest.json` at the archive's root. `hacs.json` tells HACS to take that file, and HACS - as
+its source reads - does not fall back to the tag's source when the file is missing. So a
+release must never be public without it, and the order below sees to that.
+
+1. The commit to release is on `main` with CI green; its manifest has the new `version` and
+   the changelog a heading for it.
+2. Push the tag: `v` and the manifest's version, exactly - `v1.2.3` for `1.2.3`.
+3. Wait for the **Release** workflow. It builds the archive from the tag and makes a **draft**
+   of the release that carries it, titled with the tag. A tag that is not the manifest's
+   version fails the run and nothing is made.
+4. Write the draft's notes, see that it carries `glowrium.zip` and no other file, and publish
+   it.
+
+**None of this has been run against GitHub or a live HACS yet.** What the workflow tells `gh`
+is tested against a stand-in, and what HACS does with the file was read in its source
+([ADR 0017](docs/adr/0017-a-release-is-one-archive-and-hacs-installs-nothing-else.md)). Before
+the first release that depends on it, rehearse it in a scratch repository: push a tag and see
+the draft and its file; run the workflow again on the tag, which now has a draft; publish, then
+install it with HACS, update to it from a release without a file, and go back. Take this
+paragraph out once that is done.
+
+What the order rests on:
+
+- **Do not create the release by hand before the draft is there.** A release that exists when
+  the workflow looks is given the archive, and is public without its file until then. One made
+  after the workflow has looked gets nothing from that run, and stands beside the draft as a
+  second entry for the tag. Neither has been tried.
+- **If the run fails after the draft is made,** the draft may be there without its file: `gh`
+  makes the draft first and puts the file on it second. A draft is not public; run the
+  workflow again and the file is put on it.
+- **The file of a published release is never replaced**, and the workflow leaves it alone.
+  GitHub's count belongs to the file, and a new file starts at zero; and its bytes would
+  change under whoever has installed it. What is wrong with a published release is put right
+  by the next one.
+- **No second file on a release.** HACS, as its source reads, reports the count of the first
+  file a release has. The workflow says so when it finds one, and takes nothing off.
+- The workflow publishes nothing, edits the title and notes of no release, and makes, moves
+  and deletes no tag. Its one job that can write hands the token to one script, the one that
+  talks to GitHub; the two actions the job uses get the job's token as in any job.
+
+The archive is built by `python tools/release.py archive REF OUT`, out of git's objects and
+never out of the working directory, and CI builds it on every push. Two builds of one commit
+on one machine are the same bytes; another version of Python or zlib may compress them
+differently, and the files inside are the tag's either way. The **Release check** workflow
+looks every day at each published release, pre-releases too, and fails when one whose own
+`hacs.json` promises the file does not carry exactly that file.

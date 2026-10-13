@@ -991,6 +991,11 @@ Unit tests live in `tests/` and **never touch real Bluetooth**:
   and its run against a scripted lamp.
 - `test_stack.py` — `tools/stack.py`, and that the environment the tests are
   running in is one it would have left.
+- `test_release.py` — `tools/release.py`: the archive a release carries,
+  built from a repository made for the test; the tag held to the manifest's
+  version; what GitHub is told when a version tag is pushed and what is asked
+  of it every day, read from the commands given to a stand-in for `gh`; and
+  the form of the workflows that run it (ADR 0017).
 - `test_quality_scale.py` — `quality_scale.yaml`: every rule of the scale named
   once, with one of the three statuses, and each exemption with its reason.
 - `test_readme.py` — the automations the README shows can be run as they are
@@ -1049,9 +1054,10 @@ Run the checks:
 
 `pytest` runs in `asyncio_mode = "auto"`; ruff line length is 88 and mypy runs
 in strict mode over the integration (both configured in `pyproject.toml`). CI
-runs the same and holds coverage of the integration to 95 %, and runs it on
-two stacks: the oldest Home Assistant supported, held to one release, and the
-newest, which is whatever the test plugin tracks that day, betas included.
+runs the same and holds coverage of the integration to 95 %, builds the
+archive a release would carry (ADR 0017), and runs all of it on two stacks:
+the oldest Home Assistant supported, held to one release, and the newest,
+which is whatever the test plugin tracks that day, betas included.
 `tools/stack.py` installs either, here as in CI, with the libraries at the
 versions Home Assistant's own integrations require - read from the Home
 Assistant under test and written nowhere here - and CI also runs once a week
