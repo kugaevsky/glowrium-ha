@@ -2021,6 +2021,9 @@ async def test_the_repair_is_filed_under_the_entry_and_not_under_the_address(
     diagnostics download - the file this integration tells people to attach
     to public issues, and takes care to keep the address out of. The config
     entry's id tells two lamps apart just as well and names neither.
+
+    And it goes with the entry, under that id: an integration that has been
+    unloaded is not watching the stack any more.
     """
     coordinator, _host, clock, _dialled = _coordinator_on_a_clock(hass, monkeypatch)
 
@@ -2079,19 +2082,6 @@ async def test_the_repair_goes_when_the_lamp_answers_again(
     lamp.readable(INFO_UUID, b"brand:x;;")
     lamp.dials_through(None)  # the stack has come round: the next dial reaches the lamp
     await _ticks(link_of(coordinator), clock, 12, hass=hass)
-
-    assert _stack_issue(hass) is None
-
-
-async def test_the_repair_goes_with_the_entry(
-    hass: HomeAssistant, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """An integration that has been unloaded is not watching the stack any more."""
-    coordinator, _host, clock, _dialled = _coordinator_on_a_clock(hass, monkeypatch)
-    await _ticks(link_of(coordinator), clock, 3, hass=hass)
-    assert _stack_issue(hass) is not None
-
-    await coordinator.async_stop()
 
     assert _stack_issue(hass) is None
 
