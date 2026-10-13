@@ -64,7 +64,7 @@ the stray response, so the bench on a laptop never showed it. No workaround.
   trace of 2026-10-06; three links in three hours) and "Device-info string".
 - `tests/test_coordinator.py::test_a_lamp_that_reports_is_asked_and_never_read`,
   `::test_the_device_info_is_the_last_thing_read_and_read_once`,
-  `::test_a_command_connect_reads_nothing`;
+  `tests/test_link.py::test_a_command_connect_reads_nothing`;
   `tests/test_bus_lifetime.py::test_a_read_alone_is_not_taken_for_the_lamp_answering`.
 
 ## Revisit when

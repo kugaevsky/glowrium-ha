@@ -98,13 +98,13 @@ another name.
   (reads the source),
   `::test_work_is_started_through_the_keeper`,
   `::test_the_lamp_is_watched_through_the_keeper`,
-  `::test_background_work_is_tied_to_the_entry`,
+  `tests/test_keeper.py::test_background_work_is_tied_to_the_entry`,
   `::test_a_hang_up_is_not_tied_to_the_entry`,
   `::test_a_reconnect_started_while_starting_belongs_to_the_entry`,
   `::test_a_start_that_fails_part_way_leaves_no_watcher_behind`,
-  `::test_what_the_lamp_says_it_is_is_kept_and_handed_to_the_keeper`,
+  `tests/test_coordinator.py::test_what_the_lamp_says_it_is_is_kept_and_handed_to_the_keeper`,
   `::test_a_coordinator_told_not_to_brings_no_lamp_up`.
-- `tests/test_init.py::test_a_coordinator_that_was_stopped_raises_no_notice`
+- `tests/test_keeper.py::test_a_coordinator_that_was_stopped_raises_no_notice`
   (the registry and the model id are still written).
 - `tests/test_bench.py::test_the_bench_reaches_for_no_private_name_of_the_integration`,
   `::test_the_bench_keeps_a_coordinator_by_all_that_the_device_half_asks`,

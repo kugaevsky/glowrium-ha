@@ -1,4 +1,10 @@
-"""Tests for the Glowrium coordinator's command encoding."""
+"""Tests of the device half: what is said to the lamp, and what is made of its answer.
+
+Command encoding against the bytes of captures, the state request and its
+fallbacks, a report vouching for a failed write, the clock, the bring-up, the
+telling of the entities, and what the device half asks of its keeper. The
+link's tests are in test_link.py, the keeper's in test_keeper.py.
+"""
 
 import ast
 import asyncio

@@ -61,7 +61,7 @@ A command vouched for is delivered, and the mirror is not echoed for it.
   before the command is its case "by a report, some time ago"),
   `::test_a_report_vouches_only_for_what_it_carries`,
   `::test_what_else_was_written_meanwhile_vouches_for_no_command`,
-  `::test_a_command_that_never_reached_the_wire_fails_at_once`.
+  `tests/test_link.py::test_a_command_that_never_reached_the_wire_fails_at_once`.
 
 ## Revisit when
 

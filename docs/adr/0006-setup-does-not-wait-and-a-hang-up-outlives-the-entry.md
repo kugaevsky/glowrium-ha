@@ -75,8 +75,8 @@ left with no process behind it is the one link the lamp has to give.
 - `tests/test_init.py::test_setup_does_not_wait_for_the_connection`,
   `::test_the_background_connect_is_cancelled_on_unload`,
   `::test_stopping_home_assistant_hangs_up_the_lamp`;
-  `tests/test_coordinator.py::test_a_hang_up_is_not_tied_to_the_entry`,
-  `::test_a_link_subscribed_while_the_coordinator_stopped_is_not_kept`.
+  `tests/test_keeper.py::test_a_hang_up_is_not_tied_to_the_entry`,
+  `tests/test_link.py::test_a_link_subscribed_while_the_coordinator_stopped_is_not_kept`.
 
 ## Revisit when
 

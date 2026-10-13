@@ -1428,16 +1428,26 @@ Unit tests live in `tests/` and **never touch real Bluetooth**:
   carried and what was kept of it, what counts as a report, how much of what
   nobody named is kept, and every line that prints a frame - blanked, and
   at debug only.
-- `test_coordinator.py` — command encoding (power, brightness, lighting mode,
-  operating mode, indicator, DST, schedule) checked against real device bytes,
-  and the connection logic around it: priming by asking, the fallbacks to a
-  read, retries and confirmation of a failed write, the clock, activation,
-  unload and stop. And the seam with the keeper: what the device half asks
-  of it, on a scripted keeper, and what Home Assistant's does with each -
-  work on the entry and a hang-up not, the three watchers, the home - on
-  `EntryKeeper` over a stand-in for an entry. The repairs, the registry and
-  the remembered model id are held where a real entry is set up
-  (`test_init.py`) and with the stack fault (`test_bus_lifetime.py`).
+- `test_coordinator.py` — the device half: command encoding (power,
+  brightness, lighting mode, operating mode, indicator, DST, schedule)
+  checked against real device bytes; what the lamp is asked and what is made
+  of its answer - priming by asking, the fallbacks to a read, a report
+  vouching for a failed write, the clock, activation; the telling of the
+  entities; and what the device half asks of its keeper, on a scripted one.
+- `test_link.py` — the link, each taken from the scripted lamp through a
+  coordinator: the dial and the background connect with their deadlines, a
+  command's way through the link (its retries, its budget, the bare link it
+  takes), the first exchange run or dropped, the hang-up, what is logged of
+  reach, stopping and shutting down. A test is the link's by what it asserts,
+  whoever built the link.
+- `test_keeper.py` — what Home Assistant's keeper does with what it is
+  asked: work on the entry and a hang-up not, the watchers, the home - on
+  `EntryKeeper` over a stand-in for an entry - and, where a real entry is
+  set up, the dial made for it, the device registry, the remembered model id
+  and the notice about unconfirmed presets. The repair for a stack that will
+  not hang up is held with that stack (`test_bus_lifetime.py`).
+- `shared.py` — what more than one of these files arranges the same way: a
+  coordinator at a scripted lamp, an entry set up with the radio stubbed out.
 - `test_dial.py` — the dial the coordinator is handed, and the one the setup
   of a config entry hands it. A link is made through a callable that is given the callback
   for a link that is lost and returns a connected client. In the tests that is
@@ -1468,8 +1478,8 @@ Unit tests live in `tests/` and **never touch real Bluetooth**:
   link in a test is taken as the integration takes one.
 - `test_init.py` — setup and unload of the config entry, the entities each
   platform produces and the command each control ends in, what is restored
-  after a restart, what the lamp says about itself reaching the device
-  registry, and the hang-up when Home Assistant stops.
+  after a restart, what an entity shows of a value that cannot be used, and
+  the hang-up when Home Assistant stops.
 - `test_config_flow.py` — discovery, the pick-from-a-list flow, and the two
   places a duplicate is turned away; and the list of lamps as the frontend
   receives it, turned into that by Home Assistant's own view for the route
