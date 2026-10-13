@@ -934,7 +934,8 @@ async def test_a_failed_command_hangs_up_only_after_the_device_could_confirm(
     """The last client is closed too - but not before confirmation has listened.
 
     A client whose write failed is still the channel the confirming report
-    arrives on (see test_confirmation_waits_for_a_report_that_arrives_late).
+    arrives on (see test_confirmation_waits_for_a_report_that_arrives_late,
+    among the device half's tests).
     Hanging it up the moment the write fails would close the leak and quietly
     take that away: every command whose acknowledgement was lost would be
     reported as failed again.

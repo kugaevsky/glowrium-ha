@@ -1,9 +1,9 @@
 """What more than one file of tests arranges the same way.
 
 A coordinator at a scripted lamp, with or without a link; an entry set up
-with the radio stubbed out, and what is read off it. Each keeps the name
-it had where it was written: the tests that use it were moved as they
-are.
+with the radio stubbed out, or started at a lamp that is slow to connect,
+and what is read off it. Each keeps the name it had where it was written:
+the tests that use it were moved as they are.
 """
 
 import asyncio

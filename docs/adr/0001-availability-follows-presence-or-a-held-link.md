@@ -68,7 +68,7 @@ had, and a command made then dials its own link first.
 - `tests/test_link.py::test_available_follows_presence_not_connection`,
   `::test_a_lamp_with_a_link_is_not_out_of_reach_for_being_quiet`,
   `::test_going_out_of_reach_and_coming_back_are_each_said_once`,
-  `tests/test_coordinator.py::test_a_lamp_that_is_advertising_at_start_is_in_reach_from_the_start`.
+  `tests/test_link.py::test_a_lamp_that_is_advertising_at_start_is_in_reach_from_the_start`.
 
 ## Revisit when
 

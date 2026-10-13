@@ -3,8 +3,10 @@
 The watchers it registers and ends, the two lifetimes of background work,
 the home's coordinates, the dial it makes for an entry, the device
 registry and the remembered model, and the notice about unconfirmed
-presets. The repair for a stack that will not hang up is tested where
-such a stack is built, in test_bus_lifetime.py.
+presets: when it is raised and when it goes. The notice's words and its
+link into the guide are with the setup's tests, in test_init.py. The repair
+for a stack that will not hang up is tested where such a stack is built, in
+test_bus_lifetime.py.
 """
 
 import asyncio
