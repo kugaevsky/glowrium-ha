@@ -30,8 +30,8 @@ stateless views over that coordinator.
   `state`, filled from the lamp's notifications and from the echo of what was
   written to it.
 - **Entities:** `light`, `select`, `number`, `switch`, `button`, `time`,
-  `sensor`, `binary_sensor` — each reads from `coordinator.state` and calls a
-  `coordinator.async_set_*` method to write.
+  `sensor`, `binary_sensor` — each reads a property through the coordinator and
+  calls a `coordinator.async_set_*` method to write.
 - **No polling for state.** `iot_class` is `local_push`: the lamp pushes state
   via notify, and entities re-render from a coordinator listener callback. The
   keeper's 30-second tick is for the link, not the state: it rebuilds one
@@ -53,10 +53,17 @@ stateless views over that coordinator.
 | `const.py` | GATT UUIDs, CBOR property keys, the list of what gives the lamp's place away, mode constants |
 | `models.py` | Per-model registry (name, lighting-mode presets) keyed by `pkey` |
 | `diagnostics.py` | The diagnostics download: what the coordinator knows, rebuilt from what it read, with nothing in it the lamp chose |
+| `identity.py` | What is shown of the lamp's own words about itself: its advertised name as text, its model id and firmware only in the shape each claims to have |
 | `entity.py` | `GlowriumEntity` base — `DeviceInfo`, availability, update fan-out |
 | `light.py` `select.py` `number.py` `switch.py` `button.py` `time.py` `sensor.py` `binary_sensor.py` | Platform entities |
 | `strings.json`, `translations/`, `icons.json` | UI text (entity and preset names, errors, the repairs), and entity icons |
 | `manifest.json` | Domain, Bluetooth matcher (`local_name: Glowrium-*`), requirements |
+| `brand/` | The integration's icon, as Home Assistant shows it |
+| `quality_scale.yaml` | Where the integration says how it stands against Home Assistant's quality scale |
+
+The three modules that write to the log each do so under their own name -
+`custom_components.glowrium.link`, `.mirror`, `.coordinator` - so a line says
+which of them wrote it.
 
 ---
 
@@ -832,53 +839,33 @@ Only the **G7** (`Glowrium-C051`) is verified on hardware today.
 ### A model without a profile
 
 `resolve_model` answers a model that has no entry and a lamp that has not yet
-said what it is with the same generic profile, so it cannot be asked which of
-the two it has before it. `has_profile(pkey)` is asked that, and of a model id
-only; the name `Glowrium` is not read for the answer.
+said what it is with the same generic profile; which of the two it is, is
+asked of `has_profile(pkey)`, and of a model id only.
 
 While a lamp's model id is known - read in this session, or remembered with
 the config entry - and has no profile, the keeper of the config entry keeps
-one **repair** open for it (`EntryKeeper._review_presets_notice`). It says that the presets
+one **repair** open for it (`EntryKeeper._review_presets_notice`): the presets
 offered under *Lighting mode* are the G7's and unconfirmed for this model,
-that on it a name may select another preset or none, that the select shows
-what was chosen either way, and that a report or a capture from the vendor app
-settles it; its link goes to
-[CONTRIBUTING.md](CONTRIBUTING.md#sending-protocol-data-for-a-device). It is a
-warning with nothing to fix from its dialog, and it changes nothing about the
-select: the options, their names and what is written for a choice are what
-they are for any lamp (ADR 0014).
+and its link goes to
+[CONTRIBUTING.md](CONTRIBUTING.md#sending-protocol-data-for-a-device). It
+changes nothing about the select. Why the presets stay on offer, and why the
+notice behaves as it does, is ADR 0014:
 
-- **Never while the model is not known.** A lamp set up for the first time has
-  no model id until its device-info string has been read, and is driven by
-  the same generic profile meanwhile. A G7 in that state is not told that its
-  presets are a guess.
-- **Raised in two places:** at start, from the model id the entry remembers -
-  the lamp may not be reached for hours - and where the device-info string is
-  published, so that a lamp set up today is told today.
-- **Left standing where the watching stops.** Home Assistant keeps "ignored"
-  with a repair and forgets it when the repair is deleted, so a notice taken
-  down at every unload would come back as new at every reload. It is raised
-  over itself at each start instead. It is not persistent: what Home
-  Assistant keeps of it across a restart is its id and whether it was
-  ignored, and that is shown to nobody until a loaded entry raises it again.
-- **Taken down in two places:** once the model id has a profile - an update
-  brought one, or the lamp names another model than was remembered - and when
-  the entry is removed (`async_remove_entry`): Home Assistant does not delete
-  an integration's repairs with its entry.
-- **A keeper that has ceased to watch raises none.** The device-info string
-  is read last on a link, and Home Assistant can stop while the answer is on
-  its way: an unload cancels the exchange, a stop does not. What was read is
-  kept all the same - with the entry, from which the next start raises the
-  notice, and in the device registry. Only the notice is withheld.
-- **What goes into its text is held to a shape.** Its id is built from the
-  config entry's id (`presets_issue_id`), as the other repair's is and for the
-  same reason (see [Diagnostics](#diagnostics)). The lamp's name passes
-  `identity.as_text`. The model id is printed only when it is one from end to
-  end (`identity.as_model_id`); for a lamp whose model id is not, the notice
-  has a second text that does without it - the value of a placeholder is not
-  translated, so no word could stand in its place in six languages.
-- It and the repair for a stack fault are raised and taken down apart: neither
-  is the other's to end.
+- **never while the model is not known**;
+- raised at start, from the model id the entry remembers, and where the
+  device-info string is published; **left standing where the watching
+  stops**; taken down once the model id has a profile, and when the entry is
+  removed (`async_remove_entry`) - Home Assistant does not delete an
+  integration's repairs with its entry;
+- a keeper that has ceased to watch raises none, and still writes what was
+  read to the entry and the device registry. That is reached when Home
+  Assistant stops while the answer to the last read is on its way: an unload
+  cancels the exchange, a stop does not;
+- it and the repair for a stack fault are raised and taken down apart:
+  neither is the other's to end;
+- its id is built from the config entry's id (`presets_issue_id`), the lamp's
+  name passes `identity.as_text`, and the model id is printed only when it is
+  one from end to end (`identity.as_model_id`).
 
 ### How to add a new model
 
@@ -918,64 +905,36 @@ model?"* section for the full contributor workflow.
 `diagnostics.py` produces the file behind *Download diagnostics*: the model and
 firmware, what the lamp last reported, and where the link stands. It exists to
 be attached to a public issue, and nearly everything that could go into it is
-chosen by the lamp - which properties it reports and what it puts under them,
-which fields its device-info string has, what they are called and where one
-ends. So it is not the state mirror minus a list of things to hide.
-
-**The file repeats nothing after the lamp.** The coordinator describes itself
-as it is (`GlowriumCoordinator.diagnostics`), and the diagnostics module
-rebuilds what leaves the host from what it can read. Where the link stands is
-the link's own to say (`Link.diagnostics`): eight fields with none of the
-lamp's words in them, and of the client only what kind it is. The coordinator
-sets them beside the device half's five, in the order the block has always been
-written in:
+chosen by the lamp. So it is not the state mirror minus a list of things to
+hide: **the file repeats nothing after the lamp** (ADR 0012). The coordinator
+describes itself as it is (`GlowriumCoordinator.diagnostics`), and the
+diagnostics module rebuilds what leaves the host from what it can read:
 
 - Each property the integration knows is read by the reader the entities and
   the commands go through (see [What a value is](#what-a-value-is)), and
   written out from that reading: a schedule as its times and its brightness,
-  a ramp as seconds, a flag as a flag, a brightness as the whole level it is
-  nearest to. The bytes of a schedule that nobody has decoded are therefore
-  not in the file, and neither is a float of the lamp's choosing.
-- The clock is given as how far it was from the host's, in seconds, at the
-  moment it came into the mirror, and with how long ago that was. How far off
-  it is is what a report needs, and it is a reading rather than a copy. The
-  moment matters because the mirror is not emptied when a link drops: the
-  clock in it is as old as the last time the lamp was asked for its state, or
-  the integration wrote one. Set against the host's clock at the time of the
-  download, a clock that was exactly right read as slow by its own age.
-- A known property whose value does not read as what its name means - seven
-  bytes that are not a date, a schedule whose hours are not hours - is said
-  to be there and `not as expected`. A length is not a check. It is the
-  judgement the device page shows as `unknown`: the file has none of its
-  own.
-- The coordinates are marked as redacted, so that it can be seen the lamp has
-  them, and so are the sunrise and sunset times the lamp computes from them
-  (`0x34`): the times give the place away as well as the coordinates do.
-  Which ids those are is one list (`PLACE_KEYS`), the same one a logged frame
-  is blanked by and the bench prints by.
+  a ramp as seconds, a brightness as the whole level it is nearest to. One
+  that does not read as what its name means is `not as expected`.
+- The clock is given as how far it was from the host's at the moment it came
+  into the mirror, with how long ago that was: the mirror is not emptied when
+  a link drops.
+- The coordinates are marked as redacted, and so are the sunrise and sunset
+  times the lamp computes from them (`0x34`). Which ids those are is one list
+  (`PLACE_KEYS`), the same one a logged frame is blanked by and the bench
+  prints by.
 - Whatever has no name here is **counted**, and neither its value, its size
   nor its id is shown.
 - The model id and the firmware are shown only when each is, from end to end,
-  what it claims to be: the family's name, a dash, a letter and three digits;
-  one to three small numbers with dots between them. Where a field of the
-  device-info string ends is what the parser made of it, and a lamp that
-  separates its fields differently would hand over its serial number inside
-  its model id. The fields are counted, not listed - a field's name is the
-  lamp's choice too.
-- Of the config entry, five fields chosen one by one. Its address is in its
+  what it claims to be; the fields of the device-info string are counted.
+- Where the link stands is the link's own to say (`Link.diagnostics`): eight
+  fields with none of the lamp's words in them, beside the device half's five.
+- Of the config entry, five fields chosen one by one: its address is in its
   data, its unique id, its title and its discovery record.
 
-That is a promise about what this module writes, not about the whole file.
-Home Assistant wraps it in a header of its own - version, installation type,
-the host's time zone, the names of the custom integrations - and adds the ids
-of the integration's open repairs. Which is why both of its repairs - for a
-stack fault, and for presets that are unconfirmed - are filed under the config
-entry's id and not under the lamp's address (`_stack_issue_id`,
+Home Assistant wraps the file in a header of its own and adds the ids of the
+integration's open repairs, which is why both of its repairs are filed under
+the config entry's id and not under the lamp's address (`_stack_issue_id`,
 `presets_issue_id`).
-
-The same reasoning is why CONTRIBUTING.md tells anyone posting raw frames to
-blank the coordinates first: a frame is the lamp's own bytes, and the debug
-log prints the ones it could not use in full.
 
 ---
 
@@ -985,103 +944,75 @@ Unit tests live in `tests/` and **never touch real Bluetooth**:
 
 - `test_cbor.py` — the codec, checked against exact bytes from btsnoop captures.
 - `test_protocol.py` — the readers: what a value is for each property, row by
-  row of the table, and that each has one of its three answers for every kind
-  of value the decoder can hand over; and the byte layouts written: the
-  `0x11` schedule slot, the `0x2f` ramp, the `0x35` daylight-saving slot and
-  the `0x05` clock.
-- `test_mirror.py` — the state mirror alone, fed frames as hex: what a frame
-  carried and what was kept of it, what counts as a report, how much of what
-  nobody named is kept, and every line that prints a frame - blanked, and
-  at debug only.
-- `test_coordinator.py` — the device half: command encoding (power,
-  brightness, lighting mode, operating mode, indicator, DST, schedule)
-  checked against real device bytes; what the lamp is asked and what is made
-  of its answer - priming by asking, the fallbacks to a read, a report
-  vouching for a failed write, the clock, activation; the telling of the
-  entities; and what the device half asks of its keeper - on a scripted
-  one, and on Home Assistant's where its own stop ends the watching and
-  lets go of the link together.
+  row of the table, and the byte layouts written.
+- `test_mirror.py` — the state mirror alone, fed frames as hex: what was kept
+  of a frame, what counts as a report, and every line that prints a frame -
+  blanked, and at debug only.
+- `test_coordinator.py` — the device half: command encoding checked against
+  real device bytes; what the lamp is asked and what is made of its answer -
+  priming by asking, the fallbacks to a read, a report vouching for a failed
+  write, the clock, activation; the telling of the entities; and what the
+  device half asks of its keeper.
 - `test_link.py` — the link: the dial and the background connect with their
-  deadlines, a command's way through the link (its retries, its budget, the
-  bare link it takes), the first exchange run or dropped, the hang-up, reach
-  and what is logged of it, stopping and shutting down. A test is the link's
-  by what it asserts; each takes its link from the scripted lamp, through a
-  coordinator.
+  deadlines, a command's way through the link, the first exchange run or
+  dropped, the hang-up, reach and what is logged of it, stopping and shutting
+  down. A test is the link's by what it asserts; each takes its link from the
+  scripted lamp, through a coordinator.
 - `test_keeper.py` — what Home Assistant's keeper does with what it is
-  asked: work on the entry and a hang-up not, the watchers, the home - on
-  `EntryKeeper` over a stand-in for an entry - and, where a real entry is
-  set up, the dial made for it, the device registry, the remembered model id
-  and the notice about unconfirmed presets raised and taken down. The repair
-  for a stack that will not hang up is held with that stack
-  (`test_bus_lifetime.py`).
-- `shared.py` — what more than one of these files arranges the same way: a
-  coordinator at a scripted lamp, an entry set up or started.
-- `test_dial.py` — the dial the coordinator is handed, and the one the setup
-  of a config entry hands it. A link is made through a callable that is given the callback
-  for a link that is lost and returns a connected client. In the tests that is
-  a scripted lamp's (`tests/lamp.py`): it hands out a link, says a frame,
-  answers the state request as a G7 does, can be given something to read,
-  fails or holds a write, a read, a subscription or a hang-up, is slow to be
-  found, loses the link, and is silent once hung up - each of these only as
-  far as a test asks of it. A test with a dial of its own — bleak's own
-  client over a stub bus — puts it behind the lamp's, or hands it to a link
-  built alone. `link_of` is the one
-  door from a test to the link a coordinator holds, for what Home Assistant's
-  watchers drive: the tick, an advertisement, a connect. Nothing replaces the
-  library's connect, except the tests of the dial that is made of it - and
-  `in_range`, for a coordinator the integration's own setup made and handed
-  the dial of a config entry: there the lamp stands where that dial finds it.
+  asked: work on the entry and a hang-up not, the watchers, the home, the
+  dial made for an entry, the device registry, the remembered model id and
+  the notice about unconfirmed presets raised and taken down.
 - `test_bus_lifetime.py` — what is left behind when a link is let go of. It
   counts open bus connections rather than calls to `disconnect()`, and runs
   the same against bleak's own BlueZ client with a stub bus, so a bleak
-  release that renames what `_close_bus` reaches for fails here. The backoff
-  from a stack that will not hang up, and the checks on a held link, are
-  tested here too, on a `Link` built alone. So is the seam between the link and the device half, by
-  tests that read the source: every GATT call is the link's and made under
-  its guard; nothing outside the link's module connects a client, hangs one
-  up or names what the Bluetooth library raises; the coordinator names no
-  client and reaches the link for what it offers and nothing else;
-  hanging a link up and telling the entities stand together in one method.
-  And one test reads the tests: none gives a link its client by hand - a
-  link in a test is taken as the integration takes one.
+  release that renames what `_close_bus` reaches for fails here. The stack
+  that will not hang up, its repair and the checks on a held link are tested
+  here too; and the seam between the link and the device half, by tests that
+  read the source - and one that reads the tests: none gives a link its
+  client by hand.
+- `test_dial.py` — the dial the coordinator is handed, and the one the setup
+  of a config entry hands it.
 - `test_init.py` — setup and unload of the config entry, the entities each
   platform produces and the command each control ends in, what is restored
   after a restart, what an entity shows of a value that cannot be used, the
-  words of the notice about unconfirmed presets and where it sends its
-  reader, and the hang-up when Home Assistant stops.
-- `test_config_flow.py` — discovery, the pick-from-a-list flow, and the two
-  places a duplicate is turned away; and the list of lamps as the frontend
+  words of the notice about unconfirmed presets, and the hang-up when Home
+  Assistant stops.
+- `test_config_flow.py` — discovery, the pick-from-a-list flow, the two
+  places a duplicate is turned away, and the list of lamps as the frontend
   receives it, turned into that by Home Assistant's own view for the route
-  (its `_prepare_result_json`, which is not public and has that name in
-  2026.7.0 and in 2026.10.0): the flow manager never serializes a form, so a
-  schema Home Assistant could no longer read passed every test of the flow
-  there was before.
+  (its `_prepare_result_json`, which is not public): the flow manager never
+  serializes a form.
 - `test_diagnostics.py` — the diagnostics download, mostly from the side of
   what must not come out of it whatever the lamp reports.
-- `test_models.py` — the per-model profiles: preset keys are keys, and each
-  has a name in `strings.json` and every translation.
-- `test_identity.py` — what is shown of the lamp's own words about itself:
-  its name as text, its model id and firmware only when they are what they
-  claim to be.
-- `test_bench.py` — what `tools/bench.py` prints, and what it leaves out; its
-  keeper, held to the protocol the type checker does not read it against; and
-  its run against a scripted lamp, from the start to the hang-up.
-- `test_translations.py` — every translation carries exactly the keys and
-  placeholders of `strings.json`. hassfest checks the same in CI, on a push.
-- `test_stack.py` — `tools/stack.py`, which installs what all of the above run
-  on: how it reads what Home Assistant's integrations require and what it
-  says when that is not what is installed, that the environment the tests
-  are running in is such a one, and that the workflows and the dependabot
-  configuration agree with it.
+- `test_models.py`, `test_translations.py` — each preset key has a name in
+  `strings.json`, and every translation exactly its keys and placeholders.
+- `test_identity.py` — what is shown of the lamp's own words about itself.
+- `test_bench.py` — what `tools/bench.py` prints and leaves out, its keeper,
+  and its run against a scripted lamp.
+- `test_stack.py` — `tools/stack.py`, and that the environment the tests are
+  running in is one it would have left.
+- `test_quality_scale.py` — `quality_scale.yaml`: every rule of the scale named
+  once, with one of the three statuses, and each exemption with its reason.
 - `test_readme.py` — the automations the README shows can be run as they are
-  written, and every heading of the contributor guide that the README links
-  to is there.
-- `test_conftest.py` — what every test here runs with (`conftest.py`): one
-  thing so far. asyncio's note on a step of the loop that took long is kept
-  out of every test's log. The loop runs in debug mode, a busy machine draws
-  that note out of nothing, and the tests that read every WARNING there is
-  fail for it. The price: a step this integration's own code made slow goes
-  unsaid in the tests as well.
+  written; every heading of the contributor guide that the README links to is
+  there, and every heading of this document that a reader is sent to.
+- `test_conftest.py` — what every test runs with (`conftest.py`): asyncio's
+  note on a slow step of the loop is kept out of every test's log. The price:
+  a step this integration's own code made slow goes unsaid there as well.
+- `shared.py` — what more than one of these files arranges the same way: a
+  coordinator at a scripted lamp, an entry set up or started.
+
+**The lamp is scripted.** A link is made through a callable that is given the
+callback for a link that is lost and returns a connected client. In the tests
+that is a scripted lamp's (`tests/lamp.py`): it hands out a link, says a
+frame, answers the state request as a G7 does, can be given something to
+read, fails or holds a write, a read, a subscription or a hang-up, is slow
+to be found, loses the link, and is silent once hung up - each of these only
+as far as a test asks of it. `link_of` is the one door from a test to the
+link a coordinator holds, for what Home Assistant's watchers drive: the
+tick, an advertisement, a connect. Nothing replaces the library's connect,
+except the tests of the dial that is made of it - and `in_range`, for a
+coordinator the integration's own setup made (ADR 0008).
 
 ### What the tests reach that is not public
 
@@ -1121,16 +1052,13 @@ in strict mode over the integration (both configured in `pyproject.toml`). CI
 runs the same and holds coverage of the integration to 95 %, and runs it on
 two stacks: the oldest Home Assistant supported, held to one release, and the
 newest, which is whatever the test plugin tracks that day, betas included.
-`tools/stack.py` installs either, here as in CI, and with it what Home
-Assistant's Bluetooth and USB integrations require, the way Home Assistant
-installs it: each library at the version the manifest names, within Home
-Assistant's own constraints - both read from the Home Assistant under test
-and written nowhere here, so that the tests run on what a user of that
-release has. The newest leg is why CI also runs
-once a week with nothing pushed: what it tests moves by itself, and
-`_close_bus` reaches into bleak's private attributes.
-Verification against live hardware is separate and not part
-of the automated suite: `tools/bench.py` runs the production coordinator
+`tools/stack.py` installs either, here as in CI, with the libraries at the
+versions Home Assistant's own integrations require - read from the Home
+Assistant under test and written nowhere here - and CI also runs once a week
+with nothing pushed (ADR 0009).
+
+Verification against live hardware is separate and not part of the automated
+suite: `tools/bench.py` runs the production coordinator
 against a lamp from the machine it is started on, speaking to it as Home
 Assistant does and reading nothing of its own — see
 [CONTRIBUTING.md](CONTRIBUTING.md#testing-on-hardware). Mind the stack it runs
