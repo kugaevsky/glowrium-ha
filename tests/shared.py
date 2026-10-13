@@ -7,16 +7,13 @@ are.
 """
 
 import asyncio
-import logging
 from unittest.mock import AsyncMock, MagicMock, patch
 
 from homeassistant.const import CONF_ADDRESS
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers import device_registry as dr, issue_registry as ir
-import pytest
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
-from custom_components.glowrium import link as link_module
 from custom_components.glowrium.const import (
     DOMAIN,
     INFO_UUID,
@@ -82,15 +79,6 @@ async def _holding_a_link(
     lamp.forget()
     nothing_heard(coordinator)  # the command's echo gone; a mirror forgets nothing
     return coordinator, lamp, lamp.links[-1]
-
-
-def _info_lines(caplog: pytest.LogCaptureFixture) -> list[str]:
-    """Return what the link logged at INFO, the level a user reads."""
-    return [
-        record.getMessage()
-        for record in caplog.records
-        if record.levelno == logging.INFO and record.name == link_module.__name__
-    ]
 
 
 ADDRESS = "AA:BB:CC:DD:EE:FF"

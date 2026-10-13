@@ -57,7 +57,7 @@ from custom_components.glowrium.coordinator import (
 
 from .conftest import DST_OFF, DST_ON
 from .lamp import ScriptedLamp, flood, keeper_of, lamp_of, link_of, turn_over
-from .shared import _an_entry, _at_a_lamp, _holding_a_link, _info_lines, _kept_for
+from .shared import _an_entry, _at_a_lamp, _holding_a_link, _kept_for
 
 
 def _refusing(lamp: ScriptedLamp) -> None:
@@ -1912,48 +1912,6 @@ async def test_the_link_and_the_device_half_each_log_under_their_own_name(
     assert said_by("state request refused") == {
         "custom_components.glowrium.coordinator"
     }
-
-
-@pytest.mark.parametrize("present", [True, False], ids=["advertising", "absent"])
-async def test_a_lamp_that_is_advertising_at_start_is_in_reach_from_the_start(
-    hass: HomeAssistant,
-    monkeypatch: pytest.MonkeyPatch,
-    caplog: pytest.LogCaptureFixture,
-    present: bool,
-) -> None:
-    """What Home Assistant already knows of the lamp is taken as the watching begins.
-
-    The entities are built right after, and on a weak link the lamp may not
-    be heard again for seconds or connected to for minutes. Until then they
-    go by what the scanners knew at the start - and there is nothing for the
-    log to say. Starting with the lamp unplugged is the first time it is out
-    of reach, and that is said: by its name, and with its address once - a
-    lamp picked from the list has its address in its title already.
-    """
-    entry = _an_entry()
-    entry.async_create_background_task = lambda _hass, coro, _name: coro.close()
-    coordinator, _lamp = _kept_for(
-        hass, entry, "Glowrium-G7_DDEEFF (AA:BB:CC:DD:EE:FF)"
-    )
-    fake = MagicMock()
-    fake.async_register_callback.return_value = lambda: None
-    fake.async_track_unavailable.return_value = lambda: None
-    fake.async_address_present.return_value = present
-    monkeypatch.setattr(keeper_module, "bluetooth", fake)
-
-    with caplog.at_level(logging.INFO, logger=link_module.__name__):
-        await coordinator.async_start()
-    try:
-        assert coordinator.available is present
-        if present:
-            assert _info_lines(caplog) == []
-        else:
-            (said,) = _info_lines(caplog)
-            assert said.startswith(
-                "Glowrium-G7_DDEEFF (AA:BB:CC:DD:EE:FF) is out of reach"
-            )
-    finally:
-        await coordinator.async_stop()
 
 
 async def test_the_remembered_ramp_survives_the_device_reporting(

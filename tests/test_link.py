@@ -22,7 +22,11 @@ from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import HomeAssistantError
 import pytest
 
-from custom_components.glowrium import cbor, link as link_module
+from custom_components.glowrium import (
+    cbor,
+    keeper as keeper_module,
+    link as link_module,
+)
 from custom_components.glowrium.const import (
     INFO_UUID,
     KEY_ACTIVATED,
@@ -33,7 +37,7 @@ from custom_components.glowrium.const import (
 from custom_components.glowrium.coordinator import GlowriumCoordinator
 
 from .lamp import ScriptedLamp, link_of, turn_over
-from .shared import _an_entry, _at_a_lamp, _holding_a_link, _info_lines, _kept_for
+from .shared import _an_entry, _at_a_lamp, _holding_a_link, _kept_for
 
 # What a call receives when its client's bus is closed underneath it. Run against
 # dbus-fast with a bus that is shut while a call is waiting for its reply: the
@@ -384,6 +388,15 @@ async def test_a_connect_that_waited_behind_a_command_dials_nothing(
     assert link_of(coordinator).client is lamp.links[0]
 
 
+def _info_lines(caplog: pytest.LogCaptureFixture) -> list[str]:
+    """Return what the link logged at INFO, the level a user reads."""
+    return [
+        record.getMessage()
+        for record in caplog.records
+        if record.levelno == logging.INFO and record.name == link_module.__name__
+    ]
+
+
 @pytest.mark.parametrize(
     ("name", "shown"),
     [
@@ -529,6 +542,48 @@ async def test_a_stopped_coordinator_does_not_say_where_the_lamp_is(
 
     assert not coordinator.available
     assert _info_lines(caplog) == []
+
+
+@pytest.mark.parametrize("present", [True, False], ids=["advertising", "absent"])
+async def test_a_lamp_that_is_advertising_at_start_is_in_reach_from_the_start(
+    hass: HomeAssistant,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+    present: bool,
+) -> None:
+    """What Home Assistant already knows of the lamp is taken as the watching begins.
+
+    The entities are built right after, and on a weak link the lamp may not
+    be heard again for seconds or connected to for minutes. Until then they
+    go by what the scanners knew at the start - and there is nothing for the
+    log to say. Starting with the lamp unplugged is the first time it is out
+    of reach, and that is said: by its name, and with its address once - a
+    lamp picked from the list has its address in its title already.
+    """
+    entry = _an_entry()
+    entry.async_create_background_task = lambda _hass, coro, _name: coro.close()
+    coordinator, _lamp = _kept_for(
+        hass, entry, "Glowrium-G7_DDEEFF (AA:BB:CC:DD:EE:FF)"
+    )
+    fake = MagicMock()
+    fake.async_register_callback.return_value = lambda: None
+    fake.async_track_unavailable.return_value = lambda: None
+    fake.async_address_present.return_value = present
+    monkeypatch.setattr(keeper_module, "bluetooth", fake)
+
+    with caplog.at_level(logging.INFO, logger=link_module.__name__):
+        await coordinator.async_start()
+    try:
+        assert coordinator.available is present
+        if present:
+            assert _info_lines(caplog) == []
+        else:
+            (said,) = _info_lines(caplog)
+            assert said.startswith(
+                "Glowrium-G7_DDEEFF (AA:BB:CC:DD:EE:FF) is out of reach"
+            )
+    finally:
+        await coordinator.async_stop()
 
 
 async def test_a_command_that_never_reached_the_wire_fails_at_once(
