@@ -483,39 +483,28 @@ without one, from the reference presets.
 
 ### Keeping the clock right
 
-`0x05` used to be written only during bring-up, so a lamp provisioned months
-ago kept that date — and both Schedule and Circadian run off it. The lamp
-**reports** its clock: `0x05` is one of the ids in `STATE_KEYS`, so it comes
-back in the answer to the state request, and in the read on a lamp that has
-to be read. That makes correcting it cheap: the priming path compares what
-the lamp reports against local time and writes only when it is more than
+The lamp **reports** its clock: `0x05` is one of the ids in `STATE_KEYS`. Both
+Schedule and Circadian run off it, so the first exchange compares what the
+lamp reports against local time and writes only when it is more than
 `_CLOCK_TOLERANCE` (60 s) out. A clock that is right costs no write at all,
-however often a link is made, and a lamp that has not reported one is left
-alone — a blind write would be guessing at what it believes. Seven bytes
-that show no date are a clock that is wrong, and are corrected. Anything
-else under the id - a clock of another length, a number, a text - is a
-clock kept in a way nobody has seen, and is left alone as well: seven bytes
-written over it would be a guess of another kind. (The bring-up of a lamp
-that reports itself not activated writes the clock in any case: it replays
-the vendor app's sequence whole.)
+and a lamp that has not reported one is left alone — a blind write would be
+guessing at what it believes. Seven bytes that show no date are a clock that
+is wrong, and are corrected; anything else under the id is a clock kept in a
+way nobody has seen, and is left alone as well (ADR 0015). The bring-up of a
+lamp that reports itself not activated writes the clock in any case.
 
-Measured while settling how the DST flag interacts with this: toggling `0x35`
-does **not** move `0x05`. The lamp stores the clock verbatim, so writing local
-wall-clock time is not corrupted by the flag.
-
-What the flag was seen to do is move the lamp's **program**. On one G7, with
-the hour the slot carries by default: the lamp had switched itself off for
-the evening; the flag was set half an hour later, and the lamp came on again
-at once and went off an hour after it first had. The next morning it switched
-on an hour and a minute later than the morning before. That reads as: the
-clock is local time, and the flag tells the lamp that local time runs an hour
-ahead of the time its program is reckoned in - so local time in the clock,
-plus the flag, is one shift and not two. It is one lamp, one offset, one
-evening and one morning: not repeated on another model, not looked at for
-each of the two programs apart, and no other offset has been tried. The curve the lamp computes (`0x34`) is
-not in the read, and whether it can be asked for by id is open (see *What the
-answer covers* under [Priming state on connect](#priming-state-on-connect)
-before trying).
+What is written is local time, and the DST flag takes nothing from that:
+toggling `0x35` does **not** move `0x05`. What the flag was seen to do is
+move the lamp's **program**. On one G7, with the hour the slot carries by
+default: the lamp had switched itself off for the evening; the flag was set
+half an hour later, and the lamp came on again at once and went off an hour
+after it first had. The next morning it switched on an hour and a minute
+later than the morning before. That reads as: the clock is local time, and
+the flag tells the lamp that local time runs an hour ahead of the time its
+program is reckoned in - so local time in the clock, plus the flag, is one
+shift and not two. It is one lamp, one offset, one evening and one morning.
+The curve the lamp computes (`0x34`) is not in the read, and whether it can
+be asked for by id is open.
 
 ---
 
@@ -539,36 +528,24 @@ or read from a lamp that will not report; if `0x14` reads `False`,
 3.  { 0x14: True }                        # enable light output
 ```
 
-Notes:
-
 - These writes are made on the turn of the first exchange, which the link
-  makes while it holds its lock (`Link.connect_locked`, `Link.prime_held`), so
-  the bring-up completes as one step before any user command is serviced.
-- It is **idempotent**: a device already activated (by the app, or a previous HA
-  run) reports `0x14 = True` and the sequence is skipped. Activation survives HA
-  restarts; `0x14` only clears on a factory reset.
-- It goes by the flag itself, both ways. Only the boolean `False` is a lamp
-  to bring up, and only the boolean `True` settles the question for the
-  session: a number or a text under `0x14` reads as true and says neither.
-- **Nothing is waited for.** The state request has asked for the flag and
-  waited for the report, and read where the lamp did not report; the exchange
-  holds the link's lock, and a command may be queued behind it. Until #55 the
-  flag was waited for a second time, up to three seconds, which ran only where
-  it was not going to come. A flag that comes later than the lamp's answer is
-  in the mirror by the next first exchange, and the lamp is brought up then.
-- A lamp that is only read is judged the same way. It was passed over until
-  #55, as a lamp whose flag could not come - and a read brings the flag.
-  **Not seen on any lamp, and on BlueZ likely not to work in that exchange:**
-  measured on a G7, the write that follows a read of this lamp fails there,
-  because the read has cost the link its channel (see "Priming state on
-  connect"). If a G8 does the same, the bring-up of one that is only read
-  fails on such a host, the exchange ends without the lamp being called one
-  that answers, and the next connect tries again. No G8 has been at hand to
-  say. On macOS the lamp's stray answer to a read is dropped and the channel
-  stays, so nothing stands in the way of the write there. Through a
-  Bluetooth proxy it is not known - nothing has been measured through one.
-- The **Activated** `binary_sensor` (diagnostic) surfaces this flag so users can
-  see provisioning status.
+  makes while it holds its lock, so the bring-up completes as one step before
+  any user command is serviced.
+- It is **idempotent**: a device already activated reports `0x14 = True` and
+  the sequence is skipped. `0x14` only clears on a factory reset.
+- Only the boolean `False` is a lamp to bring up, and only the boolean `True`
+  settles the question for the session (ADR 0015).
+- **Nothing is waited for** beyond the state request: the exchange holds the
+  link's lock, and a command may be queued behind it. A flag that comes later
+  than the lamp's answer is in the mirror by the next first exchange, and the
+  lamp is brought up then.
+- A lamp that is only read is judged the same way. **Not seen on any lamp,
+  and on BlueZ likely not to work in that exchange:** measured on a G7, the
+  write that follows a read of this lamp fails there, because the read has
+  cost the link its channel. If a G8 does the same, its bring-up fails on
+  such a host and is tried again on every connect. No G8 has been at hand to
+  say; through a Bluetooth proxy nothing has been measured.
+- The **Activated** `binary_sensor` (diagnostic) surfaces this flag.
 
 ---
 
@@ -576,52 +553,37 @@ Notes:
 
 **Entity availability follows the device's advertising presence, *not* the GATT
 connection.** This is a deliberate design choice, and reviewers should not
-"simplify" it back to the connection state.
-
-A GATT link to this lamp **does not last**, and nothing the integration does
-keeps one up for good. Early notes put the lamp's own drops at every 30–60
-minutes; the one link timed since state stopped being read (2026-10-05, a G7
-on BlueZ) lasted 2 h 44 min, went down by itself, and was rebuilt and primed
-43 s later. That is one link, not a rate. In 0.2.0 and 0.2.1 the integration
-ended each link itself, two seconds after making it (see
-[Priming state on connect](#priming-state-on-connect)).
-If `available` were tied to the connection, every entity would flap to
-`unavailable` on each reconnect, spraying noise into HA history.
-Since the device advertises about once a second whenever nobody is connected
-to it, presence is a far better availability signal. While a link is held it
-was seen not to advertise at all (one G7 under BlueZ, a link of an hour,
-2026-10-06), and presence held all the same: the host's scanner goes on
-listing a device it is connected to. Through a Bluetooth proxy, whose list
-follows advertisements, that is not known.
+"simplify" it back to the connection state: a GATT link to this lamp **does
+not last**, and tied to it every entity would flap to `unavailable` on each
+reconnect (ADR 0001).
 
 ```python
 available = connected or advertising  # Link.in_reach
 ```
 
+- The lamp advertises about once a second whenever nobody is connected to
+  it, and was seen not to advertise while a link is held (one G7 under BlueZ,
+  2026-10-06). Presence held all the same: the host's scanner goes on listing
+  a device it is connected to. Through a Bluetooth proxy that is not known.
 - Whether the lamp is advertising is what the Bluetooth stack tells the link:
   seeded with `bluetooth.async_address_present` as the watching begins
   (`Link.begin`), set by the advertisement callback, and cleared by
-  `bluetooth.async_track_unavailable` (device powered off / out of range). The
-  callbacks are the keeper's; they hand what they see to `Link.advertising`.
+  `bluetooth.async_track_unavailable`. The callbacks are the keeper's; they
+  hand what they see to `Link.advertising`.
 - Reconnects happen **silently underneath** an entity that stays `available`.
 - When `available` changes, the log says so at INFO, once each way: `is out of
-  reach`, `is back in reach` (`Link.log_reach`). It is judged by the same
-  expression as the entities, so a lamp that goes quiet while it is connected
-  is not reported as gone. The check sits where the listeners are told, and
-  the listeners are told wherever either half of the expression can change
-  while the lamp is being watched: where a link is taken (`Link.open`), and
-  wherever one is let go of - by the stack reporting a drop, by a probe or a
-  first exchange that got no answer (all through one method, `Link._drop`,
-  which hangs up and tells), and by a command that failed, whose caller gets
-  an error and whose entities would otherwise go on reading as available. A
+  reach`, `is back in reach` (`Link.log_reach`), judged by the same expression
+  as the entities. The entities are told wherever either half of it can
+  change: where a link is taken (`Link.open`), and wherever one is let go of
+  (`Link._drop`, which hangs up and tells; a command that failed). A
   coordinator that is stopping lets go of its link and says nothing.
-- Each listener is told on its own. A listener is an entity writing its
-  state, and one that raises does not keep the news from the rest, nor does
-  its exception reach whoever brought the news - a notification, or a
-  command that in fact went through. It is named in the log by its entity
-  with its trace, once: the lamp reports all day, and what failed an entity
-  once fails it on every report until the value changes. Until it has
-  managed a round its failures go to DEBUG, trace included.
+- Each listener is told on its own. One that raises does not keep the news
+  from the rest, nor does its exception reach whoever brought the news. It is
+  named in the log by its entity with its trace, once; until it has managed a
+  round its failures go to DEBUG.
+- Mode-dependent entities (Lighting mode, Ramp, Schedule controls) gate
+  themselves further on the operating mode (`_only_in_mode`,
+  `coordinator.mode_allows`), and stay available while it is not known.
 
 ### Reconnect
 
