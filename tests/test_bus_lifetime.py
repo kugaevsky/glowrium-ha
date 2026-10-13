@@ -2404,40 +2404,33 @@ async def test_a_silent_link_is_asked_whether_it_is_still_there(
     assert len(lamp.asked) == 2
 
 
+@pytest.mark.parametrize(
+    "the_question_is", ["answered with an error", "kept waiting until its deadline"]
+)
 async def test_a_silent_link_that_does_not_answer_is_dropped(
-    hass: HomeAssistant, monkeypatch: pytest.MonkeyPatch
+    hass: HomeAssistant, monkeypatch: pytest.MonkeyPatch, the_question_is: str
 ) -> None:
-    """And one that answers nothing is hung up, for the poll to rebuild."""
-    coordinator, lamp, held, clock = await _holding(hass, monkeypatch)
-    lamp.fails_writes(BleakError(_NOT_CONNECTED))
-    lamp.fails_reads(BleakError(_NOT_CONNECTED))
+    """And one that answers nothing is hung up, for the poll to rebuild.
 
-    clock.now += link_module._PROBE_INTERVAL
-    await _tick(link_of(coordinator), hass)
-
-    assert link_of(coordinator).client is None
-    assert held.hang_ups == 1
-
-
-async def test_a_question_that_is_never_answered_drops_the_link_too(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """A link that keeps the question waiting is as dead as one that says so.
-
+    A link that keeps the question waiting is as dead as one that says so.
     BlueZ can leave a call without any answer. The deadline then ends the
     wait, and that has to count as the link's answer: left as a mere log
     line, the same question would be put on every poll tick for ever, each
     time holding the lock for as long as the deadline allows.
     """
     monkeypatch.setattr(link_module, "_ASK_TIMEOUT", 0.05)
-    link, lamp, held, clock = await _held(monkeypatch)
-    lamp.never_acknowledges_a_write()
+    coordinator, lamp, held, clock = await _holding(hass, monkeypatch)
+    if the_question_is == "answered with an error":
+        lamp.fails_writes(BleakError(_NOT_CONNECTED))
+        lamp.fails_reads(BleakError(_NOT_CONNECTED))
+    else:
+        lamp.never_acknowledges_a_write()
 
     clock.now += link_module._PROBE_INTERVAL
     async with asyncio.timeout(2):
-        await _tick(link)
+        await _tick(link_of(coordinator), hass)
 
-    assert link.client is None
+    assert link_of(coordinator).client is None
     assert held.hang_ups == 1
 
 
