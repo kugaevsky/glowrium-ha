@@ -385,8 +385,9 @@ class GlowriumCoordinator:
 
         A GATT link to this lamp does not last, and tying availability to it
         makes every entity flap to ``unavailable`` on each reconnect. The
-        device advertises continuously, so "present, or currently connected"
-        is treated as available and the link is rebuilt silently underneath.
+        lamp advertises whenever nothing is connected to it, so "present,
+        or currently connected" is treated as available and the link is
+        rebuilt silently underneath.
         """
         return self._link.in_reach
 

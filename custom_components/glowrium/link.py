@@ -1110,10 +1110,10 @@ class Link:
 
         Home Assistant does not unload its config entries when it stops, so
         ``let_go`` never runs then, and nothing hangs the link up but bleak on
-        the way out of a stop that runs to its end. One that is cut short - a
-        container is given ten seconds - leaves BlueZ holding a link to a
-        lamp with a single slot, which reads as connected and answers
-        nothing until the adapter is power-cycled.
+        the way out of a stop that runs to its end. A container that is
+        restarted gets ten seconds for that, and a link nobody hung up stays
+        at the controller with no process behind it: the one link the lamp
+        has to give.
 
         So this asks BlueZ to drop the link the moment the stop is announced.
         It does not wait for the lock, and from here on every hang-up gets
