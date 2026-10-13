@@ -3,7 +3,8 @@
 - **Status:** accepted
 - **Date:** 2026-07-19 (initial release); the rule and its warning to reviewers
   written into ARCHITECTURE.md on 2026-07-20; amended 2026-10-12 (the lamp
-  was seen not to advertise while it is connected; the rule is unchanged)
+  was seen not to advertise while it is connected; the rule is unchanged);
+  2026-10-13 (where ARCHITECTURE.md has the link of 2026-10-05, #60)
 
 ## Context
 
@@ -63,8 +64,7 @@ had, and a command made then dials its own link first.
 
 ## Evidence
 
-- ARCHITECTURE.md, "Availability model"; the 2026-10-05 link in "Priming state
-  on connect".
+- ARCHITECTURE.md, "Availability model"; the 2026-10-05 link in "Reconnect".
 - `tests/test_link.py::test_available_follows_presence_not_connection`,
   `::test_a_lamp_with_a_link_is_not_out_of_reach_for_being_quiet`,
   `::test_going_out_of_reach_and_coming_back_are_each_said_once`,

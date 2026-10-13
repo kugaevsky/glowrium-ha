@@ -2,7 +2,9 @@
 
 - **Status:** accepted
 - **Date:** 2026-10-08 (the design chosen); built 2026-10-08 to 2026-10-09
-  (#21); amended 2026-10-11 (the watchers are the keeper's, ADR 0016)
+  (#21); amended 2026-10-11 (the watchers are the keeper's, ADR 0016);
+  2026-10-13 (what the link's own flows catch: moved here from
+  ARCHITECTURE.md, #60)
 
 ## Context
 
@@ -57,6 +59,11 @@ cannot be broken from the other module, and no test has to catch it.
 - No change of behaviour that was not named and agreed. The one named: the
   entities are told when a client is taken (`Link.open`), not after the first
   exchange. The one fix found on the way: ADR 0005 (a command never written).
+- Inside `link.py`, the handlers around the link's own flows - a command, a
+  background connect, the first exchange on a held link, the probe - catch
+  both what the library raises and what a turn has made of it (`_LOST`). One
+  that caught the library's set alone would let the link's own errors out of
+  a task nobody waits for.
 - `answered()` is a convention the device half has to keep: a greet that read
   before calling it would spend the link for nothing on BlueZ. A read alone
   is never taken for an answer.

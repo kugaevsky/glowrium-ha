@@ -625,402 +625,133 @@ available = connected or advertising  # Link.in_reach
 
 ### Reconnect
 
-The coordinator is split in two ([#21](https://github.com/kugaevsky/glowrium-ha/issues/21)):
-the **link** (`link.py`) - taking a client, holding it, deciding when the lamp
-is spoken to, letting go of it - and the **device** (`coordinator.py`), which
-knows what is said. No client leaves the link's module, and no error of the
-Bluetooth library does: a lost link is the link's own `LinkLostError` by the
-time the device half hears of it. That is the reason for the shape (ADR
-0008). Three rules had each cost an incident - every GATT call is made under
-the guard that turns a closed bus into a lost link, a client is let go of
-only through the hang-up that closes its bus, and whoever lets go of a link
-tells the entities - and with no client outside the module none of them can
-be broken from the other one, where before each was held by a test that
-read the source. The device half is handed a **turn**, on
-which it writes, reads and says that the lamp answered - inside the first
-exchange on a link (`_greet`) and the question for a silent one (`_probe`),
-which the link calls when it decides to, and inside a command, which it hands
-to `Link.send`. The link is handed its dial, so that it can stand on
-something other than a Bluetooth adapter: in the tests, a scripted lamp.
-Home Assistant's watchers - the advertisement callback, the presence tracker,
-the timer - are the keeper's (below), and tell the link two things: the lamp
-is advertising or is not (`Link.advertising`), and a tick (`Link.tick`).
+The coordinator is split in two (ADR 0008): the **link** (`link.py`) - taking
+a client, holding it, deciding when the lamp is spoken to, letting go of it -
+and the **device** (`coordinator.py`), which knows what is said. No client
+leaves the link's module, and no error of the Bluetooth library does. The
+device half is handed a **turn**, on which it writes, reads and says that the
+lamp answered - inside the first exchange on a link (`_greet`) and the
+question for a silent one (`_probe`), which the link calls when it decides
+to, and inside a command, which it hands to `Link.send`. The link is handed
+its dial: in the tests, a scripted lamp.
 
-The device half is **kept** ([#54](https://github.com/kugaevsky/glowrium-ha/issues/54),
-ADR 0016). Everything it needs of whatever runs it, it asks of its **keeper**:
-one object of seven entry points, declared where it is asked for
-(`coordinator.Keeper`), as the link's module declares its dial.
+The device half is **kept** (ADR 0016): everything it needs of whatever runs
+it, it asks of its **keeper** (`coordinator.Keeper`). Home Assistant's is
+`EntryKeeper` (`keeper.py`), built from the instance and the config entry;
+`tools/bench.py` has one of its own, and the tests a scripted one. Home
+Assistant's watchers - the advertisement callback, the presence tracker, the
+timer - are the keeper's, and tell the link two things: the lamp is
+advertising or is not (`Link.advertising`), and a tick (`Link.tick`).
 
-| Asked of the keeper | What for |
-| --- | --- |
-| `spawn(work, name)` | Work that does not outlive what the coordinator is kept for - the config entry, the bench's run: a connect, a first exchange, a probe. |
-| `run_lasting(work, name)` | Work that nothing which ends the coordinator ends: a hang-up. Its task is handed back. |
-| `watch(advertising, tick)` | Watch the air for the lamp, and the clock; say whether the lamp is there now. Called once, by the start. |
-| `unwatch()` | Cease. More than once does no harm, nor on a keeper that never watched. |
-| `stack_fault(count)` | A stack that will not hang up; `None` once the lamp has answered. |
-| `lamp_described(model_id, firmware, serial)` | What the lamp said it is, once the device-info string is read. |
-| `coordinates()` | Where home is; zero and zero from a keeper with no home. |
+**Two triggers, one connect at a time.** The advertisement callback starts a
+connect when the lamp reappears and no link is held; the tick, every
+`_RECONNECT_INTERVAL` (30 s), does after any drop, whatever the
+advertisements do. Both funnel into a single guarded task, so that the ~1 Hz
+advertisements do not start a connect storm, and both stand back while the
+Bluetooth stack will not hang up (below). A command never does.
 
-A coordinator cannot be built without a keeper and a dial, so nothing in it
-asks whether Home Assistant is there, and its module names of Home Assistant
-its two exceptions, `callback`, `Event` and the clock - a test reads the
-source and holds exactly that list. Home Assistant's keeper is `EntryKeeper`
-(`keeper.py`), built from the instance and the config entry: it has the entry
-before anything can be asked of it. `tools/bench.py` has one of its own,
-which holds the work it starts and ticks, and has no dashboard, no registry
-and no home. The tests have a scripted one (`tests/lamp.py`), which starts
-the work where a test waits for it and notes what it was told.
+**The dial and its ceiling.** A connect (`Link.connect`, serialized by an
+`asyncio.Lock`) uses `bleak_retry_connector.establish_connection`, subscribes
+to notifications, and makes the first exchange on the link (see
+[Priming state on connect](#priming-state-on-connect)). The whole thing is
+capped at `_CONNECT_TIMEOUT` (20 s), including the wait for the lock, and
+deliberately shorter than `_COMMAND_TIMEOUT`: a background connect holds the
+lock while a command waits for it inside its own budget, so a holder allowed
+longer than the waiter makes a switch press fail on a reachable lamp. It is
+shorter than `_RECONNECT_INTERVAL` too, so the connect spawned by one tick is
+over before the next, and no shorter than what the library gives one try of
+its own (20 s) - which does not hand the library the whole dial: the ceiling
+also covers the wait for the lock and every try after the first. A dial has
+`_CONNECT_ATTEMPTS` (3) tries rather than the library's 4: each can burn a
+20 s bleak timeout plus a backoff, all while the lock is held, and the tries
+are for the ones that fail fast. The library is given no
+`ble_device_callback`: it takes the argument and never calls it (4.6 and 4.7
+alike). A dial that
+runs out of time after the link has been taken keeps that link, and the log
+says that it is held rather than `failed`. Asking a link that is already
+held - priming one a command made, probing a silent one - has a ceiling of
+its own, `_ASK_TIMEOUT` (10 s): there is no dial in it, and a probe that is
+slow to give its verdict keeps a dead link held meanwhile.
 
-The code moved as it stood, and most of it kept its name without the
-underscore: `Link.open()` is the first half of what `_connect_locked` was (the
-refusals, the dial, subscribe-then-keep), `Link.hang_up()` is `_hang_up`,
-`Link.connect()` is `_async_ensure_connected`, `Link.prime_held()` and
-`Link.probe_held()` are `_async_prime` and `_async_probe`, `Link.tick()` is
-what the poll decided, `Link.send()` is the delivery of a command. The old
-names are gone: the tests stand a scripted lamp at the dial (`tests/lamp.py`)
-and reach the link a coordinator holds through one door, `link_of`; the bench
-starts the coordinator as a setup does and speaks through its commands. A
-test reads the coordinator's source to hold that it names no client and
-reaches the link for what the link offers it and nothing else.
+What those numbers rest on, all of it measured on the G7's host; the records
+of the first three are in
+[#20](https://github.com/kugaevsky/glowrium-ha/issues/20):
 
-Two independent triggers, both funnelling into a single guarded reconnect task
-(one at a time, so that the ~1 Hz advertisements do not start a connect storm):
-
-1. **Advertisement callback** — when the lamp reappears and there is no live
-   connection, kick off a reconnect.
-2. **Periodic poll** — `async_track_time_interval` every `_RECONNECT_INTERVAL`
-   (30 s) reconnects after any drop, independent of advertisement throttling.
-
-Both stand back while the Bluetooth stack will not hang up (see *A stack that
-will not hang up is a state* below). A command never does.
-
-Establishing a connection (`Link.connect`, serialized by an
-`asyncio.Lock`) uses `bleak_retry_connector.establish_connection`, subscribes to
-notifications, primes state by asking the lamp for `STATE_KEYS` — reading
-`facebd02` only when it will not report — runs activation if needed, corrects
-a clock that has drifted, and last of all, once per session, reads the
-device-info string. **The whole thing is capped at `_CONNECT_TIMEOUT` (20 s),
-including the wait for the lock**, and deliberately shorter than
-`_COMMAND_TIMEOUT`: a background connect holds the lock while a command waits
-for it inside its own budget, so a holder allowed longer than the waiter makes
-a switch press fail on a reachable lamp. It is shorter than
-`_RECONNECT_INTERVAL` too, so the connect spawned by one poll tick is over
-before the next.
-
-And it is no shorter than what the library gives one try of its own (20 s).
-That does not hand the library the whole dial: the ceiling also covers the
-wait for the lock and every try after the first, so a slow try can still be
-cut from outside. What it does is move the cut away from where connects on a
-weak link finish. It was 10 s until that was measured, on the G7's host over a
-night of poor reception (2026-10-06, 517 dials). The dials that got through
-took 6.9 s at the median and 9.7 s at the ninetieth percentile - piled up
-against the ceiling - and 426 were cut off by it; in 181 of those a
-connection made inside the dial was lost in the last second before the cut.
-Cut off, a dial is tried again thirty seconds later with the same odds, so a
-ceiling that close to what a connect takes keeps a lamp away for as long as
-the radio stays marginal. The library has no shorter timeout to be given
-instead: it passes its own to bleak.
-
-Under the longer ceiling, on the same host through an afternoon of poor
-reception and no other load (2026-10-06, 80 dials; the link was dropping by
-itself some twenty-four times an hour), 64 got through and 16 were cut. The
-63 of those whose time the log gives took 10.6 s at the median and 17.4 s at
-the ninetieth percentile, 35 of them more than 10 s. It is not raised
-further. From 4 s up, each two seconds to the ceiling saw 10, 8, 7, 13, 6, 5,
-6 and 5 of them through, which reads as a chance per second of trying that
-does not grow with the wait; if so, what a cut costs in time is the wait for
-the next tick, while every second added here is a second longer before a
-command to a lamp that is not there fails. (What else a cut does - bleak's
-clean-up sending `Disconnect` into a connect in flight - is as before.) A
-dial that runs out of time after the link has been taken keeps that link, and
-the log says that it is held rather than `failed`; what becomes of it is the
-poll's business.
-
-What ended links and connects the same evening was read off the controller.
-An HCI trace of fifteen minutes with no load showed four drops, all `0x08`
-connection timeout, and 23 connects that came to nothing, all `0x3e` failed
-to be established; neither the host nor the lamp asked for a link to end.
-Each link began under a 10 s supervision timeout; about five seconds in, the
-lamp asked for a 50 ms interval and a 5 s timeout and BlueZ granted it - so a
-link older than that was dropped after five seconds in which nothing of the
-lamp's was heard.
-
-Asking a link that is already held - priming one a command made, probing one
-that has gone silent - has a ceiling of its own, `_ASK_TIMEOUT` (10 s): there
-is no dial in it, and a probe that is slow to give its verdict keeps a dead
-link held meanwhile.
+- **Under 10 s** (a night of poor reception, 2026-10-06): of 517 dials 426
+  were cut off by the ceiling, 181 of them with a connection made inside the
+  dial and lost in its last second. Those that got through took 6.9 s at the
+  median and 9.7 s at the ninetieth percentile - piled up against the
+  ceiling.
+- **Under 20 s** (an afternoon of poor reception, 2026-10-06): of 80 dials 64
+  got through. The 63 whose time the log gives took 10.6 s at the median and
+  17.4 s at the ninetieth percentile, 35 of them more than 10 s. From 4 s up,
+  each two seconds to the ceiling saw 10, 8, 7, 13, 6, 5, 6 and 5 of them
+  through, which reads as a chance per second of trying that does not grow
+  with the wait; if so, what a cut costs is the wait for the next tick, while
+  every second added is a second longer before a command to a lamp that is
+  not there fails. So it is not raised further.
+- **What ends a link** (a trace of the controller, 2026-10-06): four drops
+  in fifteen minutes, all `0x08` connection timeout, and 23 connects that
+  came to nothing, all `0x3e`. Neither the host nor the lamp asked for a
+  link to end. Some five seconds into each link the lamp asked for a
+  supervision timeout of 5 s and BlueZ granted it, so a link older than that
+  was dropped after five seconds in which nothing of the lamp's was heard.
+- **How long a link lives:** the one timed since state stopped being read
+  (2026-10-05) held 2 h 44 min, went down by itself, and was rebuilt and
+  primed 43 s later. One link, not a rate.
 
 **Setup does not wait for any of this.** The first connect is a background task
 tied to the config entry, so `async_setup_entry` returns in milliseconds whether
-or not the lamp answers. It used to be awaited, which left the entry in "setup
-in progress" for as long as the connect took — and a reload landing inside that
-window cancelled the setup and left the entry in `setup_error`. Availability
-follows advertisement presence, so an advertising lamp comes up **available with
-nothing read** until the first state arrives - the light and the diagnostic
-entities `unknown`, the settings showing what they showed before the restart;
-that blip is the cost of not blocking setup. The entry is known *before*
-anything registers for advertisements: Home Assistant replays the last
-advertisement from inside that registration when it already knows the device —
-every reload, for a lamp it has heard — and the reconnect the
-replay starts needs an entry to be put on, or it lands on `hass` and outlives
-the unload. That held by the order of two lines in the coordinator's start; it
-holds by construction now, since the keeper is built with its entry and a
-coordinator is built with its keeper.
-
-A connect caps `establish_connection` at `_CONNECT_ATTEMPTS` (3) rather than the
-library default of 4: against an unreachable device each attempt can burn a 20 s
-bleak timeout plus a backoff, all while the lock is held — and the poll above
-comes round again in 30 s anyway. It is the ceiling that bounds a dial; the
-attempts are for the ones that fail fast, which on a weak link is most of
-them - a connection made and lost within a second or two, and the next try
-inside the same dial getting through. The library is given no
-`ble_device_callback`: it takes the argument and never calls it (4.6 and 4.7
-alike), and Home Assistant's client picks the best adapter and device for
-itself at every try.
-
-**Commands are serialized on the same lock** and retried once: `Link.send`
-holds the lock across connect-and-write, so a command cannot race the periodic
-GATT churn; if the write still fails mid-command, the link hangs up,
-reconnects once and retries before the error is surfaced. What is written is
-the coordinator's - it hands `send` the write, to make on the turn it is
-given for each try, and the question `send` asks once if the write failed.
+or not the lamp answers, and an advertising lamp comes up **available with
+nothing read** until the first state arrives. The entry is known *before*
+anything registers for advertisements - the keeper is built with it - so the
+connect a replayed advertisement starts dies with the entry (ADR 0006).
 
 **Every client the coordinator lets go of is hung up by one method, and its
 bus is closed whatever comes of that.** bleak's BlueZ backend opens a D-Bus
-connection of its own for each client. A connect that fails closes it; once a
-client has connected, bleak closes it on the last lines of a `disconnect()`
-that got that far, and nowhere else — not when the reference is dropped, and
-not when the link goes down by itself. The system bus allows one user 256
-connections, and a client left with its one keeps it for the life of the
-process. So the link lets go of no client without going through `Link.hang_up`, which
-disconnects the client under a ceiling of its own (`_HANG_UP_TIMEOUT`, 10 s).
-That includes a client whose link is already gone: bleak has no device left
-to disconnect then, and the call only closes the bus.
+connection for each client, and calling `disconnect()` is not the same as
+that bus being closed (ADR 0003). So the link lets go of no client
+without going through `Link.hang_up`, which disconnects the client under a
+ceiling of its own (`_HANG_UP_TIMEOUT`, 10 s) and then - returned, raised,
+timed out or cancelled - closes the bus behind it if it is still open
+(`_close_bus`, through bleak's private attributes: there is no public way).
+A client whose bus will not close is **kept** for the lamp (`Unclosed`),
+through a reload as well: nothing is dialled over it, by the tick or by a
+command, and the tick tries its hang-up again. The lost-link callback hangs
+up only the client the link holds; one still inside `establish_connection`
+is bleak's.
 
-Calling `disconnect()` is not the same as the bus being closed, and that
-difference has been the same leak four times over:
-
-| `disconnect()` … | What happened |
-| --- | --- |
-| was never called | 0.2.1 forgot the client behind every dropped link: bus exhausted about two and a half hours after each start |
-| was cut short by a caller's deadline | unload under its three-second ceiling: one connection per reload |
-| was never answered by BlueZ | 2026-10-04: bluetoothd held a link that no longer existed (below) — two connections a minute, the bus refused Home Assistant at 256 |
-| was answered with an error | has not happened; bleak raises one line before it closes the bus |
-
-So the hang-up does not take bleak's word for it. After `disconnect()` —
-returned, raised, timed out or cancelled — `_close_bus` looks at the bus
-behind the client and closes it if it is still open. There is no public way
-to do that, so it goes through bleak's private attributes, and leaves bleak
-as bleak leaves itself when BlueZ reports a link gone: monitor task released,
-watcher removed, services forgotten. What is behind a client is noted when
-the client is taken, because Home Assistant's wrapper forgets its backend
-when it gives a link up. A backend with no bus of its own — a Bluetooth
-proxy's — has nothing to close.
-
-If bleak has moved what this reaches for, or the bus will not close, the
-client is **kept** (`Unclosed`, held for the lamp): nothing is dialled over it, by the poll
-or by a command, and the poll tries its hang-up again. One connection is
-then held for as long as that lasts, instead of one more per poll tick.
-`tests/test_bus_lifetime.py` counts open connections rather than calls, and
-runs the same against bleak's own BlueZ client with a stub bus, so that a
-bleak release which renames these attributes fails in the suite and not on
-somebody's host. A client kept this way is kept for the lamp, by its address
-and with what is behind it, for as long as Home Assistant runs (`Unclosed`):
-a reload of the entry makes a new coordinator, and that one is handed what its
-predecessor could not let go of, does not dial over it, and goes on trying to
-close it. So a reload no longer gets a lamp dialled again while such a client
-is kept: the stack letting go of it does, or a restart of Home Assistant.
-
-**A dial waits for a hang-up still under way.** A client is kept only when its
-hang-up has ended - at its ceiling, or sooner where BlueZ answered with an
-error - and until then nothing knows that it will not close. A dial made in between used to go ahead beside it. Within one
-coordinator: the hang-up finishes after the connect that gave the client up
-has released the lock. Across a reload: a link held when the entry is
-unloaded is hung up in the background, the unload waits three seconds for it
-and no longer, and the coordinator that followed dialled at once. Either way
-it was one client more on a stack that was not letting go of the first. So
-the hang-ups under way are held for the lamp beside the clients that would
-not close, and `Link.open()` waits for them before it dials - after refusing
-what is already known (a stopped link, a client already kept), and refusing
-again when the wait has shown it. The caller's own deadline bounds the wait,
-and ending the wait ends no hang-up. A hang-up that has already ended is not
-waited for: a command's retry has just waited for its own.
-
-What it costs. After a link the stack itself reported lost, nothing: bleak
-has no device left to disconnect and only closes its bus. Where the
-integration lets go of a link BlueZ still calls connected - a probe that got
-no answer, a command's last failed write - the wait is as long as BlueZ takes
-to disconnect, and it used to be a dial made while that was still going on.
-On a stack that will not hang up, every dial queues behind the hang-up before
-it: a command takes up to ten seconds longer to fail, or to be told that the
-link was not released where a client was kept; the clients open at one time
-stay at one where there were several; and the third unanswered hang-up, and
-with it the repair, comes some twenty seconds later than it did.
-
-One case is left. A dial that is itself under way when the entry is unloaded
-is not a hang-up under way: the unload has nothing to wait for and returns,
-the coordinator that follows dials, and the first dial's client arrives
-afterwards, to be hung up because its coordinator has stopped. On a stack that
-will not hang up, with a bus that will not close, that is two clients kept.
-It was so before, and takes a command in flight at the moment of a reload.
+**A dial waits for a hang-up still under way:** until it has ended, nothing
+knows whether its client will close. `Link.open()` refuses what is already
+known (a stopped link, a client already kept), waits for the hang-ups under
+way, and refuses again when the wait has shown it. So a command's retry
+dials only after the hang-up of the client it gave up on - the lamp has one
+slot, and a connect made while the old link is still closing either fails or
+is handed the very link being closed - and a connect whose subscription
+failed has its client hung up before the error reaches a caller that may
+dial again. The wait is inside a command's budget, so `_HANG_UP_TIMEOUT` has
+to stay below `_COMMAND_TIMEOUT`: otherwise a link that will not confirm it
+has closed leaves the retry no time to happen. One case is left: a command's
+dial under way when the entry is unloaded is no hang-up to wait for, and on
+a stack that will not hang up, with a bus that will not close, it ends in
+two clients kept.
 
 **A hang-up is the one piece of background work not tied to the config entry.**
-Everything else dies with the entry, because a connect that outlives its
-coordinator claims the lamp's single slot for nobody. (The bench has no entry:
-its keeper ends that work where it ceases to watch.) A hang-up is the
-opposite: cancelled part-way, it has asked BlueZ to drop the link and left the
-bus open, which is the leak again. So it runs as a task on `hass` — the
-keeper's `run_lasting`; the bench's keeper holds such a task to its end
-itself — and the deadline of whoever gave the client up ends at most their
-*wait* for it, never the hang-up. Unload waits up to `_STOP_TIMEOUT` (3 s) for
-the lock and as long again for the hang-up; a link that answers nothing is
-hung up without being waited for at all.
-
-**Where order matters, the hang-up is waited for.** A write that failed lets go
-of its client at once, and the retry dials only after that client's hang-up has
-finished: the lamp has one slot, and a connect made while the old link is still
-closing either fails or is handed the very link being closed. The same holds
-for a connect whose subscription failed: its client is hung up before the error
-reaches a caller that may dial again. (A connect *cancelled* at that point is
-not kept waiting — its deadline has already run out, and it holds the lock.)
-The wait is inside the command's budget, which is why `_HANG_UP_TIMEOUT` has to
-stay below `_COMMAND_TIMEOUT` — otherwise a link that will not confirm it has
-closed leaves the retry no time to happen. The client behind the *last* failed
-write is hung up only after the confirmation window described below, because
-its notifications are the channel that confirmation listens on.
-
-**The disconnected callback hangs up only the client the coordinator holds.**
-bleak reports a link lost in the middle of a connect to that same callback,
-while `establish_connection` is still at work on the client, and disconnecting
-it from there closes the bus underneath bleak's own clean-up — seen on a real
-lamp as `Failed to cancel connection ... Bad file descriptor` on every such
-drop. A client the coordinator already let go of has been hung up; one it does
-not hold yet is bleak's.
-
-**A stack that will not hang up is a state, not an event.** Seen on the real
-host, with BlueZ 5.82: bluetoothd went on reporting the lamp connected after
-the controller had lost the link (`hcitool con` listed no link to it while
-`Device1.Connected` read true). Every dial was then handed that dead link at
-once, every GATT call answered `Not connected`, and no `Disconnect` was
-answered — the journal has `Failed to disconnect device: Disconnected (0x0e)`
-once per attempt. The kernel is telling bluetoothd that the link is already
-gone, and 5.82 treats that answer as a failure and keeps its state; 5.84
-treats it as the disconnection it is. Nothing a client does ends it on
-5.82. The adapter has to be power-cycled, or bluetoothd restarted.
-
-A run of hang-ups that BlueZ leaves **unanswered** is therefore counted, and
-from the third in a row (`_STACK_FAULT_AFTER`) it is a fault: the background
-dials — poll and advertisement alike — back off, doubling from the poll
-interval to five minutes (`_STACK_FAULT_BACKOFF_MAX`), and a warning says
-once what it is and what clears it. Only silence counts: a hang-up answered
-with an error is an answer, one that goes through breaks the run, and a
-proxy's client is not BlueZ's to answer for - whose client it is being told
-by the module its class lives in, not by what it holds. Whether the bus
-behind the client could then be closed does not come into it: where it could
-not, the client is kept and nothing is dialled over it, and the stack is
-every bit as stuck. The backoff never holds a command back; a command waits
-only for a hang-up still under way (above).
-The first thing the lamp says — a notification, an acknowledged write —
-ends the episode at once, and that is logged at the level it was announced
-at. Seen on the host: three unanswered hang-ups, one warning, dials at
-30 s, 90 s, 150 s; the adapter power-cycled; the lamp back by itself four
-and a half minutes later.
-
-The fault is also raised as a **repair** (`issue_registry`), which is where
-Home Assistant puts what a user can act on: nothing the integration does ends
-it, and a warning reaches only whoever reads the log. It goes up with the
-warning and comes down with the first answer from the lamp, or when the
-coordinator stops watching. A coordinator that has stopped watching announces
-no episode at all: a hang-up is given longer than an unload waits for it, so
-the third unanswered one can come in afterwards, and a repair raised then
-would have nobody left to take it down. Nor does it end one: an episode is
-called over by the coordinator that announced it (the link remembers whether
-it did), since
-the repair standing under the entry's id after a reload is the next
-coordinator's. It is not persistent - the next start finds out for itself.
-The lamp's name goes into it through `identity.as_text`: a repair is rendered
-as Markdown, and the name is whatever the lamp advertised when it was set up.
-The dialog that asks whether to set up a discovered lamp is Markdown too, and
-names it the same way - as does its line among the discovered devices. (A
-lamp that advertises no name goes by its address there, colons and all.)
-
-**`is_connected` is a claim; an answer is evidence.** In that same incident
-the last exchange before the fault was a request that failed with `Not
-connected` — and then BlueZ never reported the link dropped. The client
-went on reading as connected, so nothing dialled again: five hours, until a
-command failed. Two checks close that:
-
-- a link on which the state request failed without being a refusal is
-  given `_LOST_GRACE` (10 s) to be reported dropped, and is then let go by
-  the poll — unless the lamp has said something since, which settles it
-  the other way;
-- a held link that has been silent for `_PROBE_INTERVAL` (5 minutes) is
-  asked for its state again (`Link.probe_held`, with the device half's
-  question, `_probe`). The lamp only speaks when
-  something changes, so a dead link and an idle one look the same until
-  asked; the answer refreshes the mirror for free. A link that does not
-  answer, or keeps the question waiting until the deadline (`_ASK_TIMEOUT`),
-  is dropped.
-  Asked, not read — a read would end the very link it was checking. A lamp
-  that refuses to be asked is the exception, and has no other: it is read
-  here as it is on every connect.
-
-**Closing the bus under a call in flight looks like nothing bleak documents.**
-The hang-up from the disconnected callback closes the client's D-Bus connection
-at once, and so does a bus closed by hand after a hang-up that failed. A GATT
-call still waiting for its reply on that connection then ends
-in `EOFError`, or `OSError` once the socket is gone, and bleak passes both on
-untouched. They mean what a `BleakError` means there — the link is gone — so
-the link takes the whole set, `_LINK_ERRORS`, for a lost link. Caught as
-nothing in particular, the error went straight out of a command, with no
-retry and no readable message.
-
-That set is known in `link.py` and nowhere else. A turn makes any of it into
-the link's own error before the device half hears of it: `LinkLostError`, or
-`RefusedError` where the lamp said no and the link stands. Neither is an error
-of the library's. So the handlers around the link's own flows — a command, a
-background connect, the first exchange on a held link, the probe — catch both
-what the library raises and what a turn has made of it by the time the device
-half's part of the flow lets it through (`_LOST`). A handler there that
-caught the library's set alone would let the link's own errors out of a task
-nobody waits for.
-
-A call that is not waiting for a reply at that moment ends differently. BlueZ
-turns a read or a write away with "in progress" while an earlier call on the
-same characteristic is still waiting — one a deadline abandoned, on a link that
-is going — and bleak sleeps ten milliseconds and tries again, for as long as it
-takes, beginning every try with an assertion that it still has its bus. Hung up
-during that pause, the call ends in `AssertionError`. Seen on the G7's host
-four times in thirty hours (2026-10-07), as `Task exception was never
-retrieved` a few milliseconds after a drop. That one is not added to
-`_LINK_ERRORS`: an assertion on a link that is up says somebody was wrong, and
-the tests' own stand-ins for the lamp assert under those handlers. Every GATT
-call is made under `_gatt_call(client)` instead, which turns the assertion into
-a `BleakError` when the client no longer says it is connected and lets it
-through otherwise. A test reads the source for a call made outside it.
-
-**A stopped coordinator holds no link and takes no new one.** From the moment
-it stops, the coordinator refuses to dial, and a connect that was already on
-its way is hung up instead of kept — checked after the subscription, the last
-thing a connect waits for before it commits the link. Nobody would ever stop
-that coordinator a second time, and on a lamp whose link holds, a link kept
-there keeps the single slot from its successor for good. Unload itself, with a
-link held, waits for the lock first and only then takes the client — and takes
-it even if that wait is cancelled; with nothing held it has nothing to wait
-for, and returns at once.
-
-**Home Assistant stopping is not an unload.** It does not run an entry's unload
-callbacks on shutdown, so without a listener nothing hangs the lamp's link up
-but bleak, at the very end of a stop that runs to its end — and a container
-that is restarted is given ten seconds for it. A link nobody hung up stays at
-the controller with no process behind it, and it is the one link the lamp has
-to give. So the coordinator listens for `EVENT_HOMEASSISTANT_STOP` and asks
-BlueZ to drop the link the moment the stop is announced. It does not wait for
-the lock, and from then on every hang-up gets `_STOP_TIMEOUT` rather than
-`_HANG_UP_TIMEOUT` — that one, and any a connect cancelled by the stop or a
-command finishing after it starts later. Home Assistant waits for whatever
-starts once it has begun to stop, and the grace period is not the
-coordinator's to spend.
+Everything else dies with the entry. A hang-up runs as a task on `hass` — the
+keeper's `run_lasting` — and the deadline of whoever gave the client up ends
+at most their *wait* for it, never the hang-up. Unload waits up to
+`_STOP_TIMEOUT` (3 s) for the lock - and takes the client even if that wait
+is cancelled - and as long again for the hang-up; with nothing held it
+returns at once. **A stopped coordinator holds no link and takes no new
+one:** it refuses to dial, and a connect that was already on its way is hung
+up instead of kept. **Home Assistant stopping is not an unload:** it runs no
+entry's unload callbacks, so the setup listens for
+`EVENT_HOMEASSISTANT_STOP` and has the coordinator ask BlueZ to drop the
+link the moment the stop is announced, without waiting for the lock. From
+then on every hang-up gets `_STOP_TIMEOUT` rather than `_HANG_UP_TIMEOUT`:
+Home Assistant waits for whatever starts once it has begun to stop, and the
+grace period is not the coordinator's to spend. Why a hang-up outlives the
+entry, and a stop is listened for, is ADR 0006.
 
 Measured on 2026-10-12 (a G7, BlueZ 5.82, one run of each; the record is in
 [#38](https://github.com/kugaevsky/glowrium-ha/issues/38)): a stop cut short
@@ -1031,65 +762,73 @@ and the next process was primed 10.9 s after its start with that link never
 seen to drop, against 17.8 s after a stop that ran to its end. So setup clears
 nothing before its first dial.
 
-**A command connects without priming** (`Link.send` takes its link bare). It needs
-the link and its own write, nothing else — and priming costs the state request,
-the wait for its answer and, the
-first time, the device-info read, all before the write is attempted and all
-inside the command budget. On a lamp
-where the connect alone is marginal, that is what turns a working command into a
-reported failure. The tick notices a link nothing has primed
-(`Link.primed`) and has the first exchange made on it afterwards, off the
-command's critical path.
+**A stack that will not hang up is a state, not an event** (ADR 0004). Seen
+on a host with BlueZ 5.82: bluetoothd went on reporting the lamp connected
+after the controller had lost the link, answered no `Disconnect`, and
+nothing a client did ended it. A run of hang-ups that BlueZ leaves
+**unanswered** is therefore counted, and from the third in a row
+(`_STACK_FAULT_AFTER`) it is a fault: the background dials back off,
+doubling from the tick's interval to five minutes
+(`_STACK_FAULT_BACKOFF_MAX`), a warning says once what it is and what clears
+it, and a **repair** goes up under the config entry's id. Only silence
+counts, and the backoff never holds a command back. The first thing the lamp
+says ends the episode, and the repair comes down then, or when the
+coordinator stops watching. A coordinator that has stopped watching
+announces no episode and ends none: an episode is called over by the
+coordinator that announced it. The lamp's name goes into the repair through
+`identity.as_text` - a repair is rendered as Markdown - as it does into the
+dialog for a discovered lamp, which is Markdown too, and into its line among
+the discovered devices.
+
+**`is_connected` is a claim; an answer is evidence** (ADR 0004). A link on
+which the state request failed without being a refusal is given `_LOST_GRACE`
+(10 s) to be reported dropped, and is then let go by the tick — unless the
+lamp has said something since. A held link that has been silent for
+`_PROBE_INTERVAL` (5 minutes) is asked for its state again
+(`Link.probe_held`), and dropped if it does not answer by the deadline
+(`_ASK_TIMEOUT`). Asked, not read - but for a lamp that refuses to be asked.
+
+**A bus closed under a call in flight is a lost link, whatever the library
+raises** (`_LINK_ERRORS`; ADR 0003), and every GATT call is made under
+`_gatt_call(client)`: a test reads the source for one made outside it. What
+the library raises is known in `link.py` and nowhere else: a turn makes it
+into the link's own `LinkLostError`, or `RefusedError` where the lamp said no
+and the link stands (ADR 0008).
+
+**Commands are serialized on the same lock** and retried once: `Link.send`
+holds the lock across connect-and-write, so a command cannot race the periodic
+GATT churn; if the write still fails mid-command, the link hangs up,
+reconnects once and retries before the error is surfaced. **A command
+connects without priming** (`Link.send` takes its link bare): it needs the
+link and its own write, and priming costs the state request, the wait for
+its answer and, the first time, the device-info read, all inside the
+command's budget. The tick notices a link nothing has primed (`Link.primed`)
+and has the first exchange made on it afterwards.
 
 **A failed write is checked against what the device reports before it is
-believed.** Writes use write-with-response, and on a marginal link it is the
-*acknowledgement* that goes missing: observed once on a G7 at RSSI −88, both
-attempts of a `light.turn_on` raised `GATT Protocol Error: Unlikely Error` while
-the lamp lit and notified its new state 32 ms before the error surfaced. So on
-failure the coordinator waits up to `_CONFIRM_TIMEOUT` (2 s) for the device to
-report the state the command asked for, and stays quiet if it does. The report
-must be **newer than the write** — the state mirror is never invalidated, so
-matching a stale mirror would vouch for a write that never landed — and the
-check only runs when a write actually reached the characteristic. It must also
-be **about the command**: the lamp reports of its own accord all day, and a
-fresh report of its brightness says nothing about a power flag the mirror got
-wrong hours ago. At least one property the command set has to have been
-reported since the command was taken up (`Mirror.reported_since`) — one, not all,
-because the lamp reports what changed and a mode command carries a ramp that
-is usually what it already was. Only keys in `STATE_KEYS` are compared — a
-mode command also carries fixed parameters (`0x2c`, `0x32`) the device never
-reports back. The cost is that a command which really did fail takes those
-2 s longer to say so.
+believed** (ADR 0005). On a marginal link it is the *acknowledgement* that
+goes missing, so on failure the coordinator waits up to `_CONFIRM_TIMEOUT`
+(2 s) for the device to report the state the command asked for, and stays
+quiet if it does. The report must be **newer than the write** and **about
+the command** - at least one property the command set, reported since the
+command was taken up - and the check only runs when a write actually reached
+the characteristic.
 
 **A command is capped at `_COMMAND_TIMEOUT` (25 s)**, covering the wait for the
-lock as well as the connect-and-write itself; a command that fails may then
-spend up to `_CONFIRM_TIMEOUT` more deciding whether it failed after all, so
-the longest a user waits is the sum. Without that ceiling an unreachable
-device lets bleak's own retries stack up for minutes, and the button in the UI
-looks like it has hung. A command whose deadline runs out inside the write
-itself lets go of the link it was writing to: left held, that link would be
-handed the next command, to wait as long and fail the same way, until the
-probe found it dead. Any failure — a timeout, an error of the library, a
-refusal by the lamp — leaves `Link.send` as a `LinkLostError`, which the
-coordinator raises as a `HomeAssistantError` carrying the translated
-`cannot_connect` message, so the user sees "out of range or adapter busy; try a
-Bluetooth proxy" instead of a stack trace. Except where it was the link itself
-that said no: it has been stopped, or the last client it let go of would not
-close and nothing is dialled over that (`NoNewLinkError`). Neither is the
-radio's doing and a proxy mends neither, so each carries the key of a message
-of its own (`not_running`, `link_not_released`) and is not tried a second
-time - to every background path it is a lost link like any other, which is
-what it is a kind of.
+lock as well as the connect-and-write itself; one that fails may then spend
+up to `_CONFIRM_TIMEOUT` more deciding whether it failed after all. A command
+whose deadline runs out inside the write itself lets go of the link it was
+writing to. Any failure — a timeout, an error of the library, a refusal by
+the lamp — leaves `Link.send` as a `LinkLostError`, which the coordinator
+raises as a `HomeAssistantError` carrying the translated `cannot_connect`
+message. Except where it was the link itself that said no: it has been
+stopped, or the last client it let go of would not close (`NoNewLinkError`).
+A proxy mends neither, so each carries the key of a message of its own
+(`not_running`, `link_not_released`) and is not tried a second time.
 
 Note that `BleakOutOfConnectionSlotsError` is the usual symptom of a weak
 link, *not* of exhausted slots — `habluetooth` reports it whenever no connection
 path scores well enough, which a device at RSSI −85 or worse never does.
-
-Mode-dependent entities (Lighting mode, Ramp, Schedule controls) declare the
-operating mode they are for (`_only_in_mode`), and the base entity gates their
-availability further via `coordinator.mode_allows(...)`, which returns `True` when
-the operating mode matches **or is still unknown** — so they don't collapse to
-`unavailable` before the first state arrives.
 
 ---
 

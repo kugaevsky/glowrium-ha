@@ -2,7 +2,9 @@
 
 - **Status:** accepted
 - **Date:** 2026-10-04 (every client let go of through one hang-up);
-  2026-10-05 (the bus closed by hand, with a canary against bleak's own client)
+  2026-10-05 (the bus closed by hand, with a canary against bleak's own client);
+  2026-10-13 (what the wait of a dial costs, and why the assertion is not
+  taken for a lost link: moved here from ARCHITECTURE.md, #60)
 
 ## Context
 
@@ -47,13 +49,21 @@ closed" have each cost an incident or would have:
 - A bus closed under a GATT call in flight ends it in `EOFError`/`OSError`,
   and in `AssertionError` for a call asleep between bleak's retries; so the
   link takes `_LINK_ERRORS` for a lost link and makes every GATT call under
-  `_gatt_call`. Neither is known outside `link.py` (ADR 0008).
+  `_gatt_call`. Neither is known outside `link.py` (ADR 0008). The assertion
+  is not added to the set: on a link that is up it says somebody was wrong,
+  and the tests' own stand-ins for the lamp assert under those handlers.
+- The wait of a dial costs nothing after a link the stack itself reported
+  lost. Where the integration lets go of a link BlueZ still calls connected,
+  it is as long as BlueZ takes to disconnect; on a stack that will not hang
+  up a command takes up to ten seconds longer to fail, and the third
+  unanswered hang-up, with its repair, comes some twenty seconds later.
 - A Bluetooth proxy's backend has no bus; `_is_bluez` tells by the module the
   backend's class lives in, not by what the object holds.
 
 ## Evidence
 
-- ARCHITECTURE.md, "Reconnect": the four-row table and what follows it.
+- ARCHITECTURE.md, "Reconnect": "Every client the coordinator lets go of is
+  hung up by one method"; CHANGELOG 0.3.0 and 0.4.0.
 - `tests/test_bus_lifetime.py` counts open bus connections, not calls:
   `test_bleaks_own_client_ends_up_closed` (bleak's real `BleakClientBlueZDBus`
   over a stub bus), `test_bleak_still_calls_these_what_the_link_calls_them`,
