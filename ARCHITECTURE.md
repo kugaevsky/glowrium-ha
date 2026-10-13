@@ -1463,7 +1463,12 @@ Unit tests live in `tests/` and **never touch real Bluetooth**:
   after a restart, what the lamp says about itself reaching the device
   registry, and the hang-up when Home Assistant stops.
 - `test_config_flow.py` — discovery, the pick-from-a-list flow, and the two
-  places a duplicate is turned away.
+  places a duplicate is turned away; and the list of lamps as the frontend
+  receives it, turned into that by Home Assistant's own view for the route
+  (its `_prepare_result_json`, which is not public and has that name in
+  2026.7.0 and in 2026.10.0): the flow manager never serializes a form, so a
+  schema Home Assistant could no longer read passed every test of the flow
+  there was before.
 - `test_diagnostics.py` — the diagnostics download, mostly from the side of
   what must not come out of it whatever the lamp reports.
 - `test_models.py` — the per-model profiles: preset keys are keys, and each

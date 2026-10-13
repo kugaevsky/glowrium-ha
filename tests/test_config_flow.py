@@ -7,10 +7,17 @@ from unittest.mock import patch
 from bleak.backends.device import BLEDevice
 from bleak.backends.scanner import AdvertisementData
 from homeassistant.components.bluetooth import BluetoothServiceInfoBleak
-from homeassistant.config_entries import SOURCE_BLUETOOTH, SOURCE_USER
+from homeassistant.components.config.config_entries import (
+    ConfigManagerFlowIndexView,
+)
+from homeassistant.config_entries import (
+    SOURCE_BLUETOOTH,
+    SOURCE_USER,
+    ConfigFlowResult,
+)
 from homeassistant.const import CONF_ADDRESS
 from homeassistant.core import HomeAssistant
-from homeassistant.data_entry_flow import FlowResultType
+from homeassistant.data_entry_flow import FlowResultType, InvalidData
 import pytest
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
@@ -91,6 +98,72 @@ async def test_user_flow_creates_entry(hass: HomeAssistant) -> None:
     assert result["data"] == {CONF_ADDRESS: GLOWRIUM_ADDRESS}
     assert result["result"].unique_id == GLOWRIUM_ADDRESS
     assert len(mock_setup_entry.mock_calls) == 1
+
+
+async def _the_list_of_lamps(hass: HomeAssistant) -> ConfigFlowResult:
+    """Open the form that lists the lamps, with one lamp in range."""
+    with patch(
+        "custom_components.glowrium.config_flow.async_discovered_service_info",
+        return_value=[_service_info()],
+    ):
+        return await hass.config_entries.flow.async_init(
+            DOMAIN, context={"source": SOURCE_USER}
+        )
+
+
+async def test_the_list_of_lamps_reaches_the_frontend_as_one_select(
+    hass: HomeAssistant,
+) -> None:
+    """The form is what the frontend can draw: one required select of the lamps.
+
+    The flow manager hands the form's schema on as an object and never turns
+    it into what the frontend receives; the view behind *Add integration*
+    does, and no other test reaches it. A schema Home Assistant can no longer
+    read - built with a library it has stopped taking - passed every test of
+    the flow there was before this one and the next, and fails here and not
+    in front of the user.
+
+    Through Home Assistant's own view, so that whatever serializes a schema
+    in the version under test is what runs: no library is named here. The
+    method that does it is not public; it has that name in 2026.7.0 and in
+    2026.10.0. A client over HTTP would reach the same code by the public
+    route, and needs a listening port, which no test here opens.
+    """
+    form = await _the_list_of_lamps(hass)
+    view = ConfigManagerFlowIndexView(hass.config_entries.flow)
+
+    sent = json.loads(view.json(view._prepare_result_json(form)).body)
+
+    assert sent["type"] == "form"
+    assert sent["step_id"] == "user"
+    assert sent["data_schema"] == [
+        {
+            "name": CONF_ADDRESS,
+            "required": True,
+            "type": "select",
+            "options": [[GLOWRIUM_ADDRESS, f"{GLOWRIUM_NAME} ({GLOWRIUM_ADDRESS})"]],
+        }
+    ]
+
+
+async def test_an_address_that_was_not_offered_is_refused_as_invalid_input(
+    hass: HomeAssistant,
+) -> None:
+    """What the form did not offer is refused as the flow manager refuses input.
+
+    The flow manager catches the error of the library Home Assistant itself
+    validates with, and reports it against the field. A schema built with
+    another library raises that library's error straight through it. The
+    wording of the error is the library's and is not looked at.
+    """
+    form = await _the_list_of_lamps(hass)
+
+    with pytest.raises(InvalidData) as refused:
+        await hass.config_entries.flow.async_configure(
+            form["flow_id"], user_input={CONF_ADDRESS: "11:22:33:44:55:66"}
+        )
+
+    assert list(refused.value.schema_errors) == [CONF_ADDRESS]
 
 
 def _configured(hass: HomeAssistant) -> MockConfigEntry:

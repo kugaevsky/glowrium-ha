@@ -4,4 +4,7 @@
 # that minimum. tools/stack.py applies it. Dependabot takes this file for a
 # requirements file, and is told to leave the plugin alone
 # (.github/dependabot.yml).
+# The day the minimum reaches Home Assistant 2026.10 - not 2026.9 - the config
+# flow's form is built with probatio and the ignore on it goes. The brief for
+# that is kept on issue 27, and ADR 0009 says why.
 pytest-homeassistant-custom-component==0.13.344

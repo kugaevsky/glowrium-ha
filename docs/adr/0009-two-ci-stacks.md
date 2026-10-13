@@ -1,7 +1,7 @@
 # Two CI stacks, with library versions taken from Home Assistant and written nowhere
 
 - **Status:** accepted
-- **Date:** 2026-10-07 (#24)
+- **Date:** 2026-10-07 (#24); 2026-10-13 (which minimum lets the ignore go)
 
 ## Context
 
@@ -44,7 +44,11 @@ on libraries no user has.
   `constraints-oldest.txt`; a test compares them.
 - Before a push, the tests and mypy are run on both stacks locally.
 - The `# type: ignore[arg-type, unused-ignore]` in `config_flow.py` goes with
-  the move to probatio once the minimum has it.
+  the move to probatio once the minimum is 2026.10 - not the first version
+  that has probatio, 2026.9, where type checking refuses a probatio schema
+  the other way round. The minimum is not raised for that alone; the brief
+  for the day it moves is kept on #27, and the comment in
+  `constraints-oldest.txt` points there and here.
 - An environment whose libraries are not at the version the script would have
   left fails the suite; the remedy is to run the script again.
 
