@@ -4,7 +4,7 @@
 - **Date:** 2026-08-24 (setup returns at once); 2026-10-04 (a hang-up runs on
   `hass`; the entry is taken before advertisements; HA's own stop hangs up);
   amended 2026-10-11 (the entry and both lifetimes of work are the keeper's,
-  ADR 0016)
+  ADR 0016); 2026-10-13 (what a stop cut short or killed leaves, measured)
 
 ## Context
 
@@ -20,6 +20,17 @@ link and left the bus open - the leak of ADR 0003, one connection per reload.
 And Home Assistant does not run an entry's unload on its own stop: a stop cut
 short (a container restart allows ten seconds) left BlueZ holding the link,
 the lamp reading as connected and answering nothing until a power cycle.
+
+This said until 2026-10-13 that a stop cut short is what left such a lamp.
+Measured on 2026-10-12, on one G7 under BlueZ 5.82 with one run of each (#38):
+a stop cut short at its ten seconds left no link, the hang-up made at the
+stop having it gone from the controller in about three seconds; a process
+that was killed left its link at the controller, and the next process was
+primed on it sooner than after a stop that ran to its end. A lamp that
+answers nothing until a power cycle was not seen. That is how the phantom
+link of BlueZ before 5.84 shows itself (ADR 0004), which is the likelier
+reading of what was seen then. The decision below stands all the same: a link
+left with no process behind it is the one link the lamp has to give.
 
 ## Decision
 
@@ -71,5 +82,4 @@ the lamp reading as connected and answering nothing until a power cycle.
 
 Home Assistant runs unload callbacks on its own stop, or bleak closes the bus
 on a cancelled disconnect (ADR 0003); or a connect becomes fast enough to be
-awaited within what a reload tolerates. Whether the shutdown hang-up is enough
-on a stop that is killed has not been measured.
+awaited within what a reload tolerates.

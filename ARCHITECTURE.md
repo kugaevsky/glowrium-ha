@@ -1147,17 +1147,25 @@ for, and returns at once.
 
 **Home Assistant stopping is not an unload.** It does not run an entry's unload
 callbacks on shutdown, so without a listener nothing hangs the lamp's link up
-but bleak, at the very end of a stop that runs to its end. A stop that is cut
-short — `docker restart` gives a container ten seconds — leaves BlueZ holding
-the link: the lamp reads as connected and answers nothing until the adapter is
-power-cycled. So the coordinator listens for `EVENT_HOMEASSISTANT_STOP` and
-asks BlueZ to drop the link the moment the stop is announced. It does not wait
-for the lock, and from then on every hang-up gets `_STOP_TIMEOUT` rather than
+but bleak, at the very end of a stop that runs to its end — and a container
+that is restarted is given ten seconds for it. A link nobody hung up stays at
+the controller with no process behind it, and it is the one link the lamp has
+to give. So the coordinator listens for `EVENT_HOMEASSISTANT_STOP` and asks
+BlueZ to drop the link the moment the stop is announced. It does not wait for
+the lock, and from then on every hang-up gets `_STOP_TIMEOUT` rather than
 `_HANG_UP_TIMEOUT` — that one, and any a connect cancelled by the stop or a
 command finishing after it starts later. Home Assistant waits for whatever
 starts once it has begun to stop, and the grace period is not the
-coordinator's to spend. Whether this prevents the phantom on a stop that is
-killed has not been measured.
+coordinator's to spend.
+
+Measured on 2026-10-12 (a G7, BlueZ 5.82, one run of each; the record is in
+[#38](https://github.com/kugaevsky/glowrium-ha/issues/38)): a stop cut short
+at its ten seconds leaves nothing — the link was gone from the controller
+about three seconds after the stop was asked for. A process that is killed, or
+told to stop while it is still starting, leaves its link at the controller,
+and the next process was primed 10.9 s after its start with that link never
+seen to drop, against 17.8 s after a stop that ran to its end. So setup clears
+nothing before its first dial.
 
 **A command connects without priming** (`Link.send` takes its link bare). It needs
 the link and its own write, nothing else — and priming costs the state request,

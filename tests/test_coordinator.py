@@ -4443,7 +4443,7 @@ async def test_a_reconnect_started_while_starting_belongs_to_the_entry(
 
     When it already knows the device, Home Assistant calls the advertisement
     callback at once, from inside async_register_callback - and a lamp that
-    advertises continuously is always already known, so that is every reload.
+    has been heard is already known, so that is every reload.
     The coordinator took it for the lamp reappearing and started a reconnect
     before it had been handed its entry. With no entry to put it on, the task
     went to hass, where an unload does not reach it.

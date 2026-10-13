@@ -720,9 +720,9 @@ async def test_stopping_home_assistant_hangs_up_the_lamp(hass: HomeAssistant) ->
     cancels a pending setup retry - so the callback that stops the coordinator
     on unload never runs. Nothing then hangs the lamp's link up but the Python
     process on its way out, at the very end of a clean stop. A stop that is cut
-    short - a container is given ten seconds - never gets that far, and BlueZ
-    keeps the link: seen on the real host as a lamp that reads "Connected: yes"
-    and answers "Not connected" to everything until the adapter is power-cycled.
+    short - a container is given ten seconds - never gets that far, and the
+    link stays at the controller with no process behind it, on a lamp that has
+    one link to give.
     """
     entry = await _setup_without_bluetooth(hass)
     coordinator = entry.runtime_data
