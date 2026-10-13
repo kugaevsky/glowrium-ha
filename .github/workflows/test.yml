@@ -52,3 +52,6 @@ jobs:
       - run: ruff format --check .
       - run: mypy
       - run: pytest --cov=custom_components/glowrium --cov-fail-under=95
+      # What a release would carry, built as the Release workflow builds it
+      # on a version tag: a break is met here, long before release day.
+      - run: python tools/release.py archive HEAD "$RUNNER_TEMP/glowrium.zip"

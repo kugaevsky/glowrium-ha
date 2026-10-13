@@ -1,0 +1,41 @@
+name: Release
+
+# A release is one file, glowrium.zip: hacs.json tells HACS to take it, and
+# GitHub counts how often it is fetched. It is built here, from the tag, and
+# put on a draft of the release. The maintainer writes the notes and
+# publishes: nothing here publishes a release, edits one's notes, or makes,
+# moves or deletes a tag. What is done in each case is tools/release.py's,
+# and its tests'; the procedure is in CONTRIBUTING.md.
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: read
+
+jobs:
+  archive:
+    runs-on: ubuntu-latest
+    # To make a draft and to put a file on a release. Of the job's own
+    # scripts the token is handed to the last alone; the two actions get the
+    # job's token from GitHub, as in any job.
+    permissions:
+      contents: write
+    env:
+      # Data, read by the scripts from their environment, and never written
+      # into their text.
+      TAG: ${{ github.ref_name }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.14"
+      # Fails, with nothing made, on a tag that is not "v" and the version
+      # the manifest has at it.
+      - run: python tools/release.py archive HEAD "$RUNNER_TEMP/glowrium.zip" --tag "$TAG"
+      - run: python tools/release.py attach "$TAG" "$RUNNER_TEMP/glowrium.zip"
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}

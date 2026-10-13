@@ -1,0 +1,29 @@
+name: Release check
+
+# Every published release is held to what the hacs.json at its own tag
+# promises: one that tells HACS to take a file has to carry that file, since
+# HACS - as its source reads, ADR 0017 - does not fall back to the tag's
+# source. Read through the API; the file itself is never fetched, which would
+# be counted as a download of it.
+on:
+  schedule:
+    - cron: "30 4 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.14"
+      - run: python tools/release.py check
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
