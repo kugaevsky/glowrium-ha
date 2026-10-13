@@ -1627,57 +1627,48 @@ async def test_one_slow_hang_up_is_not_a_wedged_stack(
     )  # the third
 
 
-async def test_a_weak_link_is_not_mistaken_for_a_wedged_stack(
-    monkeypatch: pytest.MonkeyPatch,
-    caplog: pytest.LogCaptureFixture,
-) -> None:
-    """Links that answer nothing but hang up properly are just a bad signal.
-
-    At the edge of range a link can die before the first read, again and
-    again. BlueZ reports each one gone and every hang-up goes through, and
-    that is the difference: nothing is wedged, so nothing backs off.
-    """
-    link, host, clock, dialled = _on_a_clock(monkeypatch)
-    host.released.set()  # BlueZ answers every Disconnect
-
-    await _ticks(link, clock, 8)
-
-    assert _gaps(dialled) == [30] * 7
-    assert not [r for r in caplog.records if r.levelname == "WARNING"]
-
-
 @pytest.mark.parametrize(
     "answer",
     [
+        None,
         OSError(9, "Bad file descriptor"),
         BleakError("[org.bluez.Error.Failed] Operation already in progress"),
     ],
-    ids=["the bus is gone", "bluez says no"],
+    ids=["as bluez answers", "the bus is gone", "bluez says no"],
 )
-async def test_a_hang_up_that_was_answered_with_an_error_is_not_a_wedge(
+async def test_a_hang_up_that_was_answered_is_not_a_wedge(
     monkeypatch: pytest.MonkeyPatch,
     caplog: pytest.LogCaptureFixture,
-    answer: Exception,
+    answer: Exception | None,
 ) -> None:
-    """Only silence counts. An error is BlueZ answering, or the bus itself gone.
+    """Only silence counts. An answer is BlueZ answering, whatever it says.
 
-    With the system bus out of connections every hang-up ends in "Bad file
+    Links that answer nothing but hang up properly are just a bad signal. At
+    the edge of range a link can die before the first read, again and again.
+    BlueZ reports each one gone and every hang-up goes through, and that is
+    the difference: nothing is wedged, so nothing backs off.
+
+    Nor does it when the answer is an error, or the bus itself is gone. With
+    the system bus out of connections every hang-up ends in "Bad file
     descriptor". Nothing is wedged then, and telling the owner to power-cycle
     the adapter would be sending them to the wrong machine.
     """
     link, host, clock, dialled = _on_a_clock(monkeypatch)
+    if answer is None:
+        host.released.set()  # BlueZ answers every Disconnect
+    else:
 
-    async def _dial(*_args: object, **_kwargs: object) -> _WedgedClient:
-        dialled.append(clock.now)
-        client = await host.dial()
-        client.disconnect = AsyncMock(side_effect=answer)
-        return client
+        async def _dial(*_args: object, **_kwargs: object) -> _WedgedClient:
+            dialled.append(clock.now)
+            client = await host.dial()
+            client.disconnect = AsyncMock(side_effect=answer)
+            return client
 
-    _lamp_behind(link).dials_through(_dial)
+        _lamp_behind(link).dials_through(_dial)
 
-    await _ticks(link, clock, 6)
+    await _ticks(link, clock, 8)
 
-    assert _gaps(dialled) == [30] * 5
+    assert _gaps(dialled) == [30] * 7
     assert not [r for r in caplog.records if r.levelname == "WARNING"]
 
 
