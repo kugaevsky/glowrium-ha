@@ -458,23 +458,6 @@ async def test_a_bus_that_cannot_be_reached_stops_the_dialling(
     assert len(host.clients) > 1  # dialling again
 
 
-async def test_a_command_does_not_dial_over_a_client_that_will_not_close(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """The bound is on every door. A button pressed ten times opens nothing."""
-    link, host = _wedged_link(monkeypatch, behind=_MovedBackend)
-    monkeypatch.setattr(link_module, "_COMMAND_TIMEOUT", 0.2)
-    monkeypatch.setattr(link_module, "_CONFIRM_TIMEOUT", 0.01)
-    await _polls(link, 1)
-    assert len(host.clients) == 1
-
-    for _ in range(10):
-        with pytest.raises(link_module.NoNewLinkError):
-            await link.send(_a_command, vouch=_unvouched)
-
-    assert len(host.clients) == 1
-
-
 async def test_a_command_refused_over_a_client_that_will_not_close_says_so(
     hass: HomeAssistant, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -483,18 +466,24 @@ async def test_a_command_refused_over_a_client_that_will_not_close_says_so(
     Nothing is dialled over a client that could be neither hung up nor
     closed. The lamp may be in perfect range; "out of range, try a Bluetooth
     proxy" is the wrong thing to say, and a proxy the wrong thing to buy.
+
+    The bound is on every door: a button pressed ten times opens nothing,
+    and each press is refused by the link, with its own error underneath.
     """
     coordinator, host = _wedged(hass, monkeypatch, behind=_MovedBackend)
     monkeypatch.setattr(link_module, "_COMMAND_TIMEOUT", 0.2)
     monkeypatch.setattr(link_module, "_CONFIRM_TIMEOUT", 0.01)
     await _polls(link_of(coordinator), 1, hass=hass)
     assert link_of(coordinator).unclosed
+    assert len(host.clients) == 1
 
-    with pytest.raises(HomeAssistantError) as err:
-        await coordinator.async_set_power(True)
+    for _ in range(10):
+        with pytest.raises(HomeAssistantError) as err:
+            await coordinator.async_set_power(True)
+        assert isinstance(err.value.__cause__, link_module.NoNewLinkError)
+        assert err.value.translation_key == "link_not_released"
+        assert err.value.translation_placeholders == {"name": "Glowrium-G7"}
 
-    assert err.value.translation_key == "link_not_released"
-    assert err.value.translation_placeholders == {"name": "Glowrium-G7"}
     assert len(host.clients) == 1
 
 
