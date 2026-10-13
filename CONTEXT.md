@@ -273,7 +273,8 @@ action and reached by name (`entity.py`, `GlowriumSettingEntity`).
 **Remembered value**:
 What a setting showed before the last restart, shown until the lamp has
 reported or been written that setting, and never written from (`entity.py`,
-`_restored`).
+`_restored`). A number's is its value in its own unit, whatever unit it was
+shown in (`number.py`).
 
 **Scripted lamp**:
 The test double at the dial: hands out a link, says a frame, answers the state

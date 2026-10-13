@@ -120,15 +120,6 @@ class GlowriumSettingEntity(GlowriumEntity, RestoreEntity):
             return None
         return self._restored == "on"
 
-    def _restored_number(self) -> float | None:
-        """Return the remembered value as a number, if it still parses as one."""
-        if self._restored is None:
-            return None
-        try:
-            return float(self._restored)
-        except ValueError:
-            return None
-
     def _restored_time(self) -> time | None:
         """Return the remembered value as a time, if it still parses as one."""
         if self._restored is None:

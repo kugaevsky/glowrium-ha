@@ -60,6 +60,13 @@ only in **Circadian**; the *Schedule* controls only in **Schedule**. The
 integration drives the device's own native Circadian/Schedule engine rather than
 reimplementing it in Home Assistant.
 
+**Lengths of time.** *Ramp time* and *Schedule gradual* are durations in
+minutes, from 0 to 90. Home Assistant lets another unit be chosen for either
+in the entity's settings, and minutes are the unit the two are meant to be read
+in: in hours they are shown rounded to whole hours — 30 minutes as 0, 45 as 1,
+the limit of 90 as 2. Whatever either is set to is written to the lamp as the
+nearest whole minute.
+
 **Controls and settings.** The light and the operating mode are the lamp's
 controls. Everything else that can be set — lighting mode, ramp, the schedule,
 the indicator, daylight saving time, *Sync location* — is a setting: it sits

@@ -3,7 +3,8 @@
 - **Status:** accepted
 - **Date:** 2026-08-25 (settings shown again after a restart, 0.2.1);
   2026-10-07 (a lighting mode the model does not have is `unknown`, #30);
-  2026-10-10 (every setting tells the two apart, #23)
+  2026-10-10 (every setting tells the two apart, #23);
+  2026-10-13 (a number remembers its value in its own unit, #35)
 
 ## Context
 
@@ -26,6 +27,13 @@ to act on (#30).
 - A remembered value is shown while the mirror has nothing under the setting's
   id: no report and no echo of a write. From the first it steps back for the
   session. A report from the lamp always wins.
+- What a number remembers is its value in its own unit, which the number
+  platform keeps beside the state (`RestoreNumber`), and not the state: that
+  is in the unit the number is shown in, and for a length of time a unit can
+  be chosen for the entity (#35). Whether anything is remembered is still
+  read off the state - a number whose state was not a value remembers
+  nothing - and a record stored by a version without this has the state
+  alone, which is read as it was: no unit could be chosen then.
 - A value that is in the mirror and unusable is `unknown`, not the remembered
   one: a lighting-mode index outside the model's profile shows `unknown`.
 - A remembered value is only shown, never written from. A change that builds
@@ -57,7 +65,11 @@ to act on (#30).
   `::test_a_report_of_nothing_is_a_report_and_the_remembered_mode_steps_back`,
   `::test_a_value_remembered_in_a_shape_it_no_longer_has_is_let_go`,
   `::test_a_value_that_cannot_be_used_is_shown_as_unknown`,
-  `::test_a_setting_shows_what_was_remembered_only_until_the_lamp_speaks`;
+  `::test_a_setting_shows_what_was_remembered_only_until_the_lamp_speaks`,
+  `::test_a_number_shown_in_another_unit_is_remembered_in_its_own`,
+  `::test_a_number_comes_back_as_the_figure_it_showed`,
+  `::test_a_number_that_showed_no_value_remembers_none`,
+  `::test_a_value_stored_beside_the_state_that_is_no_number_is_let_go`;
   `tests/test_coordinator.py::test_a_ramp_that_was_refused_is_not_remembered`,
   `::test_ramp_refuses_when_lighting_mode_unread`.
 

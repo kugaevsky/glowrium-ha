@@ -20,6 +20,7 @@ from homeassistant.const import (
     EVENT_HOMEASSISTANT_STOP,
     STATE_UNAVAILABLE,
     EntityCategory,
+    UnitOfTime,
 )
 from homeassistant.core import (
     Event,
@@ -41,6 +42,7 @@ import pytest
 from pytest_homeassistant_custom_component.common import (
     MockConfigEntry,
     mock_restore_cache,
+    mock_restore_cache_with_extra_data,
 )
 
 from custom_components.glowrium import _UNCLOSED, PLATFORMS, cbor, models, protocol
@@ -1098,6 +1100,339 @@ async def test_a_value_remembered_in_a_shape_it_no_longer_has_is_let_go(
     assert hass.states.get("number.glowrium_g7_1234_ramp_time").state == "unknown"
     assert hass.states.get("time.glowrium_g7_1234_schedule_start").state == "unknown"
     assert hass.states.get("time.glowrium_g7_1234_schedule_end").state == "18:30:00"
+
+
+# --- The two numbers that hold a length of time ---
+
+_RAMP = "number.glowrium_g7_1234_ramp_time"
+_FADE = "number.glowrium_g7_1234_schedule_gradual"
+
+# What the lamp reports of each when it is 45 minutes. It counts both in
+# seconds, two bytes, and 2700 of them are 0a8c: a ramp, and the last two
+# bytes of a schedule's slot - whose brightness, the byte before, is 70 %.
+_A_RAMP_OF_45: dict[int, Any] = {KEY_LIGHTING_MODE: 5, KEY_RAMP: bytes.fromhex("0a8c")}
+_A_FADE_OF_45: dict[int, Any] = {KEY_TIMER: bytes.fromhex("01000000061e1200460a8c")}
+
+_each_length_of_time = pytest.mark.parametrize(
+    ("number", "report"),
+    [
+        pytest.param(_RAMP, _A_RAMP_OF_45, id="the ramp"),
+        pytest.param(_FADE, _A_FADE_OF_45, id="the schedule's fade"),
+    ],
+)
+
+
+def _choose_unit(hass: HomeAssistant, entity_id: str, unit: str) -> None:
+    """Have one of the lamp's numbers shown in ``unit``, as its settings offer."""
+    er.async_get(hass).async_update_entity_options(
+        entity_id, "number", {"unit_of_measurement": unit}
+    )
+
+
+def _state_and_unit(hass: HomeAssistant, entity_id: str) -> tuple[str, str]:
+    """Return what an entity shows, and the unit it shows it in."""
+    state = hass.states.get(entity_id)
+    assert state is not None
+    return state.state, state.attributes["unit_of_measurement"]
+
+
+@_each_length_of_time
+async def test_a_number_shown_in_another_unit_is_remembered_in_its_own(
+    hass: HomeAssistant, number: str, report: dict[int, Any]
+) -> None:
+    """What a number remembers is its minutes, whatever unit they were shown in.
+
+    A length of time can be shown in a unit chosen for the entity, and the
+    state Home Assistant keeps for it is then in that unit: 45 minutes shown
+    in seconds are kept as 2700. Read back as the number's own minutes, that
+    is a ramp of 2700 minutes until the lamp speaks. Beside the state a
+    number keeps its value in its own unit, and that is what it remembers.
+
+    An entry set up again starts with nothing read, as Home Assistant does
+    after a restart, and what stood in the first time is kept for the second.
+    """
+    entry = await _setup_without_bluetooth(hass)
+    entry.runtime_data._ingest(cbor.encode(report))
+    _choose_unit(hass, number, UnitOfTime.SECONDS)
+    await hass.async_block_till_done()
+    assert _state_and_unit(hass, number) == ("2700.0", "s")
+
+    for _ in range(2):
+        assert await hass.config_entries.async_unload(entry.entry_id)
+        await _setup_without_bluetooth(hass, entry)
+
+        assert _state_and_unit(hass, number) == ("2700.0", "s")
+
+
+@pytest.mark.parametrize(
+    ("number", "report", "figure"),
+    [
+        pytest.param(_RAMP, _A_RAMP_OF_45, "45", id="the ramp"),
+        pytest.param(_FADE, _A_FADE_OF_45, "45", id="the schedule's fade"),
+        pytest.param(
+            "number.glowrium_g7_1234_schedule_brightness",
+            _A_FADE_OF_45,
+            "70",
+            id="the schedule's brightness",
+        ),
+    ],
+)
+async def test_a_number_comes_back_as_the_figure_it_showed(
+    hass: HomeAssistant, number: str, report: dict[int, Any], figure: str
+) -> None:
+    """A lamp that reports what a number remembered changes nothing.
+
+    Read back from its state, a number that had shown 45 came back as 45.0
+    and went to 45 again when the lamp reported: a change of state after a
+    restart, in a setting nobody had touched, for an automation to take for
+    one. The value kept in the number's own unit is the one it had.
+    """
+    entry = await _setup_without_bluetooth(hass)
+    entry.runtime_data._ingest(cbor.encode(report))
+    await hass.async_block_till_done()
+    assert await hass.config_entries.async_unload(entry.entry_id)
+    await _setup_without_bluetooth(hass, entry)
+    shown = [hass.states.get(number).state]
+
+    @callback
+    def _changed(event: Event[EventStateChangedData]) -> None:
+        new = event.data["new_state"]
+        assert new is not None
+        shown.append(new.state)
+
+    async_track_state_change_event(hass, number, _changed)
+    entry.runtime_data._ingest(cbor.encode(report))
+    await hass.async_block_till_done()
+
+    assert shown == [figure]
+
+
+@_each_length_of_time
+async def test_a_number_that_showed_no_value_remembers_none(
+    hass: HomeAssistant, number: str, report: dict[int, Any]
+) -> None:
+    """A number that showed nothing before a restart shows nothing after it.
+
+    When a remembered value stands in has not changed, only where a number
+    reads it from. A number keeps its value beside its state whether or not
+    the state shows it, and in Manual neither of the two shows anything: each
+    is for a mode the lamp is not in. Such a setting has never come back
+    after a restart, and does not now for having a value on record.
+    """
+    entry = await _setup_without_bluetooth(hass)
+    entry.runtime_data._ingest(
+        cbor.encode({KEY_CIRCADIAN: False, KEY_SCHEDULE: False, **report})
+    )
+    await hass.async_block_till_done()
+    assert hass.states.get(number).state == STATE_UNAVAILABLE
+
+    assert await hass.config_entries.async_unload(entry.entry_id)
+    await _setup_without_bluetooth(hass, entry)
+
+    assert hass.states.get(number).state == "unknown"
+
+
+@pytest.mark.parametrize("stored", ["soon", None, True], ids=repr)
+async def test_a_value_stored_beside_the_state_that_is_no_number_is_let_go(
+    hass: HomeAssistant, stored: object
+) -> None:
+    """What a number stored in its own unit is a stand-in too, and may be unreadable.
+
+    It comes out of a file. Something there that is no number is shown as
+    unknown, the same as having remembered nothing - and the state beside it
+    is not read in its place, being in whatever unit the number was shown in.
+    """
+    mock_restore_cache_with_extra_data(
+        hass,
+        (
+            (
+                State(_RAMP, "45"),
+                {
+                    "native_max_value": 90,
+                    "native_min_value": 0,
+                    "native_step": 1,
+                    "native_unit_of_measurement": "min",
+                    "native_value": stored,
+                },
+            ),
+        ),
+    )
+    await _setup_without_bluetooth(hass)
+
+    assert hass.states.get(_RAMP).state == "unknown"
+
+
+# What the lamp has reported before either number is set: a ramp of 30 minutes
+# and a schedule that fades over 10. A command is refused until what it is
+# written together with has been read.
+_WHAT_A_COMMAND_BUILDS_ON: dict[int, Any] = {
+    KEY_LIGHTING_MODE: 5,
+    KEY_RAMP: bytes.fromhex("0708"),
+    KEY_TIMER: bytes.fromhex("01000000061e1200460258"),
+}
+
+
+async def _set_to(hass: HomeAssistant, number: str, value: float) -> dict[int, str]:
+    """Set one of the two numbers through its service; return its bytes as written.
+
+    In hex, under the id they went out under: the ramp's two bytes of
+    seconds, or the whole slot of the schedule, whose last two are its fade's.
+    """
+    lamp = ScriptedLamp()
+    with in_range(lamp):
+        await hass.services.async_call(
+            "number", "set_value", {"entity_id": number, "value": value}, blocking=True
+        )
+    [(uuid, payload)] = lamp.written
+    assert uuid == WRITE_UUID
+    return {
+        key: sent.hex()
+        for key, sent in cbor.decode(payload).items()
+        if key in (KEY_RAMP, KEY_TIMER)
+    }
+
+
+@pytest.mark.parametrize(
+    ("number", "name", "icon", "written"),
+    [
+        (_RAMP, "Ramp time", "mdi:tunnel", {KEY_RAMP: "0a8c"}),
+        (
+            _FADE,
+            "Schedule gradual",
+            "mdi:transition",
+            {KEY_TIMER: "01000000061e1200460a8c"},
+        ),
+    ],
+    ids=["the ramp", "the schedule's fade"],
+)
+async def test_a_number_of_minutes_is_a_duration_and_is_otherwise_what_it_was(
+    hass: HomeAssistant, number: str, name: str, icon: str, written: dict[int, str]
+) -> None:
+    """The ramp and the schedule's fade say what their minutes are: a duration.
+
+    Home Assistant has a device class for a length of time, and a name
+    ("Duration"), an icon and a converter between units of time come with it.
+    The first two are not to be seen, and the third does nothing to a number
+    left in its own unit. Each keeps the name its translation gives it, the
+    icon its key has in the icon file, its minutes, its limits and its step -
+    and what it is set to still reaches the lamp as that many minutes, which
+    the lamp counts in seconds: 45 of them are 2700, two bytes, 0a8c.
+    """
+    entry = await _setup_without_bluetooth(hass)
+    entry.runtime_data._ingest(cbor.encode(_WHAT_A_COMMAND_BUILDS_ON))
+
+    sent = await _set_to(hass, number, 45)
+
+    assert sent == written
+    state = hass.states.get(number)
+    assert state.state == "45"
+    assert state.name == f"Glowrium-G7_1234 {name}"
+    registered = er.async_get(hass).async_get(number)
+    assert registered is not None
+    icons = await async_get_icons(hass, "entity", integrations=[DOMAIN])
+    assert icons[DOMAIN]["number"][registered.translation_key]["default"] == icon
+    assert "icon" not in state.attributes
+    described = {
+        "device_class": "duration",
+        "unit_of_measurement": "min",
+        "min": 0,
+        "max": 90,
+        "step": 1,
+        "mode": "box",
+    }
+    assert {said: state.attributes.get(said) for said in described} == described
+
+
+@pytest.mark.parametrize(
+    ("number", "unit", "value", "written"),
+    [
+        pytest.param(_RAMP, "min", 45.7, {KEY_RAMP: "0ac8"}, id="45.7 minutes"),
+        pytest.param(
+            _RAMP, "s", 2720, {KEY_RAMP: "0a8c"}, id="45 minutes and 20 seconds"
+        ),
+        pytest.param(
+            _RAMP, "s", 2740, {KEY_RAMP: "0ac8"}, id="45 minutes and 40 seconds"
+        ),
+        pytest.param(_RAMP, "s", 2670, {KEY_RAMP: "0a8c"}, id="44 minutes and a half"),
+        pytest.param(
+            _RAMP, "h", 65 / 60, {KEY_RAMP: "0f3c"}, id="65 minutes, set as hours"
+        ),
+        pytest.param(
+            _RAMP, "h", 1.025, {KEY_RAMP: "0e88"}, id="61 and a half, set as hours"
+        ),
+        pytest.param(
+            _FADE,
+            "s",
+            2740,
+            {KEY_TIMER: "01000000061e1200460ac8"},
+            id="a fade of 45 minutes and 40 seconds",
+        ),
+    ],
+)
+async def test_a_part_of_a_minute_is_written_as_the_nearest_minute(
+    hass: HomeAssistant, number: str, unit: str, value: float, written: dict[int, str]
+) -> None:
+    """Whatever a number is set to goes to the lamp as the nearest whole minute.
+
+    An action can set 45.7 minutes, and in seconds a number can be set to any
+    second: what the entity is handed is then minutes with a part, which was
+    cut off without anybody having decided it should be. It is rounded now -
+    2720 seconds are 45 minutes (0a8c), 2740 are 46 (0ac8) - and half a
+    minute goes up. Out of another unit a value arrives a hair off as well:
+    65 minutes (0f3c) set as hours are a hair under 65 and were cut to 64,
+    and 61 and a half are a hair under the half that makes them 62 (0e88).
+    """
+    entry = await _setup_without_bluetooth(hass)
+    entry.runtime_data._ingest(cbor.encode(_WHAT_A_COMMAND_BUILDS_ON))
+    _choose_unit(hass, number, unit)
+    await hass.async_block_till_done()
+
+    sent = await _set_to(hass, number, value)
+
+    assert sent == written
+
+
+@pytest.mark.parametrize(
+    ("ramp", "shown"),
+    [("0708", "0.0"), ("0a8c", "1.0"), ("1518", "2.0")],
+    ids=["30 minutes", "45 minutes", "90 minutes"],
+)
+async def test_minutes_shown_in_hours_are_shown_as_whole_hours(
+    hass: HomeAssistant, ramp: str, shown: str
+) -> None:
+    """Minutes are the unit the two are meant to be read in, and this is why.
+
+    The number platform shows a value in a chosen unit to as many decimals as
+    the value itself is written with, and has no precision to be given. The
+    two report whole minutes, so in hours they show whole hours: half an hour
+    as none, and the limit of an hour and a half as two. The README says so;
+    a Home Assistant in which this fails has changed what the README says.
+    """
+    entry = await _setup_without_bluetooth(hass)
+    entry.runtime_data._ingest(
+        cbor.encode({**_A_RAMP_OF_45, KEY_RAMP: bytes.fromhex(ramp)})
+    )
+    _choose_unit(hass, _RAMP, UnitOfTime.HOURS)
+    await hass.async_block_till_done()
+
+    assert _state_and_unit(hass, _RAMP) == (shown, "h")
+    assert hass.states.get(_RAMP).attributes["max"] == 2
+
+
+async def test_the_brightness_of_the_schedule_is_given_no_device_class(
+    hass: HomeAssistant,
+) -> None:
+    """A percentage of the lamp's own output is none of the classes on offer.
+
+    The third number sits beside the two durations and is built the same way,
+    so the class of its neighbours is one line away from being its own.
+    """
+    await _setup_without_bluetooth(hass)
+
+    state = hass.states.get("number.glowrium_g7_1234_schedule_brightness")
+
+    assert "device_class" not in state.attributes
+    assert state.attributes["unit_of_measurement"] == "%"
 
 
 async def test_a_brightness_that_is_not_a_number_is_not_a_brightness(

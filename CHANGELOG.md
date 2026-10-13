@@ -33,9 +33,34 @@ All notable changes to this project are documented here. The format is based on
   Assistant stops, or one whose setup fails after the stop has come.
   Nothing went wrong behind it. The listener is now one that can be
   dropped whenever the entry goes.
+- **A number remembered over a restart does not change when the lamp
+  reports the same.** A number that had shown `45` came back as `45.0` and
+  went to `45` again with the lamp's first report: a change of state after
+  a restart, in a setting nobody had touched, for a state trigger to take
+  for one. All three numbers now come back as the figure they showed. What
+  an older version stored is read as it was, so the change is seen once
+  more, when the lamp first reports after the update
+  ([#35](https://github.com/kugaevsky/glowrium-ha/issues/35)).
 
 ### Changed
 
+- **Ramp time and Schedule gradual are durations.** Both carry Home
+  Assistant's `duration` device class. Left in minutes they are what they
+  were: 0 to 90, under the same names and icons. What the class adds is
+  that another unit of time can be chosen for either in the entity's
+  settings, and each number remembers its value over a restart in its own
+  minutes whatever unit it is shown in: 45 minutes shown in seconds would
+  otherwise have come back as 2700 minutes until the lamp reported. Minutes
+  remain the unit the two are meant to be read in: in hours Home Assistant
+  shows them rounded to whole hours, 30 minutes as 0
+  ([#35](https://github.com/kugaevsky/glowrium-ha/issues/35)).
+- **A part of a minute is rounded, where it was cut off.** An action that
+  set *Ramp time* or *Schedule gradual* to 45.7 wrote 45 minutes to the
+  lamp. It writes 46: the nearest whole minute, half a minute going up. In
+  a unit other than minutes most values have such a part, and cutting it
+  off would have lost whole minutes too - 65 minutes set as hours would
+  have been written as 64
+  ([#35](https://github.com/kugaevsky/glowrium-ha/issues/35)).
 - **What a lamp reports under a property is shown only when it is what the
   property means.** Each entity decided that for itself, and loosely: text
   under the power id read as on, one zero byte under the Circadian flag as
