@@ -2045,28 +2045,37 @@ async def test_the_repair_goes_when_the_lamp_answers_again(
     assert _stack_issue(hass) is None
 
 
-async def test_a_hang_up_that_outlives_the_entry_raises_no_repair(
+@pytest.mark.parametrize(
+    "the_third", ["in flight when the entry is unloaded", "the unload's own"]
+)
+async def test_a_third_hang_up_that_runs_out_after_the_unload_raises_no_repair(
     hass: HomeAssistant,
     monkeypatch: pytest.MonkeyPatch,
     caplog: pytest.LogCaptureFixture,
+    the_third: str,
 ) -> None:
     """A hang-up is given longer than an unload waits for it, and may be the third.
 
-    Two were left unanswered and the third is in flight when the entry is
-    unloaded; it runs out afterwards, on a coordinator that has stopped
-    watching. A repair raised then is one nothing takes down: the coordinator
-    that follows starts a count of its own, after a removal there is none, and
-    the repair would go on saying that it goes away by itself. The episode is
-    not announced in the log either - nobody is left to say when it is over.
+    Two were left unanswered. The third is in flight when the entry is
+    unloaded, and runs out afterwards, on a coordinator that has stopped
+    watching - or it is the one the unload itself makes, letting go of a link
+    still held. A repair raised then is one nothing takes down: the
+    coordinator that follows starts a count of its own, after a removal there
+    is none, and the repair would go on saying that it goes away by itself.
+    The episode is not announced in the log either - nobody is left to say
+    when it is over.
     """
     coordinator, _host, clock, _dialled = _coordinator_on_a_clock(hass, monkeypatch)
     await _ticks(link_of(coordinator), clock, 2, hass=hass)
     assert link_of(coordinator).stuck_hang_ups == 2
 
-    monkeypatch.setattr(link_module, "_HANG_UP_TIMEOUT", 0.3)
-    clock.now += 30
-    link_of(coordinator).tick()
-    await asyncio.sleep(0.05)  # dialled, asked, dropped: the hang-up is in flight
+    if the_third == "the unload's own":
+        await taken_bare(link_of(coordinator))  # a link held when the unload comes
+    else:
+        monkeypatch.setattr(link_module, "_HANG_UP_TIMEOUT", 0.3)
+        clock.now += 30
+        link_of(coordinator).tick()
+        await asyncio.sleep(0.05)  # dialled, asked, dropped: the hang-up is in flight
 
     with caplog.at_level(logging.WARNING, logger=link_module.__name__):
         await coordinator.async_stop()
@@ -2075,32 +2084,6 @@ async def test_a_hang_up_that_outlives_the_entry_raises_no_repair(
         await hass.async_block_till_done()
 
     assert link_of(coordinator).stuck_hang_ups == 3  # counted, as any other
-    assert _stack_issue(hass) is None
-    assert "BlueZ has left" not in caplog.text
-
-
-async def test_the_hang_up_of_the_unload_itself_raises_no_repair(
-    hass: HomeAssistant,
-    monkeypatch: pytest.MonkeyPatch,
-    caplog: pytest.LogCaptureFixture,
-) -> None:
-    """The third unanswered hang-up can be the one the unload makes.
-
-    The entry is unloaded with a link still held, after two hang-ups that got
-    no answer. Letting go of that link is the third, and it is the unload that
-    asked for it.
-    """
-    coordinator, _host, clock, _dialled = _coordinator_on_a_clock(hass, monkeypatch)
-    await _ticks(link_of(coordinator), clock, 2, hass=hass)
-    assert link_of(coordinator).stuck_hang_ups == 2
-    await taken_bare(link_of(coordinator))  # a link held when the unload comes
-
-    with caplog.at_level(logging.WARNING, logger=link_module.__name__):
-        await coordinator.async_stop()
-        await asyncio.sleep(0.1)
-        await hass.async_block_till_done()
-
-    assert link_of(coordinator).stuck_hang_ups == 3
     assert _stack_issue(hass) is None
     assert "BlueZ has left" not in caplog.text
 
