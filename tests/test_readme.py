@@ -1,8 +1,10 @@
 """Tests that the automations the README shows can be run as they are written.
 
-One test is of another thing: that every heading of the contributor guide
+Two tests are of another thing: that every heading of the contributor guide
 the README sends its reader to is there
-(``test_every_heading_of_the_guide_the_readme_links_to_is_there``).
+(``test_every_heading_of_the_guide_the_readme_links_to_is_there``), and every
+heading of ARCHITECTURE.md that a reader is sent to
+(``test_every_heading_of_the_architecture_a_reader_is_sent_to_is_there``).
 
 The examples are found by a rule, so that one added later is held to the same.
 The section runs from the heading ``## Automation examples`` to the next
@@ -233,3 +235,37 @@ def test_every_heading_of_the_guide_the_readme_links_to_is_there() -> None:
     there = anchors(GUIDE.read_text(encoding="utf-8"))
 
     assert [anchor for anchor in asked_for if anchor not in there] == []
+
+
+ARCHITECTURE = ROOT / "ARCHITECTURE.md"
+
+
+def test_every_heading_of_the_architecture_a_reader_is_sent_to_is_there() -> None:
+    """Where a reader is sent into ARCHITECTURE.md, it has a heading.
+
+    The README and the contributor guide send their reader to a heading of it
+    by the name of the file with an anchor behind it; the document sends its
+    own reader on by the anchor alone. A heading that is reworded, or that
+    goes when its section is cut down, leaves each of them at the top of a
+    long page.
+
+    The README names no heading of it today, and is read all the same, by the
+    pattern the guide is read by. The other two do, and a pattern that
+    stopped finding their links would hold nothing: that is asked first.
+    """
+    by_its_name = r"ARCHITECTURE\.md#([\w-]+)"
+    sent = [
+        (page.name, anchor)
+        for page, pattern in (
+            (README, by_its_name),
+            (GUIDE, by_its_name),
+            (ARCHITECTURE, r"\]\(#([\w-]+)"),
+        )
+        for anchor in re.findall(pattern, page.read_text(encoding="utf-8"))
+    ]
+    found_in = {page for page, _ in sent}
+    assert found_in >= {GUIDE.name, ARCHITECTURE.name}, "links are not being found"
+
+    there = anchors(ARCHITECTURE.read_text(encoding="utf-8"))
+
+    assert [(page, anchor) for page, anchor in sent if anchor not in there] == []
