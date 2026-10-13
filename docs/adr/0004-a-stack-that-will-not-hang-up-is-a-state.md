@@ -61,7 +61,7 @@ dialled again for five hours until a command failed.
 - `tests/test_bus_lifetime.py::test_unanswered_hang_ups_count_only_in_a_row`,
   `::test_a_fault_ends_with_the_lamp_and_not_with_a_hang_up`,
   `::test_a_command_is_not_held_back_by_the_backoff`,
-  `::test_a_proxy_that_times_out_is_not_blamed_on_bluez`,
+  `::test_a_client_that_is_not_bluezs_is_neither_kept_nor_blamed_on_bluez`,
   `::test_a_stopped_coordinator_ends_no_episode_and_takes_down_no_repair`,
   `::test_the_repair_is_filed_under_the_entry_and_not_under_the_address`.
 

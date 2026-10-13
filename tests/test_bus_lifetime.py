@@ -414,45 +414,11 @@ class _ProxyBackend:
         pass
 
 
-async def test_a_backend_with_no_bus_is_not_held_against_the_lamp(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """A proxy's client has nothing to close, so a failed hang-up parks nothing.
-
-    The bound below is for connections to the system bus. Refusing to dial
-    because a client that never had one would not disconnect only takes the
-    lamp away.
-    """
-    link, host = _wedged_link(monkeypatch, behind=_ProxyBackend)
-
-    await _polls(link, 4)
-
-    assert len(host.clients) == 4
-
-
 class _ProxyWithABus:
     """A proxy's backend that keeps something of its own under bleak's name."""
 
     def __init__(self, bus: _Bus) -> None:
         self._bus = bus
-
-
-async def test_a_backend_that_is_not_bluezs_is_left_alone_whatever_it_holds(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """Whose client it is is told by where its class lives, not by what it holds.
-
-    The reach for the bus goes through bleak's private attributes, and only
-    BlueZ's client is known to keep a connection to the system bus there.
-    Another backend's attribute of the same name is its own affair: it is not
-    closed for it, and a hang-up that fails behind it parks nothing.
-    """
-    link, host = _wedged_link(monkeypatch, behind=_ProxyWithABus)
-
-    await _polls(link, 4)
-
-    assert len(host.clients) == 4  # nothing was parked: it went on dialling
-    assert host.open_buses == 4  # and what the proxy held was not closed
 
 
 # bleak's BlueZ client by its module, but without the attribute this
@@ -1726,23 +1692,38 @@ async def test_a_hang_up_that_was_answered_with_an_error_is_not_a_wedge(
     assert not [r for r in caplog.records if r.levelname == "WARNING"]
 
 
-async def test_a_proxy_that_times_out_is_not_blamed_on_bluez(
+@pytest.mark.parametrize(
+    "behind",
+    [_ProxyBackend, _ProxyWithABus],
+    ids=["with nothing of its own", "with something under bleak's name"],
+)
+async def test_a_client_that_is_not_bluezs_is_neither_kept_nor_blamed_on_bluez(
     monkeypatch: pytest.MonkeyPatch,
     caplog: pytest.LogCaptureFixture,
+    behind: type,
 ) -> None:
-    """The warning names BlueZ and its remedy, so it is for BlueZ's client only.
+    """A hang-up that fails behind a proxy's client parks nothing and blames nobody.
 
-    A lamp behind a Bluetooth proxy has no BlueZ under it. A disconnect that
-    times out there is the proxy's affair, and telling its owner to
-    power-cycle the host's adapter would send them to the wrong machine.
+    The bound on clients is for connections to the system bus, and the
+    warning names BlueZ and its remedy: both are for BlueZ's client only. A
+    proxy's client has no such connection to close, so refusing to dial over
+    it only takes the lamp away, and a hang-up that times out behind it is
+    the proxy's affair - telling its owner to power-cycle the host's adapter
+    would send them to the wrong machine.
+
+    Whose client it is is told by where its class lives, not by what it
+    holds. Only BlueZ's client is known to keep a connection to the system
+    bus under bleak's private name; another backend's attribute of that name
+    is its own affair, and is not closed for it.
     """
-    link, host = _wedged_link(monkeypatch, behind=_ProxyBackend, backs_off=True)
+    link, host = _wedged_link(monkeypatch, behind=behind, backs_off=True)
     clock = _Clock()
     monkeypatch.setattr(link_module, "monotonic", clock)
 
     await _ticks(link, clock, 6)
 
-    assert len(host.clients) == 6
+    assert len(host.clients) == 6  # nothing was parked, and no dial held back
+    assert host.open_buses == 6  # and nothing behind a client was closed
     assert not [r for r in caplog.records if r.levelname == "WARNING"]
 
 
