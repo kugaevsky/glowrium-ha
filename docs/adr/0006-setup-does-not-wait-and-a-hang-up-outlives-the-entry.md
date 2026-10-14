@@ -4,7 +4,9 @@
 - **Date:** 2026-08-24 (setup returns at once); 2026-10-04 (a hang-up runs on
   `hass`; the entry is taken before advertisements; HA's own stop hangs up);
   amended 2026-10-11 (the entry and both lifetimes of work are the keeper's,
-  ADR 0016); 2026-10-13 (what a stop cut short or killed leaves, measured)
+  ADR 0016); 2026-10-13 (what a stop cut short or killed leaves, measured);
+  2026-10-14 (an unload whose wait is cancelled, and why a hang-up is given
+  less once Home Assistant stops: moved here from ARCHITECTURE.md)
 
 ## Context
 
@@ -49,13 +51,16 @@ left with no process behind it is the one link the lamp has to give.
   (the keeper's `run_lasting`; the bench's keeper holds its own - until
   2026-10-11 the coordinator kept it itself there), and the deadline of
   whoever gave the client up ends only their
-  wait for it. Unload waits up to `_STOP_TIMEOUT` (3 s) for the lock and as
-  long again for the hang-up.
+  wait for it. Unload waits up to `_STOP_TIMEOUT` (3 s) for the lock - and
+  takes the client even if that wait is cancelled - and as long again for
+  the hang-up.
 - A stopped coordinator holds no link and takes no new one; the check sits
   after the subscription, the last thing a connect waits for before it commits.
 - `EVENT_HOMEASSISTANT_STOP` calls `async_shutdown`: the link is dropped the
   moment the stop is announced, without waiting for the lock, and every
-  hang-up from then on gets `_STOP_TIMEOUT` rather than `_HANG_UP_TIMEOUT`.
+  hang-up from then on gets `_STOP_TIMEOUT` rather than `_HANG_UP_TIMEOUT`:
+  Home Assistant waits for whatever starts once it has begun to stop, and
+  the grace period is not the coordinator's to spend.
 
 ## Consequences
 

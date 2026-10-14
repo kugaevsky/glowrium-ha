@@ -4,7 +4,9 @@
 - **Date:** 2026-10-04 (every client let go of through one hang-up);
   2026-10-05 (the bus closed by hand, with a canary against bleak's own client);
   2026-10-13 (what the wait of a dial costs, and why the assertion is not
-  taken for a lost link: moved here from ARCHITECTURE.md, #60)
+  taken for a lost link: moved here from ARCHITECTURE.md, #60);
+  2026-10-14 (why a dial waits, what holds the hang-up's ceiling under a
+  command's, and the one case the wait leaves: moved here likewise)
 
 ## Context
 
@@ -36,9 +38,12 @@ closed" have each cost an incident or would have:
   client is taken: Home Assistant's wrapper forgets it.
 - If the attributes have moved or the bus will not close, the client is kept
   (`Unclosed`, held for the lamp across reloads): nothing is dialled over it,
-  and the tick tries the hang-up again - one connection held, not one a tick.
+  and the tick tries the hang-up again - one connection held, not one a tick
+  (but for the one case under Consequences).
 - A dial waits for any hang-up still under way (2026-10-08): until a hang-up
-  has ended nobody knows whether its client will close.
+  has ended nobody knows whether its client will close. The lamp has one
+  slot, and a connect made while the old link is still closing either fails
+  or is handed the very link being closed.
 - The lost-link callback hangs up only the client the link holds; one still
   inside `establish_connection` is bleak's to clean up.
 
@@ -57,6 +62,13 @@ closed" have each cost an incident or would have:
   it is as long as BlueZ takes to disconnect; on a stack that will not hang
   up a command takes up to ten seconds longer to fail, and the third
   unanswered hang-up, with its repair, comes some twenty seconds later.
+- The wait is inside a command's budget, so `_HANG_UP_TIMEOUT` has to stay
+  below `_COMMAND_TIMEOUT`: otherwise a link that will not confirm it has
+  closed leaves the command's retry no time to happen. One case is left, the
+  one in which more than one client can come to be kept: a command's dial
+  under way when the entry is unloaded is no hang-up to wait for, and on a
+  stack that will not hang up, with a bus that will not close, it ends in
+  two clients kept.
 - A Bluetooth proxy's backend has no bus; `_is_bluez` tells by the module the
   backend's class lives in, not by what the object holds.
 

@@ -4,7 +4,8 @@
 - **Date:** 2026-10-08 (the design chosen); built 2026-10-08 to 2026-10-09
   (#21); amended 2026-10-11 (the watchers are the keeper's, ADR 0016);
   2026-10-13 (what the link's own flows catch: moved here from
-  ARCHITECTURE.md, #60)
+  ARCHITECTURE.md, #60); 2026-10-14 (the order of the link's deadlines, the
+  three tries of a dial and a command's bare link: moved here likewise)
 
 ## Context
 
@@ -64,6 +65,31 @@ cannot be broken from the other module, and no test has to catch it.
   both what the library raises and what a turn has made of it (`_LOST`). One
   that caught the library's set alone would let the link's own errors out of
   a task nobody waits for.
+- The link's deadlines stand in an order. A dial's ceiling
+  (`_CONNECT_TIMEOUT`, 20 s) covers the wait for the lock and every try, and
+  is below a command's (`_COMMAND_TIMEOUT`, 25 s): a background connect
+  holds the lock while a command waits for it inside its own budget, and a
+  holder allowed longer than the waiter makes a switch press fail on a
+  reachable lamp. It is below the tick's interval (30 s), so the connect one
+  tick started is over before the next, and no shorter than the 20 s the
+  library gives one try of its own - which does not hand the library the
+  whole dial. It is not raised further: under 20 s the dials that got
+  through were spread about evenly up to the ceiling (2026-10-06, #20),
+  which reads as a chance per second of trying that does not grow with the
+  wait; if so, what a cut costs is the wait for the next tick, while every
+  second added is a second longer before a command to a lamp that is not
+  there fails.
+- A dial has three tries and not the library's four: each can burn the
+  library's 20 s and a backoff with the lock held, and the tries are for the
+  ones that fail fast. The library is given no `ble_device_callback`: it
+  takes the argument and never calls it (4.6 and 4.7 alike). Asking a link
+  that is already held has a ceiling of its own (`_ASK_TIMEOUT`, 10 s):
+  there is no dial in it, and a probe that is slow to give its verdict keeps
+  a dead link held meanwhile.
+- A command takes its link bare: it needs the link and its own write, and
+  priming costs the state request, the wait for its answer and, the first
+  time, the device-info read, all inside the command's budget. The tick has
+  the first exchange made on such a link afterwards.
 - `answered()` is a convention the device half has to keep: a greet that read
   before calling it would spend the link for nothing on BlueZ. A read alone
   is never taken for an answer.

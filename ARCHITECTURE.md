@@ -148,31 +148,29 @@ that answers: nothing is read.
 > the edge of range. The measurement, and what was decided on it, is ADR 0002.
 
 - **What is asked for.** `STATE_KEYS` is what the vendor app asks for, plus
-  the clock (`0x05`), which the app does not request and the lamp reports all
-  the same. Other ids have not been tried: add one only after measuring it.
-- **The answer is waited for, briefly** (`_REPORT_TIMEOUT`, 3 s): a model may
-  spread its map over several notifications, so the keys of every
-  notification since the request are collected, and priming is done when they
-  cover `STATE_KEYS`. A lamp that answers in part has still answered. Only
-  what arrives *after* the request counts.
-- **Reading is what is left for a lamp that will not report.** A G8
-  (`Glowrium-C064`) answers the request with ATT `Insufficient authorization`;
-  another may acknowledge it and say nothing. Then the characteristic is
-  read, at the price of the link on BlueZ. The order is one, for every lamp
-  and every time: asked, and read only then. The read carries keys
-  `0x00`–`0x15` and nothing above, so the indicator, the lighting mode, the
-  ramp and DST arrive only through the request.
+  the clock (`0x05`), which the lamp reports all the same. Other ids have not
+  been tried: add one only after measuring it.
+- **The answer is waited for, briefly** (`_REPORT_TIMEOUT`, 3 s): the keys of
+  every notification since the request are collected - a model may spread its
+  map over several - and priming is done when they cover `STATE_KEYS`. A lamp
+  that answers in part has still answered. Only what arrives *after* the
+  request counts.
+- **Reading is what is left for a lamp that will not report:** one that
+  refuses the request (a G8, `Glowrium-C064`, answers ATT `Insufficient
+  authorization`) or acknowledges it and says nothing - at the price of the
+  link on BlueZ. Asked, and read only then, for every lamp and every time.
+  The read carries keys `0x00`–`0x15` and nothing above: the indicator, the
+  lighting mode, the ramp and DST arrive only through the request.
 - **A refusal is told by what the error says** — an authorization or
   permission error: the ATT code where the error is bleak's own
   (`BleakGATTProtocolError.code`), the text otherwise — and not by anything
   having worked before it: a link that is gone answers `Not connected` to
-  everything. One does not end the asking. After
-  `_REFUSALS_THAT_END_THE_ASKING` (3) in a row the lamp is not asked again
-  for as long as the coordinator lives: it is only read, on every connect,
-  and the log says so once. A request the lamp accepts starts the count
-  again; a link that drops under the request counts as nothing and starts
-  nothing again. Three in a row are three requests, not three connects: the
-  question put to a silent link is the same request.
+  everything. After `_REFUSALS_THAT_END_THE_ASKING` (3) in a row the lamp is
+  only read, on every connect, for as long as the coordinator lives, and the
+  log says so once. A request the lamp accepts starts the count again; a
+  link that drops under the request counts as nothing and starts nothing
+  again. Three in a row are three requests, not three connects: the question
+  put to a silent link is the same request.
 - **The device-info string is the one read left, and it comes last,** once
   per session (below). On BlueZ that link is then spent, and the tick makes
   another thirty seconds later, on which nothing is read at all. A command's
@@ -193,22 +191,18 @@ Parsed by `_parse_device_info` into a `key:value` dict:
 - `version` → **firmware version**.
 - `devid` → **serial number**.
 
-**It arrives after the entities exist, and has to be carried to them.** Setup
-does not wait for the first connect, the string is the last thing read on that
-first link, and Home Assistant takes an entity's description of its device
-once, when the entity is added. So three things hold it together:
-
-- An entity describes only what is known when it is built. A field left out of
-  a `DeviceInfo` is left alone in the device registry; a field given as `None`
-  *is* the value, and wipes what an earlier session learned.
-- When the string has been read, the coordinator tells its keeper, which
-  writes model, model id, firmware and serial number into the device registry
-  (`EntryKeeper.lamp_described`), passing `UNDEFINED` for anything the lamp
-  did not say.
-- The model id is kept with the config entry (`CONF_MODEL_ID` in
-  `entry.data`), and handed to the next coordinator when it is built: the
-  entity that offers a model's presets is built before the session has read
-  anything.
+**It arrives after the entities exist, and has to be carried to them**
+(ADR 0006): it is the last thing read on the first link, and Home Assistant
+takes an entity's description of its device once, when the entity is added.
+So an entity describes only what is known when it is built: a field left out
+of a `DeviceInfo` is left alone in the device registry, while one given as
+`None` *is* the value, and wipes what an earlier session learned. When the
+string has been read the coordinator tells its keeper, which writes model,
+model id, firmware and serial number into the device registry
+(`EntryKeeper.lamp_described`, with `UNDEFINED` for anything the lamp did not
+say) and keeps the model id with the config entry (`CONF_MODEL_ID` in
+`entry.data`). The next coordinator is built with it: the entity that offers
+a model's presets is built before anything is read.
 
 It is still read once in every session: what was remembered is not a reading
 (ADR 0002).
@@ -252,13 +246,11 @@ A device frame may declare more pairs in its map header than the frame actually
 carries: a G8 sends 55 bytes headed `0xac` — a promise of 12 pairs — containing
 11. The G7 has never been observed to do this.
 
-So device frames and our own payloads are decoded differently:
-
-- `decode_frame(data)` returns `(value, short)` and is used for anything the
-  device sends. A map that ends early yields the pairs that *did* arrive, with
-  `short=True`, instead of throwing them all away.
-- `decode(data)` stays strict — a short map in a payload we encoded ourselves is
-  a bug, not a wire condition.
+So `decode_frame(data)`, used for anything the device sends, returns
+`(value, short)`: a map that ends early yields the pairs that *did* arrive,
+with `short=True`, instead of throwing them all away. `decode(data)` stays
+strict — a short map in a payload we encoded ourselves is a bug, not a wire
+condition.
 
 What is tolerated is the buffer ending, and only that. And only the
 outermost map may end early: a map nested inside a value is all or nothing,
@@ -268,35 +260,32 @@ so the pair it sits in is dropped whole rather than kept with half a value.
 
 A pair that is there and cannot be read - its value a tag, its key anything
 but a property id - is not a pair that did not arrive: the decoder raises
-`cbor.UnreadableItemError`. It does not step over the item, so nothing behind
-it is found ([#40](https://github.com/kugaevsky/glowrium-ha/issues/40)); what
-was ahead of it was read as from any whole frame, and the error carries those
-pairs (`ahead`). The mirror keeps them (`Mirror.take`), counts the frame as a
-report, and says so - once per session as a warning. Why the frame is not
-dropped instead is ADR 0007.
+`cbor.UnreadableItemError`, which carries the pairs ahead of the item
+(`ahead`). It does not step over the item, so nothing behind it is found
+([#40](https://github.com/kugaevsky/glowrium-ha/issues/40)). The mirror keeps
+those pairs (`Mirror.take`), counts the frame as a report, and says so once
+per session in a warning. Why the frame is not dropped instead is ADR 0007.
 
-Trailing bytes are an error on both paths, raised as `cbor.TrailingBytesError`
-(a `ValueError` subclass carrying the byte count), and the frame is dropped
-whole (ADR 0007). The first such frame of a session is said in a warning.
+Trailing bytes are an error on both paths (`cbor.TrailingBytesError`, a
+`ValueError` subclass carrying the byte count), and the frame is dropped
+whole, the first of a session with a warning (ADR 0007).
 
-A frame is printed in the debug log and nowhere else, and without what says
-where the lamp is (`mirror._for_the_log`): the coordinates and the times the
-lamp works out from them are found by their bytes and put down as `xx`. The
-warnings say what was wrong and where the frame is, and carry none of it;
-they name the lamp's model and firmware only where each is what it claims to
-be (`unknown` while the lamp has not been read, `not as expected` otherwise).
-How the search goes, and what it cannot find, is ADR 0012.
+A frame is printed in the debug log and nowhere else, with what says where
+the lamp is put down as `xx` (`mirror._for_the_log`). The warnings say what
+was wrong and where the frame is, and carry none of it; they name the lamp's
+model and firmware only where each is what it claims to be (`unknown` while
+the lamp has not been read, `not as expected` otherwise). How the search
+goes, and what it cannot find, is ADR 0012.
 
 ### Frames that cannot be decoded, and frames of no use
 
 Two more kinds of frame are dropped, and each is said as the frame with
-trailing bytes is: the first of a session in a warning that names the lamp
-and carries no byte of the frame, every one in the debug log.
-
-- One that cannot be decoded at all: a tag at the top, a map of indefinite
-  length, noise. The warning says what was wrong in the decoder's own words.
-- One that decodes without a fault to nothing that can be used: something
-  other than a map of properties, or a map with nothing in it.
+trailing bytes is - the first of a session in a warning that names the lamp
+and carries no byte of the frame, every one in the debug log: one that cannot
+be decoded at all (a tag at the top, a map of indefinite length, noise; the
+warning says what was wrong in the decoder's own words), and one that decodes
+without a fault to nothing that can be used (something other than a map of
+properties, or a map with nothing in it).
 
 None of the three is a report, and to the state request none is an answer:
 the lamp is read instead, as a silent one is, on every connect. That a frame
@@ -314,19 +303,17 @@ acknowledged, which is no report: it moves no number and wakes nobody.
 Nothing is ever taken out, so what the mirror holds can be hours old; the
 lamp's clock is dated by the host's whenever it comes in.
 
-Reports are numbered. `reports` is how many there have been and
-`reported_since(n)` the ids the reports numbered above `n` carried: priming
-asks whether that covers `STATE_KEYS`, vouching for a failed write whether it
-meets what the write set. `next_report()` returns on the first report after
-the call - never on an echo. The coordinator's one intake, `_ingest`, notes
-that the lamp answered, whatever the frame says, and tells the entities when
-the frame was a report.
+Reports are numbered: `reports` is how many there have been,
+`reported_since(n)` the ids the reports numbered above `n` carried - what
+priming and the vouching for a failed write ask - and `next_report()`
+returns on the first report after the call, never on an echo. The
+coordinator's one intake, `_ingest`, notes that the lamp answered, whatever
+the frame says, and tells the entities when the frame was a report.
 
-The mirror is bounded: it always keeps the ids the integration knows
-(`const.KNOWN_KEYS`) and every echo, and of the ids nobody named the first 64
-a session brings. A property beyond that is not stored, and counted each
-time it is reported. Why it is a module of its own, and bounded so, is ADR
-0013.
+The mirror is bounded: it keeps the ids the integration knows
+(`const.KNOWN_KEYS`), every echo, and the first 64 other ids a session
+brings; a property beyond that is not stored, and counted each time it is
+reported. Why it is a module of its own, and bounded so, is ADR 0013.
 
 ### What a value is
 
@@ -354,20 +341,19 @@ one of three answers:
 
 The check is made where a value is read, and not at the mirror's intake. What
 cannot be used is shown as `unknown` - never as what the entity showed before
-the last restart, which stands in only while nothing has been reported - and
-is never written back: a command sends a default where there is one, and is
-refused where there is nothing else to build its frame on. The log says it
-once a session for each property, without the value, and the diagnostics say
-`not as expected`. All of it, and why, is ADR 0015, and ADR 0011 for what an
-entity remembers. No platform reads `coordinator.state`: a test reads them.
+the last restart - and is never written back: a command sends a default where
+there is one, and is refused where there is nothing else to build its frame
+on. The log says it once a session for each property, without the value, and
+the diagnostics say `not as expected`. All of it, and why, is ADR 0015, and
+ADR 0011 for what an entity remembers. No platform reads `coordinator.state`:
+a test reads them.
 
 The operating mode is the mode whose flag says yes, Manual when both say no,
 and cannot be used where no flag says yes and one of them is no flag; the
 entities of one mode stay available then, as they do while it is not known.
-`UNUSABLE` is no number and no bytes, and refuses to be truth-tested. A model
-whose layout differs from the table reads `unknown` where it differs: a new
-row, with the frame or the diagnostics download that shows it, is how that
-is mended.
+A model whose layout differs from the table reads `unknown` where it
+differs: a new row, with the frame or the diagnostics download that shows
+it, is how that is mended.
 
 ### Property-key table
 
@@ -535,17 +521,15 @@ or read from a lamp that will not report; if `0x14` reads `False`,
 3.  { 0x14: True }                        # enable light output
 ```
 
-- These writes are made on the turn of the first exchange, which the link
-  makes while it holds its lock, so the bring-up completes as one step before
-  any user command is serviced.
+- These writes are made on the turn of the first exchange, under the link's
+  lock, so the bring-up completes before any user command is serviced.
 - It is **idempotent**: a device already activated reports `0x14 = True` and
   the sequence is skipped. `0x14` only clears on a factory reset.
 - Only the boolean `False` is a lamp to bring up, and only the boolean `True`
   settles the question for the session (ADR 0015).
-- **Nothing is waited for** beyond the state request: the exchange holds the
-  link's lock, and a command may be queued behind it. A flag that comes later
-  than the lamp's answer is in the mirror by the next first exchange, and the
-  lamp is brought up then.
+- **Nothing is waited for** beyond the state request: a command may be queued
+  behind the exchange. A flag that comes later than the lamp's answer is in
+  the mirror by the next first exchange, and the lamp is brought up then.
 - A lamp that is only read is judged the same way. **Not seen on any lamp,
   and on BlueZ likely not to work in that exchange:** measured on a G7, the
   write that follows a read of this lamp fails there, because the read has
@@ -572,12 +556,9 @@ available = connected or advertising  # Link.in_reach
   it, and was seen not to advertise while a link is held (one G7 under BlueZ,
   2026-10-06). Presence held all the same: the host's scanner goes on listing
   a device it is connected to. Through a Bluetooth proxy that is not known.
-- Whether the lamp is advertising is what the Bluetooth stack tells the link:
-  seeded with `bluetooth.async_address_present` as the watching begins
-  (`Link.begin`), set by the advertisement callback, and cleared by
-  `bluetooth.async_track_unavailable`. The callbacks are the keeper's; they
-  hand what they see to `Link.advertising`.
-- Reconnects happen **silently underneath** an entity that stays `available`.
+- Whether the lamp is advertising is what the keeper's watchers tell
+  `Link.advertising`, and `Link.begin` what is known as the watching begins.
+  Reconnects happen **silently underneath** an entity that stays `available`.
 - When `available` changes, the log says so at INFO, once each way: `is out of
   reach`, `is back in reach` (`Link.log_reach`), judged by the same expression
   as the entities. The entities are told wherever either half of it can
@@ -594,23 +575,20 @@ available = connected or advertising  # Link.in_reach
 
 ### Reconnect
 
-The coordinator is split in two (ADR 0008): the **link** (`link.py`) - taking
-a client, holding it, deciding when the lamp is spoken to, letting go of it -
-and the **device** (`coordinator.py`), which knows what is said. No client
-leaves the link's module, and no error of the Bluetooth library does. The
-device half is handed a **turn**, on which it writes, reads and says that the
-lamp answered - inside the first exchange on a link (`_greet`) and the
+The coordinator is split in two (ADR 0008). The **link** (`link.py`) takes a
+client, holds it, decides when the lamp is spoken to and lets go of it; no
+client leaves its module, and no error of the Bluetooth library does. The
+**device** half (`coordinator.py`) knows what is said, and says it on a
+**turn** it is handed: in the first exchange on a link (`_greet`) and the
 question for a silent one (`_probe`), which the link calls when it decides
-to, and inside a command, which it hands to `Link.send`. The link is handed
-its dial: in the tests, a scripted lamp.
+to, and in a command, which it hands to `Link.send`. The link is handed its
+dial: in the tests, a scripted lamp.
 
-The device half is **kept** (ADR 0016): everything it needs of whatever runs
-it, it asks of its **keeper** (`coordinator.Keeper`). Home Assistant's is
-`EntryKeeper` (`keeper.py`), built from the instance and the config entry;
-`tools/bench.py` has one of its own, and the tests a scripted one. Home
-Assistant's watchers - the advertisement callback, the presence tracker, the
-timer - are the keeper's, and tell the link two things: the lamp is
-advertising or is not (`Link.advertising`), and a tick (`Link.tick`).
+The device half is **kept** (ADR 0016): what it needs of whatever runs it, it
+asks of its **keeper** (`coordinator.Keeper`) - `EntryKeeper` (`keeper.py`)
+for a config entry. Home Assistant's watchers are the keeper's, and tell
+the link two things: the lamp is advertising or is not
+(`Link.advertising`), and a tick (`Link.tick`).
 
 **Two triggers, one connect at a time.** The advertisement callback starts a
 connect when the lamp reappears and no link is held; the tick, every
@@ -620,27 +598,17 @@ advertisements do not start a connect storm, and both stand back while the
 Bluetooth stack will not hang up (below). A command never does.
 
 **The dial and its ceiling.** A connect (`Link.connect`, serialized by an
-`asyncio.Lock`) uses `bleak_retry_connector.establish_connection`, subscribes
-to notifications, and makes the first exchange on the link (see
-[Priming state on connect](#priming-state-on-connect)). The whole thing is
-capped at `_CONNECT_TIMEOUT` (20 s), including the wait for the lock, and
-deliberately shorter than `_COMMAND_TIMEOUT`: a background connect holds the
-lock while a command waits for it inside its own budget, so a holder allowed
-longer than the waiter makes a switch press fail on a reachable lamp. It is
-shorter than `_RECONNECT_INTERVAL` too, so the connect spawned by one tick is
-over before the next, and no shorter than what the library gives one try of
-its own (20 s) - which does not hand the library the whole dial: the ceiling
-also covers the wait for the lock and every try after the first. A dial has
-`_CONNECT_ATTEMPTS` (3) tries rather than the library's 4: each can burn a
-20 s bleak timeout plus a backoff, all while the lock is held, and the tries
-are for the ones that fail fast. The library is given no
-`ble_device_callback`: it takes the argument and never calls it (4.6 and 4.7
-alike). A dial that
-runs out of time after the link has been taken keeps that link, and the log
-says that it is held rather than `failed`. Asking a link that is already
-held - priming one a command made, probing a silent one - has a ceiling of
-its own, `_ASK_TIMEOUT` (10 s): there is no dial in it, and a probe that is
-slow to give its verdict keeps a dead link held meanwhile.
+`asyncio.Lock`) dials through `bleak_retry_connector.establish_connection`
+with `_CONNECT_ATTEMPTS` (3) tries, subscribes to notifications, and makes
+the first exchange on the link (see
+[Priming state on connect](#priming-state-on-connect)). All of it, the wait
+for the lock included, is capped at `_CONNECT_TIMEOUT` (20 s): below a
+command's ceiling and below the tick's interval, and no shorter than one try
+of the library. A dial that runs out of time after the link has been taken
+keeps that link, and the log says that it is held rather than `failed`.
+Asking a link that is already held - priming one a command made, probing a
+silent one - has a ceiling of its own, `_ASK_TIMEOUT` (10 s). Why the
+ceilings stand in that order, and why three tries, is ADR 0008.
 
 What those numbers rest on, all of it measured on the G7's host; the records
 of the first three are in
@@ -648,26 +616,19 @@ of the first three are in
 
 - **Under 10 s** (a night of poor reception, 2026-10-06): of 517 dials 426
   were cut off by the ceiling, 181 of them with a connection made inside the
-  dial and lost in its last second. Those that got through took 6.9 s at the
-  median and 9.7 s at the ninetieth percentile - piled up against the
-  ceiling.
+  dial and lost in its last second.
 - **Under 20 s** (an afternoon of poor reception, 2026-10-06): of 80 dials 64
-  got through. The 63 whose time the log gives took 10.6 s at the median and
-  17.4 s at the ninetieth percentile, 35 of them more than 10 s. From 4 s up,
-  each two seconds to the ceiling saw 10, 8, 7, 13, 6, 5, 6 and 5 of them
-  through, which reads as a chance per second of trying that does not grow
-  with the wait; if so, what a cut costs is the wait for the next tick, while
-  every second added is a second longer before a command to a lamp that is
-  not there fails. So it is not raised further.
-- **What ends a link** (a trace of the controller, 2026-10-06): four drops
-  in fifteen minutes, all `0x08` connection timeout, and 23 connects that
-  came to nothing, all `0x3e`. Neither the host nor the lamp asked for a
-  link to end. Some five seconds into each link the lamp asked for a
-  supervision timeout of 5 s and BlueZ granted it, so a link older than that
-  was dropped after five seconds in which nothing of the lamp's was heard.
+  got through, 35 of the 63 whose time the log gives in more than 10 s. From
+  4 s up, each two seconds to the ceiling saw 10, 8, 7, 13, 6, 5, 6 and 5 of
+  them through, which reads as a chance per second of trying that does not
+  grow with the wait. So it is not raised further (ADR 0008).
+- **What ends a link** (a trace of the controller, 2026-10-06): every drop
+  was a connection timeout (`0x08`); neither the host nor the lamp asked for
+  a link to end. Some five seconds into each link the lamp asked for a
+  supervision timeout of 5 s and BlueZ granted it, so an older link was
+  dropped after five seconds in which nothing of the lamp's was heard.
 - **How long a link lives:** the one timed since state stopped being read
-  (2026-10-05) held 2 h 44 min, went down by itself, and was rebuilt and
-  primed 43 s later. One link, not a rate.
+  (2026-10-05) held 2 h 44 min (ADR 0001). One link, not a rate.
 
 **Setup does not wait for any of this.** The first connect is a background task
 tied to the config entry, so `async_setup_entry` returns in milliseconds whether
@@ -677,77 +638,58 @@ anything registers for advertisements - the keeper is built with it - so the
 connect a replayed advertisement starts dies with the entry (ADR 0006).
 
 **Every client the coordinator lets go of is hung up by one method, and its
-bus is closed whatever comes of that.** bleak's BlueZ backend opens a D-Bus
-connection for each client, and calling `disconnect()` is not the same as
-that bus being closed (ADR 0003). So the link lets go of no client
-without going through `Link.hang_up`, which disconnects the client under a
-ceiling of its own (`_HANG_UP_TIMEOUT`, 10 s) and then - returned, raised,
-timed out or cancelled - closes the bus behind it if it is still open
-(`_close_bus`, through bleak's private attributes: there is no public way).
-A client whose bus will not close is **kept** for the lamp (`Unclosed`),
-through a reload as well: nothing is dialled over it, by the tick or by a
-command, and the tick tries its hang-up again. The lost-link callback hangs
-up only the client the link holds; one still inside `establish_connection`
-is bleak's.
+bus is closed whatever comes of that** (ADR 0003). `Link.hang_up` disconnects
+the client under a ceiling of its own (`_HANG_UP_TIMEOUT`, 10 s) and then -
+returned, raised, timed out or cancelled - closes the D-Bus connection bleak
+opened for it, if it is still open (`_close_bus`, through bleak's private
+attributes: there is no public way). A client whose bus will not close is
+**kept** for the lamp (`Unclosed`), through a reload as well: nothing is
+dialled over it, by the tick or by a command, and the tick tries its hang-up
+again. The lost-link callback hangs up only the client the link holds; one
+still inside `establish_connection` is bleak's.
 
-**A dial waits for a hang-up still under way:** until it has ended, nothing
-knows whether its client will close. `Link.open()` refuses what is already
-known (a stopped link, a client already kept), waits for the hang-ups under
-way, and refuses again when the wait has shown it. So a command's retry
-dials only after the hang-up of the client it gave up on - the lamp has one
-slot, and a connect made while the old link is still closing either fails or
-is handed the very link being closed - and a connect whose subscription
-failed has its client hung up before the error reaches a caller that may
-dial again. The wait is inside a command's budget, so `_HANG_UP_TIMEOUT` has
-to stay below `_COMMAND_TIMEOUT`: otherwise a link that will not confirm it
-has closed leaves the retry no time to happen. One case is left: a command's
-dial under way when the entry is unloaded is no hang-up to wait for, and on
-a stack that will not hang up, with a bus that will not close, it ends in
-two clients kept.
+**A dial waits for a hang-up still under way** (ADR 0003). `Link.open()`
+refuses what is already known (a stopped link, a client already kept), waits
+for the hang-ups under way, and refuses again when the wait has shown it. So
+a command's retry dials only after the hang-up of the client it gave up on,
+and a connect whose subscription failed has its client hung up before the
+error reaches a caller that may dial again. The wait is inside a command's
+budget, so `_HANG_UP_TIMEOUT` stays below `_COMMAND_TIMEOUT`.
 
-**A hang-up is the one piece of background work not tied to the config entry.**
-Everything else dies with the entry. A hang-up runs as a task on `hass` — the
-keeper's `run_lasting` — and the deadline of whoever gave the client up ends
-at most their *wait* for it, never the hang-up. Unload waits up to
-`_STOP_TIMEOUT` (3 s) for the lock - and takes the client even if that wait
-is cancelled - and as long again for the hang-up; with nothing held it
-returns at once. **A stopped coordinator holds no link and takes no new
-one:** it refuses to dial, and a connect that was already on its way is hung
-up instead of kept. **Home Assistant stopping is not an unload:** it runs no
-entry's unload callbacks, so the setup listens for
-`EVENT_HOMEASSISTANT_STOP` and has the coordinator ask BlueZ to drop the
-link the moment the stop is announced, without waiting for the lock. From
-then on every hang-up gets `_STOP_TIMEOUT` rather than `_HANG_UP_TIMEOUT`:
-Home Assistant waits for whatever starts once it has begun to stop, and the
-grace period is not the coordinator's to spend. Why a hang-up outlives the
-entry, and a stop is listened for, is ADR 0006.
+**A hang-up is the one piece of background work not tied to the config entry**
+(ADR 0006). It runs as a task on `hass` — the keeper's `run_lasting` — and
+the deadline of whoever gave the client up ends at most their *wait* for it,
+never the hang-up. Unload waits up to `_STOP_TIMEOUT` (3 s) for the lock and
+as long again for the hang-up; with nothing held it returns at once. **A
+stopped coordinator holds no link and takes no new one:** it refuses to
+dial, and a connect that was already on its way is hung up instead of kept.
+**Home Assistant stopping is not an unload:** it runs no entry's unload
+callbacks, so the setup listens for `EVENT_HOMEASSISTANT_STOP` and has the
+coordinator ask BlueZ to drop the link the moment the stop is announced,
+without waiting for the lock. From then on every hang-up gets
+`_STOP_TIMEOUT` rather than `_HANG_UP_TIMEOUT`.
 
 Measured on 2026-10-12 (a G7, BlueZ 5.82, one run of each; the record is in
 [#38](https://github.com/kugaevsky/glowrium-ha/issues/38)): a stop cut short
-at its ten seconds leaves nothing — the link was gone from the controller
-about three seconds after the stop was asked for. A process that is killed, or
-told to stop while it is still starting, leaves its link at the controller,
-and the next process was primed 10.9 s after its start with that link never
-seen to drop, against 17.8 s after a stop that ran to its end. So setup clears
-nothing before its first dial.
+at its ten seconds leaves nothing at the controller. A process that is
+killed, or told to stop while it is still starting, leaves its link there,
+and the next process was primed sooner than after a stop that ran to its
+end, with that link never seen to drop. So setup clears nothing before its
+first dial.
 
-**A stack that will not hang up is a state, not an event** (ADR 0004). Seen
-on a host with BlueZ 5.82: bluetoothd went on reporting the lamp connected
-after the controller had lost the link, answered no `Disconnect`, and
-nothing a client did ended it. A run of hang-ups that BlueZ leaves
-**unanswered** is therefore counted, and from the third in a row
-(`_STACK_FAULT_AFTER`) it is a fault: the background dials back off,
-doubling from the tick's interval to five minutes
-(`_STACK_FAULT_BACKOFF_MAX`), a warning says once what it is and what clears
-it, and a **repair** goes up under the config entry's id. Only silence
-counts, and the backoff never holds a command back. The first thing the lamp
-says ends the episode, and the repair comes down then, or when the
-coordinator stops watching. A coordinator that has stopped watching
-announces no episode and ends none: an episode is called over by the
-coordinator that announced it. The lamp's name goes into the repair through
-`identity.as_text` - a repair is rendered as Markdown - as it does into the
-dialog for a discovered lamp, which is Markdown too, and into its line among
-the discovered devices.
+**A stack that will not hang up is a state, not an event** (ADR 0004). A run
+of hang-ups that BlueZ leaves **unanswered** is counted, and from the third
+in a row (`_STACK_FAULT_AFTER`) the background dials back off, doubling from
+the tick's interval to five minutes (`_STACK_FAULT_BACKOFF_MAX`), a warning
+says once what it is and what clears it, and a **repair** goes up under the
+config entry's id. Only silence counts, and the backoff never holds a
+command back. The first thing the lamp says ends the episode, and the
+repair comes down then, or when the coordinator stops watching; one that
+has stopped watching announces no episode and ends none it did not
+announce. The lamp's name goes into the repair through `identity.as_text` -
+a repair is rendered as Markdown - as it does into the dialog for a
+discovered lamp, which is Markdown too, and into its line among the
+discovered devices.
 
 **`is_connected` is a claim; an answer is evidence** (ADR 0004). A link on
 which the state request failed without being a refusal is given `_LOST_GRACE`
@@ -768,20 +710,16 @@ and the link stands (ADR 0008).
 holds the lock across connect-and-write, so a command cannot race the periodic
 GATT churn; if the write still fails mid-command, the link hangs up,
 reconnects once and retries before the error is surfaced. **A command
-connects without priming** (`Link.send` takes its link bare): it needs the
-link and its own write, and priming costs the state request, the wait for
-its answer and, the first time, the device-info read, all inside the
-command's budget. The tick notices a link nothing has primed (`Link.primed`)
-and has the first exchange made on it afterwards.
+connects without priming** (`Link.send` takes its link bare; why is
+ADR 0008): the tick notices a link nothing has primed (`Link.primed`) and
+has the first exchange made on it afterwards.
 
 **A failed write is checked against what the device reports before it is
-believed** (ADR 0005). On a marginal link it is the *acknowledgement* that
-goes missing, so on failure the coordinator waits up to `_CONFIRM_TIMEOUT`
-(2 s) for the device to report the state the command asked for, and stays
-quiet if it does. The report must be **newer than the write** and **about
-the command** - at least one property the command set, reported since the
-command was taken up - and the check only runs when a write actually reached
-the characteristic.
+believed** (ADR 0005). On failure the coordinator waits up to
+`_CONFIRM_TIMEOUT` (2 s) for the device to report the state the command
+asked for, and stays quiet if it does. The report must be **newer than the
+write** and **about the command**, and the check only runs when a write
+actually reached the characteristic.
 
 **A command is capped at `_COMMAND_TIMEOUT` (25 s)**, covering the wait for the
 lock as well as the connect-and-write itself; one that fails may then spend
@@ -848,24 +786,21 @@ one **repair** open for it (`EntryKeeper._review_presets_notice`): the presets
 offered under *Lighting mode* are the G7's and unconfirmed for this model,
 and its link goes to
 [CONTRIBUTING.md](CONTRIBUTING.md#sending-protocol-data-for-a-device). It
-changes nothing about the select. Why the presets stay on offer, and why the
-notice behaves as it does, is ADR 0014:
+changes nothing about the select.
 
-- **never while the model is not known**;
-- raised at start, from the model id the entry remembers, and where the
-  device-info string is published; **left standing where the watching
-  stops**; taken down once the model id has a profile, and when the entry is
-  removed (`async_remove_entry`) - Home Assistant does not delete an
-  integration's repairs with its entry;
-- a keeper that has ceased to watch raises none, and still writes what was
-  read to the entry and the device registry. That is reached when Home
-  Assistant stops while the answer to the last read is on its way: an unload
-  cancels the exchange, a stop does not;
-- it and the repair for a stack fault are raised and taken down apart:
-  neither is the other's to end;
-- its id is built from the config entry's id (`presets_issue_id`), the lamp's
-  name passes `identity.as_text`, and the model id is printed only when it is
-  one from end to end (`identity.as_model_id`).
+It is **never raised while the model is not known**, is **left standing
+where the watching stops**, and is taken down once the model id has a profile
+and when the entry is removed (`async_remove_entry`): Home Assistant does not
+delete an integration's repairs with its entry. A keeper that has ceased to
+watch raises none, and still writes what was read to the entry and the
+device registry - which is reached when Home Assistant stops while the
+answer to the last read is on its way: an unload cancels the exchange, a
+stop does not. It and the repair for a stack fault are raised and taken down
+apart: neither is the other's to end. Its id is built from the config
+entry's id (`presets_issue_id`), the lamp's name passes `identity.as_text`,
+and the model id is printed only when it is one from end to end
+(`identity.as_model_id`). Why the presets stay on offer, and why the notice
+behaves as it does, is ADR 0014.
 
 ### How to add a new model
 
@@ -918,23 +853,21 @@ diagnostics module rebuilds what leaves the host from what it can read:
 - The clock is given as how far it was from the host's at the moment it came
   into the mirror, with how long ago that was: the mirror is not emptied when
   a link drops.
-- The coordinates are marked as redacted, and so are the sunrise and sunset
-  times the lamp computes from them (`0x34`). Which ids those are is one list
-  (`PLACE_KEYS`), the same one a logged frame is blanked by and the bench
-  prints by.
-- Whatever has no name here is **counted**, and neither its value, its size
-  nor its id is shown.
-- The model id and the firmware are shown only when each is, from end to end,
-  what it claims to be; the fields of the device-info string are counted.
+- The coordinates, and the sunrise and sunset times the lamp computes from
+  them (`0x34`), are marked as redacted: the ids of one list (`PLACE_KEYS`),
+  which a logged frame is blanked by and the bench prints by.
+- Whatever has no name here is **counted**: neither its value, its size nor
+  its id is shown. The fields of the device-info string are counted too, and
+  the model id and the firmware are shown only when each is, from end to
+  end, what it claims to be.
 - Where the link stands is the link's own to say (`Link.diagnostics`): eight
   fields with none of the lamp's words in them, beside the device half's five.
 - Of the config entry, five fields chosen one by one: its address is in its
   data, its unique id, its title and its discovery record.
 
-Home Assistant wraps the file in a header of its own and adds the ids of the
-integration's open repairs, which is why both of its repairs are filed under
-the config entry's id and not under the lamp's address (`_stack_issue_id`,
-`presets_issue_id`).
+Home Assistant adds the ids of the integration's open repairs to the file,
+which is why both are filed under the config entry's id and not under the
+lamp's address (`_stack_issue_id`, `presets_issue_id`).
 
 ---
 
@@ -954,29 +887,25 @@ Unit tests live in `tests/` and **never touch real Bluetooth**:
   write, the clock, activation; the telling of the entities; and what the
   device half asks of its keeper.
 - `test_link.py` — the link: the dial and the background connect with their
-  deadlines, a command's way through the link, the first exchange run or
-  dropped, the hang-up, reach and what is logged of it, stopping and shutting
-  down. A test is the link's by what it asserts; each takes its link from the
-  scripted lamp, through a coordinator.
-- `test_keeper.py` — what Home Assistant's keeper does with what it is
-  asked: work on the entry and a hang-up not, the watchers, the home, the
-  dial made for an entry, the device registry, the remembered model id and
-  the notice about unconfirmed presets raised and taken down.
+  deadlines, a command's way through the link, the first exchange, the
+  hang-up, reach and what is logged of it, stopping. A test is the link's by
+  what it asserts; each takes its link from the scripted lamp.
+- `test_keeper.py` — Home Assistant's keeper: work on the entry and a hang-up
+  not, the watchers, the home, the dial made for an entry, the device
+  registry, the remembered model id, the notice raised and taken down.
 - `test_bus_lifetime.py` — what is left behind when a link is let go of. It
-  counts open bus connections rather than calls to `disconnect()`, and runs
-  the same against bleak's own BlueZ client with a stub bus, so a bleak
-  release that renames what `_close_bus` reaches for fails here. The stack
-  that will not hang up, its repair and the checks on a held link are tested
-  here too; and the seam between the link and the device half, by tests that
-  read the source - and one that reads the tests: none gives a link its
-  client by hand.
+  counts open bus connections rather than calls to `disconnect()`, against
+  bleak's own BlueZ client over a stub bus too, so a bleak release that
+  renames what `_close_bus` reaches for fails here. The stack that will not
+  hang up, its repair and the checks on a held link are here; and the seam
+  between the two halves, by tests that read the source - and one that
+  reads the tests: none gives a link its client by hand.
 - `test_dial.py` — the dial the coordinator is handed, and the one the setup
   of a config entry hands it.
-- `test_init.py` — setup and unload of the config entry, the entities each
-  platform produces and the command each control ends in, what is restored
-  after a restart, what an entity shows of a value that cannot be used, the
-  words of the notice about unconfirmed presets, and the hang-up when Home
-  Assistant stops.
+- `test_init.py` — setup and unload of the config entry, the entities of each
+  platform and the command each control ends in, what is restored after a
+  restart, what is shown of a value that cannot be used, the words of the
+  notice about unconfirmed presets, the hang-up when Home Assistant stops.
 - `test_config_flow.py` — discovery, the pick-from-a-list flow, the two
   places a duplicate is turned away, and the list of lamps as the frontend
   receives it, turned into that by Home Assistant's own view for the route
@@ -991,19 +920,17 @@ Unit tests live in `tests/` and **never touch real Bluetooth**:
   and its run against a scripted lamp.
 - `test_stack.py` — `tools/stack.py`, and that the environment the tests are
   running in is one it would have left.
-- `test_release.py` — `tools/release.py`: the archive a release carries,
-  built from a repository made for the test; the tag held to the manifest's
-  version; what GitHub is told when a version tag is pushed and what is asked
-  of it every day, read from the commands given to a stand-in for `gh`; and
-  the form of the workflows that run it (ADR 0017).
+- `test_release.py` — `tools/release.py`: the archive a release carries, the
+  tag held to the manifest's version, what GitHub is told and asked through
+  a stand-in for `gh`, and the form of the workflows that run it (ADR 0017).
 - `test_quality_scale.py` — `quality_scale.yaml`: every rule of the scale named
   once, with one of the three statuses, and each exemption with its reason.
-- `test_readme.py` — the automations the README shows can be run as they are
-  written; every heading of the contributor guide that the README links to is
-  there, and every heading of this document that a reader is sent to.
+- `test_readme.py` — the README's automations run as they are written, and
+  every heading of the contributor guide and of this document that a reader
+  is sent to is there.
 - `test_conftest.py` — what every test runs with (`conftest.py`): asyncio's
-  note on a slow step of the loop is kept out of every test's log. The price:
-  a step this integration's own code made slow goes unsaid there as well.
+  note on a slow step of the loop is kept out of every test's log, one this
+  integration's own code made slow as well.
 - `shared.py` — what more than one of these files arranges the same way: a
   coordinator at a scripted lamp, an entry set up or started.
 
