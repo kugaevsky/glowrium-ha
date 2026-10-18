@@ -8,5 +8,5 @@
 # require libraries at exact versions - the script reads those from the Home
 # Assistant it has just installed, and installs them as Home Assistant would.
 pytest-homeassistant-custom-component
-ruff~=0.16.10
+ruff~=0.17.1
 mypy~=2.4.0
