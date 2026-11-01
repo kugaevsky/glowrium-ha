@@ -9,4 +9,4 @@
 # Assistant it has just installed, and installs them as Home Assistant would.
 pytest-homeassistant-custom-component
 ruff~=0.16.10
-mypy~=2.4.0
+mypy~=2.4.1
