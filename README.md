@@ -99,7 +99,7 @@ unconfirmed (see below). New models are added in
 | G3 | Vertical grow light (10–36 W) | ⬜ Not yet tested |
 | G4 | Desktop grow light (8–12 W) | ⬜ Not yet tested |
 | G5 | Dual-head floor grow light (48 W) | ⬜ Not yet tested |
-| G6 | Grow-light strip (48 W) | ⬜ Not yet tested |
+| G6 | Grow-light strip (48 W) | ✅ Integrated & tested |
 | G8 | Desktop grow light (10 W) | 🟡 Runs on hardware; presets unconfirmed |
 | G9 | Seed-starter kit (30 W) | ⬜ Not yet tested |
 | G10 | Telescopic floor grow light | ⬜ Not yet tested |
