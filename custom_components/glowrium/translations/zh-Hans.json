@@ -101,6 +101,12 @@
     "cannot_connect": {
       "message": "无法通过蓝牙向 {name} 发送命令。设备可能超出范围，或蓝牙适配器繁忙；在设备附近部署蓝牙代理通常可以解决此问题。"
     },
+    "enhanced_longer_than_goal": {
+      "message": "无法设置：{name} 的增强照明时长不能长于每日光照目标。"
+    },
+    "goal_shorter_than_enhanced": {
+      "message": "无法设置：{name} 的每日光照目标不能短于增强照明时长。"
+    },
     "home_location_not_set": {
       "message": "无法向 {name} 发送位置：Home Assistant 尚未设置家庭位置（纬度和经度均为零）。请先在 Home Assistant 的设置中设置家庭位置，然后重试。"
     },

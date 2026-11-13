@@ -4,7 +4,7 @@
 - **Date:** 2026-11-13 (decided by the maintainer the same day: that the
   command carries back what the lamp holds, and that a mode command asks
   for it first); 2026-11-13 (both set from Home Assistant, each with the
-  presets that take it)
+  presets that take it, within the bounds the app takes)
 
 ## Context
 
@@ -67,9 +67,16 @@ container under BlueZ, and in two btsnoop captures of the vendor app
   setting either is this same command with the one set in it: the vendor app
   set a G6's goal so, and a G6 kept an Enhanced duration written so in a
   round of commands from the bench. In minutes - two bytes of them, not the
-  seconds of the ramp - from `protocol.PROGRAM_MINUTES_MIN` to `_MAX`; what
-  is set past a bound is written as that bound, so that the echo of it reads
-  back as a value and the next mode command carries it on.
+  seconds of the ramp - within what the app takes, as its screens showed it
+  (2026-11-13): the goal from 2 minutes to 22 h 59 min, the Enhanced
+  duration from 2 minutes to 11 h 59 min (`protocol.GOAL_MINUTES`,
+  `ENHANCED_MINUTES`). What is set past a bound is written as that bound,
+  so that the echo of it reads back as a value and the next mode command
+  carries it on.
+- A command that sets the goal or the Enhanced duration is refused when it
+  would leave the goal shorter than the Enhanced duration, as the app
+  refuses it: held to the other as the command carries it, so to what the
+  lamp answered on the command's own link when it was asked.
 - Each is available in Circadian with a preset that takes it, as the app
   shows them: the goal with every preset but Sun SYNC, which follows the sun,
   and the Enhanced duration with Enhanced Two-Phase alone
@@ -101,7 +108,9 @@ container under BlueZ, and in two btsnoop captures of the vendor app
   the preset is put back, and for that moment the goal reads unavailable, as
   the lighting mode reads Sun SYNC and the ramp 30 minutes. Not hidden: that
   would mean holding back what the lamp reports, which nothing here does.
-- Neither bound is the app's: what its wheels offer at the top has not been
-  confirmed, and a whole day has not been tried on a lamp. The two are kept
-  together in `protocol.py`, so that a confirmed bound is one change.
+- The app holds the Enhanced duration under one more bound, a length it
+  works out from the day where the lamp is (9 h 46 min on one November
+  day). It is not held here: what it is worked out from has not been found,
+  and the day's length says where the lamp is. Past it, what a lamp does has
+  not been tried.
 - Shown in hours, both round to whole hours, as the ramp does (README).

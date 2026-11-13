@@ -134,16 +134,14 @@ class GlowriumRampNumber(_GlowriumNumber):
 class _GlowriumProgramNumber(_GlowriumNumber):
     """A setting of the circadian program kept in whole minutes: 0x2c or 0x32.
 
-    Of the Circadian mode, and of the presets that take it. Both bounds are
-    the protocol's (``protocol.PROGRAM_MINUTES_MIN`` and ``_MAX``). Whole
+    Of the Circadian mode, and of the presets that take it. Its bounds are
+    the protocol's (``protocol.GOAL_MINUTES``, ``ENHANCED_MINUTES``). Whole
     minutes, and meant to be read in minutes, as the ramp is: in hours Home
     Assistant shows them to no decimals.
     """
 
     _attr_entity_category = EntityCategory.CONFIG
     _only_in_mode = MODE_CIRCADIAN
-    _attr_native_min_value = protocol.PROGRAM_MINUTES_MIN
-    _attr_native_max_value = protocol.PROGRAM_MINUTES_MAX
     _attr_native_step = 1
     _attr_device_class = NumberDeviceClass.DURATION
     _attr_native_unit_of_measurement = UnitOfTime.MINUTES
@@ -165,6 +163,8 @@ class GlowriumDailyLightGoalNumber(_GlowriumProgramNumber):
 
     _attr_translation_key = "daily_light_goal"
     _only_with_a_preset_taking = KEY_DAILY_LIGHT_GOAL
+    _attr_native_min_value = protocol.GOAL_MINUTES.least
+    _attr_native_max_value = protocol.GOAL_MINUTES.most
 
     @property
     def native_value(self) -> float | None:
@@ -183,6 +183,8 @@ class GlowriumEnhancedDurationNumber(_GlowriumProgramNumber):
 
     _attr_translation_key = "enhanced_lighting_duration"
     _only_with_a_preset_taking = KEY_ENHANCED_DURATION
+    _attr_native_min_value = protocol.ENHANCED_MINUTES.least
+    _attr_native_max_value = protocol.ENHANCED_MINUTES.most
 
     @property
     def native_value(self) -> float | None:

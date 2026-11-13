@@ -1401,7 +1401,9 @@ _WRITTEN_UNDER = {
     _ENHANCED: KEY_ENHANCED_DURATION,
 }
 # The most each number takes, in its own minutes.
-_LONGEST = {_RAMP: 90, _FADE: 90, _GOAL: 1439, _ENHANCED: 1439}
+_LONGEST = {_RAMP: 90, _FADE: 90, _GOAL: 1379, _ENHANCED: 719}
+# And the least.
+_LEAST = {_RAMP: 0, _FADE: 0, _GOAL: 2, _ENHANCED: 2}
 
 
 async def _set_to(hass: HomeAssistant, number: str, value: float) -> dict[int, str]:
@@ -1485,7 +1487,7 @@ async def test_a_number_of_minutes_is_a_duration_and_is_otherwise_what_it_was(
     described = {
         "device_class": "duration",
         "unit_of_measurement": "min",
-        "min": 0,
+        "min": _LEAST[number],
         "max": _LONGEST[number],
         "step": 1,
         "mode": "box",
@@ -1566,7 +1568,7 @@ async def test_a_part_of_a_minute_is_written_as_the_nearest_minute(
             _GOAL,
             {KEY_DAILY_LIGHT_GOAL: "02ee"},
             "12.0",
-            24,
+            23,
             id="a goal of 12 hours and a half",
         ),
     ],

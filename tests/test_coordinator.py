@@ -16,7 +16,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 from bleak.exc import BleakError, BleakGATTProtocolError, BleakGATTProtocolErrorCode
 from homeassistant.core import HomeAssistant
-from homeassistant.exceptions import HomeAssistantError
+from homeassistant.exceptions import HomeAssistantError, ServiceValidationError
 from homeassistant.util import dt as dt_util
 import pytest
 
@@ -1177,24 +1177,51 @@ async def test_a_setting_of_the_program_goes_in_the_lighting_mode_command(
 
 
 @pytest.mark.parametrize(
-    ("minutes", "written"),
-    [(0, "0000"), (1439, "059f"), (5000, "059f")],
-    ids=["none", "the longest", "longer than the longest"],
+    ("setting", "minutes", "written"),
+    [
+        pytest.param("the goal", 1, "0002", id="a goal under the least"),
+        pytest.param("the goal", 1379, "0563", id="the longest goal"),
+        pytest.param("the goal", 5000, "0563", id="a goal past the longest"),
+        pytest.param(
+            "the Enhanced duration",
+            1,
+            "0002",
+            id="an Enhanced duration under the least",
+        ),
+        pytest.param(
+            "the Enhanced duration", 719, "02cf", id="the longest Enhanced duration"
+        ),
+        pytest.param(
+            "the Enhanced duration",
+            5000,
+            "02cf",
+            id="an Enhanced duration past the longest",
+        ),
+    ],
 )
-@pytest.mark.parametrize("setting", ["the goal", "the Enhanced duration"])
 async def test_what_a_setting_of_the_program_is_set_to_is_what_it_then_reads(
     hass: HomeAssistant, setting: str, minutes: int, written: str
 ) -> None:
-    """A value set is written as it is, and read back as one.
+    """A value set is written within its bounds, and read back as one.
 
-    No minutes are a value, and go out as none - not as the default a lamp
-    that reported nothing gets. More than the longest a setting takes goes
-    out as the longest: what was written is echoed into the mirror, and more
-    than a day would read there as nothing that can be used, so the next
-    mode command would quietly send the default in its place.
+    The vendor app takes a goal from 2 minutes to 22 h 59 min and an
+    Enhanced duration from 2 minutes to 11 h 59 min. Past a bound a value
+    goes out as that bound: what was written is echoed into the mirror, and
+    the next mode command carries it on - past a day it would read there as
+    nothing that can be used, and the default would go in its place. The
+    other setting is the one that lets each through: the least Enhanced
+    duration for the goal, the longest goal for the Enhanced duration.
     """
     coordinator, lamp = _at_a_lamp(hass)
-    coordinator._ingest(cbor.encode(_A_PROGRAM_OF_TWELVE_HOURS))
+    coordinator._ingest(
+        cbor.encode(
+            {
+                **_A_PROGRAM_OF_TWELVE_HOURS,
+                _GOAL: bytes.fromhex("0563"),
+                _BESIDE_THE_GOAL: bytes.fromhex("0002"),
+            }
+        )
+    )
 
     if setting == "the goal":
         key = _GOAL
@@ -1209,6 +1236,110 @@ async def test_what_a_setting_of_the_program_is_set_to_is_what_it_then_reads(
     assert read == int(written, 16)
     await coordinator.async_set_lighting_mode(9)
     assert cbor.decode(lamp.written[-1][1])[key] == bytes.fromhex(written)
+
+
+@pytest.mark.parametrize(
+    ("setting", "goal", "tried", "refused_as"),
+    [
+        pytest.param(
+            "the goal",
+            "02d0",
+            (89, 90),
+            "goal_shorter_than_enhanced",
+            id="a goal shorter than the Enhanced duration",
+        ),
+        pytest.param(
+            "the Enhanced duration",
+            "012c",
+            (301, 300),
+            "enhanced_longer_than_goal",
+            id="an Enhanced duration longer than the goal",
+        ),
+    ],
+)
+async def test_the_goal_is_never_set_shorter_than_the_enhanced_duration(
+    hass: HomeAssistant,
+    setting: str,
+    goal: str,
+    tried: tuple[int, int],
+    refused_as: str,
+) -> None:
+    """The vendor app refuses a goal shorter than the Enhanced duration; so is it here.
+
+    Either way round, and before a link is taken: nothing is written. As
+    long as the other is, it goes through.
+    """
+    refused, enough = tried
+    coordinator, lamp = _at_a_lamp(hass)
+    reported = {**_A_PROGRAM_OF_TWELVE_HOURS, _GOAL: bytes.fromhex(goal)}
+    coordinator._ingest(cbor.encode(reported))  # Enhanced of 90 min
+    set_it = getattr(coordinator, _SETTERS[setting])
+
+    with pytest.raises(ServiceValidationError) as err:
+        await set_it(refused)
+
+    assert err.value.translation_key == refused_as
+    assert lamp.written == []
+    assert lamp.dials == 0
+    await set_it(enough)
+    assert len(lamp.written) == 1
+
+
+@pytest.mark.parametrize("touch", ["lighting mode", "ramp"])
+async def test_a_command_that_sets_neither_is_not_held_to_the_rule(
+    hass: HomeAssistant, touch: str
+) -> None:
+    """A lamp whose goal is shorter than its Enhanced duration still takes a preset.
+
+    The rule is the one the vendor app keeps when the goal or the Enhanced
+    duration is set. A command that sets neither carries both back as the
+    lamp holds them, whatever they are, and is not refused for them.
+    """
+    coordinator, lamp = _at_a_lamp(hass)
+    coordinator._ingest(
+        cbor.encode(
+            {
+                **_A_PROGRAM_OF_TWELVE_HOURS,
+                _GOAL: bytes.fromhex("003c"),  # an hour, under 90 minutes
+            }
+        )
+    )
+
+    if touch == "lighting mode":
+        await coordinator.async_set_lighting_mode(9)
+    else:
+        await coordinator.async_set_ramp(30)
+
+    sent = cbor.decode(lamp.written[-1][1])
+    assert (sent[_GOAL], sent[_BESIDE_THE_GOAL]) == (
+        bytes.fromhex("003c"),
+        bytes.fromhex("005a"),
+    )
+
+
+async def test_the_goal_is_held_to_the_enhanced_duration_the_lamp_has_now(
+    hass: HomeAssistant,
+) -> None:
+    """What the lamp says on the command's own link is what the goal is held to.
+
+    The Enhanced duration set in the vendor app while Home Assistant was away
+    is the one a goal must not be shorter than: the command is refused once
+    the lamp has answered, and nothing is written.
+    """
+    coordinator, lamp = _at_a_lamp(hass)
+    lamp.answers(_a_lamp_with_a_program("02d0", "001e"))  # 12 h, 30 min
+    lamp.readable(INFO_UUID, b"brand:x;;")
+    await link_of(coordinator).connect()
+    lamp.lose()  # the app is used: Enhanced set to 2 h
+    lamp.answers(_a_lamp_with_a_program("02d0", "0078"))
+    lamp.forget()
+
+    with pytest.raises(ServiceValidationError) as err:
+        await coordinator.async_set_daily_light_goal(100)
+
+    assert err.value.translation_key == "goal_shorter_than_enhanced"
+    assert lamp.asked == [bytes(PROGRAM_KEYS)]
+    assert [uuid for uuid, _frame in lamp.written if uuid == WRITE_UUID] == []
 
 
 @pytest.mark.parametrize("no_ramp", _NO_RAMP)

@@ -101,6 +101,12 @@
     "cannot_connect": {
       "message": "Failed to send the command to {name} over Bluetooth. The device may be out of range or the Bluetooth adapter busy; a Bluetooth proxy near the device usually fixes this."
     },
+    "enhanced_longer_than_goal": {
+      "message": "Cannot set this: the Enhanced lighting duration of {name} must not be longer than its daily light goal."
+    },
+    "goal_shorter_than_enhanced": {
+      "message": "Cannot set this: the daily light goal of {name} must not be shorter than its Enhanced lighting duration."
+    },
     "home_location_not_set": {
       "message": "Cannot send the location to {name}: Home Assistant has no home location set (its latitude and longitude are both zero). Set the home location in Home Assistant's settings first, then try again."
     },

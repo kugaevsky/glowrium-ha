@@ -26,7 +26,7 @@ from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 import datetime
 import enum
-from typing import Any, Final
+from typing import Any, Final, NamedTuple
 
 from .const import (
     KEY_ACTIVATED,
@@ -312,21 +312,31 @@ def enhanced_duration_minutes(state: Mapping[int, Any]) -> int | Unusable | None
     )
 
 
-# What either setting of the program is set to, both bounds in one place: from
-# none to a minute short of a day. Past a day a value reads as nothing that can
-# be used (above); whether a lamp takes a whole day has not been tried.
-PROGRAM_MINUTES_MIN: Final = 0
-PROGRAM_MINUTES_MAX: Final = _A_DAY_IN_MINUTES - 1
+class Bounds(NamedTuple):
+    """The least and the most a setting is set to, in its own unit."""
+
+    least: int
+    most: int
 
 
-def program_minutes_to_bytes(minutes: int) -> bytes:
+# What each setting of the program is set to, as the vendor app takes it (its
+# screens, 2026-11-13): the goal from 2 minutes to 22 h 59 min, the Enhanced
+# duration from 2 minutes to 11 h 59 min - the hours its wheels go to - and the
+# goal never shorter than the Enhanced duration. The app holds the Enhanced
+# duration under one more bound, a length it works out from the day where the
+# lamp is; that one is not held here.
+GOAL_MINUTES: Final = Bounds(2, 22 * 60 + 59)
+ENHANCED_MINUTES: Final = Bounds(2, 11 * 60 + 59)
+
+
+def program_minutes_to_bytes(minutes: int, bounds: Bounds) -> bytes:
     """Encode a setting of the program as the lamp keeps it: two bytes of minutes.
 
     Minutes, not the seconds the ramp beside it is kept in. A value past a
     bound is written as that bound, so that what is written - and echoed into
     the mirror - reads back as a value, and a later command carries it on.
     """
-    held = max(PROGRAM_MINUTES_MIN, min(minutes, PROGRAM_MINUTES_MAX))
+    held = max(bounds.least, min(minutes, bounds.most))
     return held.to_bytes(_MINUTES_LENGTH, "big")
 
 

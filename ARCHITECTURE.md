@@ -471,9 +471,11 @@ The goal and the Enhanced duration go back as the lamp last reported them,
 and only when they are two bytes of minutes, no more than a day; a lamp that
 has reported neither gets `0x02d0` (12 h) and `0x001e` (30 min). Setting
 either is this same command with the one set in it - as the vendor app sets
-the goal - in minutes, not the seconds of the ramp beside it, from
-`protocol.PROGRAM_MINUTES_MIN` to `PROGRAM_MINUTES_MAX`; past a bound it is
-written as that bound, so that the echo reads back as a value. Every
+the goal - in minutes, not the seconds of the ramp beside it, within the
+bounds the app takes (`protocol.GOAL_MINUTES`, `ENHANCED_MINUTES`); past a
+bound it is written as that bound, so that the echo reads back as a value,
+and a command that would leave the goal shorter than the Enhanced duration
+is refused, as the app refuses it. Every
 lighting-mode command (`_async_write_mode`) first asks a lamp known to
 report when asked for its program, on the command's own link, and is built
 from the answer; one not known to is sent what the mirror has. What vouches

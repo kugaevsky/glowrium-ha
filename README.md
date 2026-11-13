@@ -70,13 +70,17 @@ shows Sun SYNC. The integration drives the device's own native
 Circadian/Schedule engine rather than reimplementing it in Home Assistant.
 
 **Lengths of time.** *Ramp time* and *Schedule gradual* are durations in
-minutes, from 0 to 90; *Daily light goal* and *Enhanced lighting duration*,
-from 0 to 1439 — a minute short of a day. Home Assistant lets another unit be
-chosen for any of them in the entity's settings, and minutes are the unit they
-are meant to be read in: in hours they are shown rounded to whole hours, a half
-to the even one — a ramp of 30 minutes as 0, 45 as 1, the limit of 90 as 2, and
-a goal of 12 hours 30 minutes as 12. Whatever one is set to is written to the
-lamp as the nearest whole minute.
+minutes, from 0 to 90. *Daily light goal* and *Enhanced lighting duration* take
+what the vendor app takes: the goal from 2 minutes to 22 h 59 min, the Enhanced
+duration from 2 minutes to 11 h 59 min, and a goal shorter than the Enhanced
+duration is refused either way round. The app holds the Enhanced duration under
+one more limit, a length it works out from the day where the lamp is; Home
+Assistant does not. Home Assistant lets another unit be chosen for any of them
+in the entity's settings, and minutes are the unit they are meant to be read in:
+in hours they are shown rounded to whole hours, a half to the even one — a ramp
+of 30 minutes as 0, 45 as 1, the limit of 90 as 2, and a goal of 12 hours 30
+minutes as 12. Whatever one is set to is written to the lamp as the nearest
+whole minute.
 
 **Controls and settings.** The light and the operating mode are the lamp's
 controls. Everything else that can be set — lighting mode, ramp, the daily light

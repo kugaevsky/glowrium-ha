@@ -110,6 +110,11 @@ def _parse_device_info(raw: bytes) -> dict[str, str]:
     return info
 
 
+def _minutes(raw: bytes) -> int:
+    """Read two bytes of minutes, as a setting of the program is kept."""
+    return int.from_bytes(raw, "big")
+
+
 class _Refusal(NamedTuple):
     """The two messages for a command that has nothing to build on.
 
@@ -1234,17 +1239,36 @@ class GlowriumCoordinator:
         # vendor app, and the lamp keeps both through Circadian off and on, so
         # the last report is the one to trust. Whatever else stood under the
         # id is not sent back. A lamp that has said nothing of them gets what a
-        # G7 was first captured sending. What the command sets goes as it is:
-        # two bytes, and none of either - 0000 - is a value too.
+        # G7 was first captured sending. What the command sets goes as it is.
+        sets_goal, sets_enhanced = goal is not None, enhanced is not None
         if goal is None:
-            goal = usable(protocol.reported_daily_light_goal(self.state))
+            goal = (
+                usable(protocol.reported_daily_light_goal(self.state))
+                or DAILY_LIGHT_GOAL_DEFAULT
+            )
         if enhanced is None:
-            enhanced = usable(protocol.reported_enhanced_duration(self.state))
+            enhanced = (
+                usable(protocol.reported_enhanced_duration(self.state))
+                or ENHANCED_DURATION_DEFAULT
+            )
+        # The vendor app never sets a goal shorter than the Enhanced duration,
+        # and neither does a command that sets one of the two: it is held to
+        # the other as the command carries it.
+        if (sets_goal or sets_enhanced) and _minutes(goal) < _minutes(enhanced):
+            raise ServiceValidationError(
+                translation_domain=DOMAIN,
+                translation_key=(
+                    "goal_shorter_than_enhanced"
+                    if sets_goal
+                    else "enhanced_longer_than_goal"
+                ),
+                translation_placeholders={"name": self.name},
+            )
         return {
             KEY_LIGHTING_MODE: mode_value,
-            KEY_DAILY_LIGHT_GOAL: goal or DAILY_LIGHT_GOAL_DEFAULT,
+            KEY_DAILY_LIGHT_GOAL: goal,
             KEY_RAMP: ramp_value,
-            KEY_ENHANCED_DURATION: enhanced or ENHANCED_DURATION_DEFAULT,
+            KEY_ENHANCED_DURATION: enhanced,
         }
 
     async def async_set_lighting_mode(self, index: int) -> None:
@@ -1268,7 +1292,9 @@ class GlowriumCoordinator:
         remembered as the ramp is: the lamp keeps it through Circadian off and
         on, which resets the preset and the ramp.
         """
-        await self._async_write_mode(goal=protocol.program_minutes_to_bytes(minutes))
+        await self._async_write_mode(
+            goal=protocol.program_minutes_to_bytes(minutes, protocol.GOAL_MINUTES)
+        )
 
     async def async_set_enhanced_duration(self, minutes: int) -> None:
         """Set the Enhanced Lighting Duration of Enhanced Two-Phase, in minutes.
@@ -1276,7 +1302,9 @@ class GlowriumCoordinator:
         In the lighting-mode command, as the goal is.
         """
         await self._async_write_mode(
-            enhanced=protocol.program_minutes_to_bytes(minutes)
+            enhanced=protocol.program_minutes_to_bytes(
+                minutes, protocol.ENHANCED_MINUTES
+            )
         )
 
     async def async_set_operating_mode(self, mode: str) -> None:

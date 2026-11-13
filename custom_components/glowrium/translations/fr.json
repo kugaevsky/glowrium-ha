@@ -101,6 +101,12 @@
     "cannot_connect": {
       "message": "Impossible d'envoyer la commande à {name} via Bluetooth. L'appareil est peut-être hors de portée ou l'adaptateur Bluetooth occupé ; un proxy Bluetooth à proximité de l'appareil résout généralement le problème."
     },
+    "enhanced_longer_than_goal": {
+      "message": "Impossible : la durée de l'éclairage renforcé de {name} ne doit pas dépasser son objectif de lumière quotidien."
+    },
+    "goal_shorter_than_enhanced": {
+      "message": "Impossible : l'objectif de lumière quotidien de {name} ne doit pas être plus court que la durée de l'éclairage renforcé."
+    },
     "home_location_not_set": {
       "message": "Impossible d'envoyer la position à {name} : aucun emplacement du domicile n'est défini dans Home Assistant (la latitude et la longitude sont toutes deux à zéro). Définissez d'abord l'emplacement du domicile dans les paramètres de Home Assistant, puis réessayez."
     },

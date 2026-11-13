@@ -494,25 +494,27 @@ def test_a_setting_of_the_program_is_two_bytes_of_minutes_and_no_longer_than_a_d
 
 
 def test_a_setting_of_the_program_is_written_as_it_is_read() -> None:
-    """Two bytes of minutes, not of seconds as the ramp's, up to the longest.
+    """Two bytes of minutes, not of seconds as the ramp's, within the app's bounds.
 
     750 minutes are 02ee: the vendor app wrote a goal of 12 h 30 min so. The
-    two bounds a setting of the program takes are kept together, here; what
-    is set past one is written as that one, so that nothing written reads
-    back as something that cannot be used.
+    app takes a goal from 2 minutes to 22 h 59 min and an Enhanced duration
+    from 2 minutes to 11 h 59 min, and the bounds of both are kept together
+    here; what is set past one is written as that one, so that nothing
+    written reads back as something that cannot be used.
     """
-    assert protocol.PROGRAM_MINUTES_MIN == 0
-    assert protocol.PROGRAM_MINUTES_MAX == 24 * 60 - 1  # under a day
-    assert protocol.program_minutes_to_bytes(750) == bytes.fromhex("02ee")
-    assert protocol.program_minutes_to_bytes(0) == bytes.fromhex("0000")
-    assert protocol.program_minutes_to_bytes(24 * 60) == bytes.fromhex("059f")
-    assert protocol.program_minutes_to_bytes(-1) == bytes.fromhex("0000")
-    for minutes in (0, 750, protocol.PROGRAM_MINUTES_MAX):
-        written = protocol.program_minutes_to_bytes(minutes)
-        for key, read in (
-            (KEY_DAILY_LIGHT_GOAL, protocol.daily_light_goal_minutes),
-            (KEY_ENHANCED_DURATION, protocol.enhanced_duration_minutes),
-        ):
+    goal, enhanced = protocol.GOAL_MINUTES, protocol.ENHANCED_MINUTES
+    assert goal == (2, 22 * 60 + 59)
+    assert enhanced == (2, 11 * 60 + 59)
+    assert protocol.program_minutes_to_bytes(750, goal) == bytes.fromhex("02ee")
+    assert protocol.program_minutes_to_bytes(0, goal) == bytes.fromhex("0002")
+    assert protocol.program_minutes_to_bytes(24 * 60, goal) == bytes.fromhex("0563")
+    assert protocol.program_minutes_to_bytes(24 * 60, enhanced) == bytes.fromhex("02cf")
+    for bounds, key, read in (
+        (goal, KEY_DAILY_LIGHT_GOAL, protocol.daily_light_goal_minutes),
+        (enhanced, KEY_ENHANCED_DURATION, protocol.enhanced_duration_minutes),
+    ):
+        for minutes in bounds:
+            written = protocol.program_minutes_to_bytes(minutes, bounds)
             assert read({key: written}) == minutes
 
 
