@@ -116,3 +116,10 @@ container under BlueZ, and in two btsnoop captures of the vendor app
   length says where the lamp is. Past it, what a lamp does has not been
   tried.
 - Shown in hours, both round to whole hours, as the ramp does (README).
+- Run on a G6 (2026-11-13), the integration's coordinator set the goal from
+  12 h to 12 h 30 min and the Enhanced duration from 90 minutes to 60, and
+  both back: each the lamp reported back itself, its preset and ramp stayed
+  as they were, and the window of its program (Sunrise Sync) followed the
+  goal. A goal shorter than the Enhanced duration was refused with nothing
+  sent. The owner has seen the Enhanced duration on a G7 as well: it is no
+  one model's, and nothing here makes it so.
