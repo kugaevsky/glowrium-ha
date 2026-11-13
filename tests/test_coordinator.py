@@ -1664,9 +1664,10 @@ async def test_a_program_request_that_comes_to_nothing_is_let_go(
     assert [record.levelno for record in said] == [logging.DEBUG]
 
 
+@pytest.mark.parametrize("found", ["by a report", "by a read"])
 @pytest.mark.parametrize("reached", ["by a background connect", "by the poll"])
 async def test_what_the_first_exchange_wrote_is_told_to_the_entities(
-    hass: HomeAssistant, reached: str
+    hass: HomeAssistant, reached: str, found: str
 ) -> None:
     """A lamp brought up in the first exchange is shown as activated at once.
 
@@ -1675,13 +1676,19 @@ async def test_what_the_first_exchange_wrote_is_told_to_the_entities(
     tells the entities; one that is slow to, or does not, would leave them
     showing the lamp as it was before the exchange. So they are told once
     more when it is over - after a background connect, and after the exchange
-    the poll makes on a link a command took.
+    the poll makes on a link a command took. A lamp that answers when asked
+    is asked for its program after the writes, and its answer tells them too;
+    a lamp that is read is not asked, and nothing else does.
     """
     if reached == "by the poll":
         coordinator, lamp, _link = await _holding_a_link(hass)
     else:
         coordinator, lamp = _at_a_lamp(hass)
-    lamp.answers({KEY_ACTIVATED: False})
+    if found == "by a report":
+        lamp.answers({KEY_ACTIVATED: False})
+    else:
+        lamp.fails_writes(_REFUSAL, of=NOTIFY_UUID)
+        lamp.readable(NOTIFY_UUID, cbor.encode({KEY_ACTIVATED: False}))
     lamp.readable(INFO_UUID, b"brand:x;;")
     shown: list[bool | None] = []
     coordinator.async_add_listener(lambda: shown.append(coordinator.activated))

@@ -894,7 +894,7 @@ class GlowriumCoordinator:
             return payload, False
 
         try:
-            await self._async_deliver(as_it_is)
+            await self._async_deliver(as_it_is, known=payload)
         finally:
             self._async_notify_listeners()
 
@@ -928,6 +928,8 @@ class GlowriumCoordinator:
     async def _async_deliver(
         self,
         build: Callable[[Turn], Awaitable[tuple[dict[int, Any], bool]]],
+        *,
+        known: dict[int, Any] | None = None,
     ) -> None:
         """Hand a command to the link, and say in the user's words if it failed.
 
@@ -941,12 +943,14 @@ class GlowriumCoordinator:
         a readable message rather than a stack trace after a long hang.
 
         The command is built on each turn by ``build``, which says whether it
-        asked the lamp anything first.
+        asked the lamp anything first. A command known before any turn
+        (``known``) is vouched for by what it is; one built on the turn, by what
+        was sent - nothing, if no turn was given.
         """
         # Noted before the wait for the lock: a report that comes while the
         # command waits is as fresh as one that comes after it.
         reports_before = self._mirror.reports
-        sent: dict[int, Any] = {}
+        sent: dict[int, Any] = dict(known or {})
 
         async def say(turn: Turn) -> None:
             nonlocal reports_before
