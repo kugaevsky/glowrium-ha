@@ -14,5 +14,5 @@
 # They are not pinned, so that on the oldest stack the plugin's own pins hold.
 pytest-cov
 pytest-timeout
-ruff~=0.16.10
-mypy~=2.4.0
+ruff~=0.17.5
+mypy~=2.4.1
