@@ -69,7 +69,7 @@ last thing the first exchange does (ADR 0002).
 
 ## Evidence
 
-- CHANGELOG, Unreleased (#31); README, "About the G8"; ARCHITECTURE, "A model
+- CHANGELOG, 0.5.0 (#31); README, "About the G8"; ARCHITECTURE, "A model
   without a profile"; CONTRIBUTING, "Sending protocol data for a device".
 - `tests/test_models.py::test_a_model_id_has_a_profile_of_its_own_or_has_none`,
   `::test_a_profile_is_a_profile_whatever_it_is_called`.

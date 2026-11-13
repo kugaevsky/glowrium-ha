@@ -82,7 +82,7 @@ and unusable, and named the other settings as owed.
 
 ## Evidence
 
-- CHANGELOG, Unreleased (#23); README, "How state is updated" and
+- CHANGELOG, 0.5.0 (#23); README, "How state is updated" and
   "Troubleshooting"; ARCHITECTURE, "What a value is".
 - `tests/test_protocol.py::test_a_reader_has_one_of_three_answers_whatever_is_under_its_id`,
   `::test_what_cannot_be_used_is_neither_true_nor_false`,

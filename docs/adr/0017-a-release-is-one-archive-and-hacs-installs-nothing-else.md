@@ -111,7 +111,7 @@ fails.
 - `tools/release.py`; `.github/workflows/release.yml`, `release-check.yml`,
   `test.yml` (the build on every push); `hacs.json`.
 - README, "Installation"; CONTRIBUTING, "Cutting a release"; CHANGELOG,
-  Unreleased (#28).
+  0.5.0 (#28).
 - `tests/test_release.py::test_the_archive_holds_the_integration_at_its_root_as_it_is_at_the_commit`,
   `::test_the_archive_is_made_of_the_commit_and_not_of_the_working_directory`,
   `::test_a_tracked_file_is_shipped_whatever_git_is_told_of_exporting_it`,

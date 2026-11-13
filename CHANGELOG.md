@@ -4,7 +4,17 @@ All notable changes to this project are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.5.0] - 2026-11-14
+
+The G6 is driven as the G7 is: a profile of its own, with the presets the
+vendor app showed for it - the G7's, index for index - and the two settings
+of the circadian program the app has, the daily light goal and the Enhanced
+lighting duration, which the lighting-mode command no longer resets. A
+release is one file now, `glowrium.zip`, and that is what HACS installs.
+Inside, what a lamp reports under a property is judged in one place, where
+it is read; the part that knows the lamp is handed what keeps it, not Home
+Assistant; and the first exchange on a link no longer waits for the
+activation flag. How it fits together is in [ARCHITECTURE.md](ARCHITECTURE.md).
 
 ### Fixed
 
@@ -788,6 +798,7 @@ Initial public release.
 - Automatic Bluetooth discovery of `Glowrium-*` devices.
 - Translations: en, ru, zh-Hans, es, de, fr.
 
+[0.5.0]: https://github.com/kugaevsky/glowrium-ha/releases/tag/v0.5.0
 [0.4.0]: https://github.com/kugaevsky/glowrium-ha/releases/tag/v0.4.0
 [0.3.1]: https://github.com/kugaevsky/glowrium-ha/releases/tag/v0.3.1
 [0.3.0]: https://github.com/kugaevsky/glowrium-ha/releases/tag/v0.3.0
