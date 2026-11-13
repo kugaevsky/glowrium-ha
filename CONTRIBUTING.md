@@ -195,7 +195,12 @@ asked; if it turns into work, that issue is where the work gets described.
   (that it was refused, that it failed, or that it was acknowledged and
   nothing reported), each of which means the lamp had to be read; and for
   `is out of reach` right after a `disconnected` while the lamp stood where
-  it was.
+  it was. One owner has run a G6 through a proxy for a week, on 0.4.0
+  ([#66](https://github.com/kugaevsky/glowrium-ha/pull/66)): the
+  diagnostics show the link held and primed through the proxy and the lamp
+  reporting, and the owner saw no link drop and switched the light from
+  automations. The three questions stand: the debug log that settles them
+  was not part of it.
 - **A G8 since 0.3.0.** How long a link lives, and on which Bluetooth stack;
   and whether the lamp is asked three times and from then on only read, as
   the changelog says it is. *What settles it:* the debug log and the
