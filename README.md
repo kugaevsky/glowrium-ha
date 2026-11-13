@@ -2,11 +2,11 @@
 
 [![Validate](https://github.com/kugaevsky/glowrium-ha/actions/workflows/validate.yml/badge.svg)](https://github.com/kugaevsky/glowrium-ha/actions/workflows/validate.yml)
 [![Test](https://github.com/kugaevsky/glowrium-ha/actions/workflows/test.yml/badge.svg)](https://github.com/kugaevsky/glowrium-ha/actions/workflows/test.yml)
-[![HACS Custom](https://img.shields.io/badge/HACS-Custom-41BDF5.svg)](https://github.com/hacs/integration)
+[![HACS Default](https://img.shields.io/badge/HACS-Default-41BDF5.svg)](https://github.com/hacs/integration)
 
 Local **Bluetooth** control of the
-**INLEDCO [Glowrium](https://www.glowrium.com/) G7** BLE grow light from
-Home Assistant — **no cloud, no vendor app**. The BLE protocol was
+**INLEDCO [Glowrium](https://www.glowrium.com/) G7** and **G6** BLE grow lights
+from Home Assistant — **no cloud, no vendor app**. The BLE protocol was
 reverse-engineered from the official `com.inledco.glowrium` app and verified on
 real hardware.
 
@@ -231,9 +231,10 @@ a clear write-up is enough, and I'll help with the rest.
 
 ### HACS (recommended)
 
-1. HACS → ⋮ → **Custom repositories**.
-2. Add `https://github.com/kugaevsky/glowrium-ha` with category **Integration**.
-3. Install **Glowrium**, then restart Home Assistant.
+Glowrium is in HACS' default list since October 2026.
+
+1. In HACS, search for **Glowrium** and open it.
+2. **Download**, then restart Home Assistant.
 
 HACS installs **releases** only. A release after 0.4.0 carries one file,
 `glowrium.zip`, and that file is what HACS downloads. The default branch is
