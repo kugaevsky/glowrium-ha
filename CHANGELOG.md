@@ -221,6 +221,16 @@ All notable changes to this project are documented here. The format is based on
   What is done with such a frame is as before
   ([#41](https://github.com/kugaevsky/glowrium-ha/issues/41)).
 
+### Removed
+
+- **A lighting mode remembered by its English name is no longer converted.**
+  0.3.0 made the options of *Lighting mode* keys, and 0.3.0 and 0.4.0 turned
+  a name the select had remembered from 0.2.1 or before into its key. From
+  the first start on 0.3.0 what is remembered is a key, so an update from
+  0.3.0 or later sees nothing of this. One from 0.2.1 or before: the select
+  reads `unknown` after the restart until the lamp reports its mode, as on a
+  first start.
+
 ## [0.4.0] - 2026-10-10
 
 The integration was taken apart inside. What holds the connection to the lamp

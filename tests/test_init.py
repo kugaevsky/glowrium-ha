@@ -999,21 +999,27 @@ async def test_a_lighting_mode_is_a_key_and_its_name_is_a_translation(
     ]
 
 
-async def test_a_preset_remembered_by_its_old_name_is_still_recognised(
+async def test_a_preset_remembered_by_its_old_name_is_let_go(
     hass: HomeAssistant,
 ) -> None:
-    """The value kept from before the change is the preset's old name.
+    """A preset's English name, remembered from 0.2.1 or before, is no option now.
 
-    It is the only record of the mode on a lamp that never reports it, so it
-    is read as the preset it names rather than dropped as an unknown option.
+    0.3.0 made the option a key, and converted a remembered name to it for
+    two releases; from the first start on 0.3.0 what is remembered is a key.
+    A name read back from older than that is let go as any value in a shape
+    the select no longer has: the select reads unknown until the lamp reports
+    its mode, as on a first start.
     """
     mock_restore_cache(
         hass, (State("select.glowrium_g7_1234_lighting_mode", "Enhanced Two-Phase"),)
     )
-    await _setup_without_bluetooth(hass)
+    entry = await _setup_without_bluetooth(hass)
 
-    state = hass.states.get("select.glowrium_g7_1234_lighting_mode")
-    assert state.state == "enhanced_two_phase"
+    select = "select.glowrium_g7_1234_lighting_mode"
+    assert hass.states.get(select).state == "unknown"
+    entry.runtime_data._ingest(cbor.encode({KEY_LIGHTING_MODE: 32}))
+    await hass.async_block_till_done()
+    assert hass.states.get(select).state == "enhanced_two_phase"
 
 
 @pytest.mark.parametrize("platform", PLATFORMS, ids=str)

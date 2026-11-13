@@ -4,7 +4,8 @@
 - **Date:** 2026-08-25 (settings shown again after a restart, 0.2.1);
   2026-10-07 (a lighting mode the model does not have is `unknown`, #30);
   2026-10-10 (every setting tells the two apart, #23);
-  2026-10-13 (a number remembers its value in its own unit, #35)
+  2026-10-13 (a number remembers its value in its own unit, #35);
+  2026-11-13 (a preset remembered by its pre-0.3.0 name is let go, 0.5.0)
 
 ## Context
 
@@ -51,8 +52,10 @@ to act on (#30).
 - Every setting tells "not read" from "read and unusable" since #23: the
   readers answer the two apart, and a setting shows the remembered value for
   the first only (ADR 0015). Until then only the lighting-mode select did.
-- A value remembered in a shape the entity no longer uses - a preset by its
-  pre-0.3.0 English name - is converted where it can be and let go otherwise.
+- A value remembered in a shape the entity no longer uses is let go. A
+  preset by its pre-0.3.0 English name was converted to its key by 0.3.0
+  and 0.4.0; from 0.5.0 it is let go as well, and the select
+  reads `unknown` until the lamp reports its mode.
 - On a first start nothing is remembered and the settings read `unknown`.
 
 ## Evidence
