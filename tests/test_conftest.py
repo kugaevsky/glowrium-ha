@@ -19,7 +19,7 @@ async def test_a_slow_step_of_the_loop_is_not_a_warning_a_test_hears(
     written.
     """
     loop = asyncio.get_running_loop()
-    assert loop.get_debug()  # the test plugin's doing, and where the note is from
+    assert loop.get_debug()  # the test package's doing, and where the note is from
     monkeypatch.setattr(loop, "slow_callback_duration", 0)
 
     await asyncio.sleep(0)  # a step ends here, and asyncio notes it

@@ -952,7 +952,8 @@ Unit tests live in `tests/` and **never touch real Bluetooth**:
 - `test_bench.py` — what `tools/bench.py` prints and leaves out, its keeper,
   and its run against a scripted lamp.
 - `test_stack.py` — `tools/stack.py`, and that the environment the tests are
-  running in is one it would have left.
+  running in is one it would have left, with one of the two packages that
+  carry Home Assistant in it and never both.
 - `test_release.py` — `tools/release.py`: the archive a release carries, the
   tag held to the manifest's version, what GitHub is told and asked through
   a stand-in for `gh`, and the form of the workflows that run it (ADR 0017).
@@ -1017,7 +1018,8 @@ in strict mode over the integration (both configured in `pyproject.toml`). CI
 runs the same and holds coverage of the integration to 95 %, builds the
 archive a release would carry (ADR 0017), and runs all of it on two stacks:
 the oldest Home Assistant supported, held to one release, and the newest,
-which is whatever the test plugin tracks that day, betas included.
+which is Home Assistant's own test package at its newest release that day,
+betas included.
 `tools/stack.py` installs either, here as in CI, with the libraries at the
 versions Home Assistant's own integrations require - read from the Home
 Assistant under test and written nowhere here - and CI also runs once a week

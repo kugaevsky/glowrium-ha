@@ -16,20 +16,23 @@ python3.14 -m venv .venv
 
 `tools/stack.py` installs one of the two stacks CI runs every check on:
 
-- **`oldest`** - the oldest Home Assistant this project supports, held to one release by
+- **`oldest`** - the oldest Home Assistant this project supports, carried by the test
+  plugin `pytest-homeassistant-custom-component` and held to one release by
   `constraints-oldest.txt`. That file changes only together with the minimum named above.
-- **`newest`** - whatever the test plugin tracks today, pre-releases included. Run it again
-  in the same environment to move on to today's.
+- **`newest`** - the newest Home Assistant there is, pre-releases included, carried by Home
+  Assistant's own test package `pytest-homeassistant`. Run it again in the same environment
+  to move on to today's.
 
-Keep one virtualenv for each if you want both (`.venv` and, say, `.venv-newest`). In either,
-the script then installs what Home Assistant's own Bluetooth and USB integrations require -
-`bleak`, `habluetooth`, `dbus-fast` and the rest - the way Home Assistant installs them at
-run time: each at the exact version the integration's manifest names, and whatever comes
-with it within Home Assistant's own constraints. Both are read from the Home Assistant just
-installed; none of those versions is written in this repository. `pip install -r
-requirements-test.txt` alone does not give an environment the tests can run in, and a test
-fails, naming the library, in one where a library is not at the version this Home Assistant
-requires.
+The two packages give the same fixtures and do not go in one environment: keep a virtualenv
+for each (`.venv` and, say, `.venv-newest`), and the script refuses to install one stack
+over the other. In either, it then installs what Home Assistant's own Bluetooth, USB and
+Supervisor integrations require - `bleak`, `habluetooth`, `dbus-fast`, `aiohasupervisor`
+and the rest - the way Home Assistant installs them at run time: each at the exact version
+the integration's manifest names, and whatever comes with it within Home Assistant's own
+constraints. Both are read from the Home Assistant just installed; none of those versions
+is written in this repository. `pip install -r requirements-test.txt` alone does not give
+an environment the tests can run in, and a test fails, naming the library, in one where a
+library is not at the version this Home Assistant requires.
 
 ## Conventions
 

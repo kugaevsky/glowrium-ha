@@ -20,10 +20,6 @@ from homeassistant.core import HomeAssistant
 from homeassistant.helpers import device_registry as dr, issue_registry as ir
 from homeassistant.util import dt as dt_util
 import pytest
-from pytest_homeassistant_custom_component.common import (
-    MockConfigEntry,
-    async_fire_time_changed,
-)
 
 from custom_components.glowrium import (
     cbor,
@@ -40,6 +36,10 @@ from custom_components.glowrium.const import (
 )
 from custom_components.glowrium.models import GlowriumModel
 
+from .ha_common import (
+    MockConfigEntry,
+    async_fire_time_changed,
+)
 from .lamp import ScriptedLamp, in_range, link_of
 from .shared import (
     ADDRESS,

@@ -29,20 +29,26 @@ def _is_not_about_a_slow_step(record: logging.LogRecord) -> bool:
 
 @pytest.fixture(autouse=True)
 def auto_enable_custom_integrations(enable_custom_integrations: None) -> None:
-    """Enable loading custom integrations in all tests."""
+    """Enable loading custom integrations in all tests.
+
+    The plugin the oldest stack runs on has to be asked; Home Assistant's own
+    package enables them by default. This goes when the oldest stack moves to
+    that package (ADR 0009).
+    """
 
 
 @pytest.fixture(autouse=True)
 def slow_steps_go_unsaid() -> Iterator[None]:
     """Keep asyncio's note on a slow step of the loop out of every test's log.
 
-    The test plugin runs the loop in debug mode, where asyncio writes a
-    WARNING for each step that took longer than a tenth of a second. A step
-    takes that long when code blocks the loop, and as well when the machine
-    was busy with something else: the note does not say which. Tests that
-    read every WARNING there is, whoever wrote it, cannot have it - one
-    failed for a step of 0.2 s, once in 22 runs, with neither the test nor
-    the code it holds changed.
+    The package that carries Home Assistant - the plugin on the oldest stack,
+    Home Assistant's own on the newest - runs the loop in debug mode, where
+    asyncio writes a WARNING for each step that took longer than a tenth of a
+    second. A step takes that long when code blocks the loop, and as well
+    when the machine was busy with something else: the note does not say
+    which. Tests that read every WARNING there is, whoever wrote it, cannot
+    have it - one failed for a step of 0.2 s, once in 22 runs, with neither
+    the test nor the code it holds changed.
 
     So the note is dropped, and that has its price: a step this
     integration's own code made slow goes unsaid in the tests as well, in

@@ -1,15 +1,20 @@
 """Install one of the two Home Assistant stacks the tests run on.
 
     python tools/stack.py oldest   # the oldest Home Assistant supported
-    python tools/stack.py newest   # what the test plugin tracks today
+    python tools/stack.py newest   # the newest Home Assistant there is
 
 It installs into the environment of the Python that runs it, so make a
-virtualenv first. CI runs this very script for each of its two legs: what CI
-tests is what this installs.
+virtualenv first - one for each stack: it will not install one over the
+other. CI runs this very script for each of its two legs: what CI tests is
+what this installs.
 
-Home Assistant comes with the test plugin, which carries one exact release of
-it. Unpinned, the plugin is the newest release, pre-releases included; the
-oldest stack holds it to the release named in constraints-oldest.txt.
+Home Assistant comes with a package that carries one exact release of it.
+The newest stack runs on Home Assistant's own test package, released under
+Home Assistant's number from 2026.11 on, at its newest release, pre-releases
+included. The oldest runs on the plugin that carried Home Assistant before
+that package existed, held to the release named in constraints-oldest.txt;
+it moves to the package the day the minimum is a release the package exists
+for (ADR 0009).
 
 What Home Assistant's own integrations require is not part of that
 distribution: Home Assistant installs it at run time, each requirement at the
@@ -41,20 +46,38 @@ ROOT = Path(__file__).resolve().parent.parent
 REQUIREMENTS = ROOT / "requirements-test.txt"
 OLDEST = ROOT / "constraints-oldest.txt"
 
-# What pip is asked for first, for each stack: the test plugin, and Home
-# Assistant with it.
+# What carries Home Assistant on each stack. The two give the same fixtures,
+# and Home Assistant's package says not to be installed beside the plugin.
+PACKAGES = {
+    "oldest": "pytest-homeassistant-custom-component",
+    "newest": "pytest-homeassistant",
+}
+
+# What pip is asked for first, for each stack: what the two share, and the
+# package with Home Assistant in it.
 FIRST = {
-    "oldest": ("-r", str(REQUIREMENTS), "-c", str(OLDEST)),
-    # Upgrading, so that an environment built earlier moves on to today's.
-    "newest": ("--upgrade", "-r", str(REQUIREMENTS)),
+    "oldest": ("-r", str(REQUIREMENTS), PACKAGES["oldest"], "-c", str(OLDEST)),
+    # Upgrading, so that an environment built earlier moves on to today's. The
+    # floor names a pre-release, which lets pip take a beta when one is the
+    # newest (PEP 440) - for this package alone, not for everything under it
+    # as --pre would - and keeps pip off the releases of 2020 under the same
+    # name, which a Python too old for today's would otherwise get unsaid.
+    "newest": (
+        "--upgrade",
+        "-r",
+        str(REQUIREMENTS),
+        f"{PACKAGES['newest']}>=2026.11.0b0",
+    ),
 }
 STACKS = tuple(FIRST)
 
 # The Home Assistant integrations whose requirements the tests need, whole:
 # this one reaches the lamp through bluetooth - and reaches into its
-# libraries, to close a client's bus - and bluetooth depends on usb.
-INTEGRATIONS = ("bluetooth", "usb")
-# And one requirement of a third: serialx, which usb requires, imports it.
+# libraries, to close a client's bus - bluetooth depends on usb, and usb
+# imports hassio (2026.10 does, 2026.7 did not). The plugin brought hassio's
+# library along with it; Home Assistant's own package does not.
+INTEGRATIONS = ("bluetooth", "usb", "hassio")
+# And one requirement of a fourth: serialx, which usb requires, imports it.
 ALSO = (("esphome", "aioesphomeapi"),)
 
 
@@ -161,6 +184,13 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("stack", choices=STACKS, help="the Home Assistant to install")
     stack = parser.parse_args(argv).stack
 
+    for other, package in PACKAGES.items():
+        if other != stack and installed(package) is not None:
+            raise SystemExit(
+                f"this environment has {package}, which the {other} stack runs "
+                f"on, and the two do not go in one environment; make a new "
+                f"virtualenv for the {stack} stack"
+            )
     _pip_install(*FIRST[stack])
     pins = required(manifest_of)
     # As Home Assistant installs them: each at its version, and whatever it

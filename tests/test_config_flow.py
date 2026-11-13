@@ -19,9 +19,10 @@ from homeassistant.const import CONF_ADDRESS
 from homeassistant.core import HomeAssistant
 from homeassistant.data_entry_flow import FlowResultType, InvalidData
 import pytest
-from pytest_homeassistant_custom_component.common import MockConfigEntry
 
 from custom_components.glowrium.const import DOMAIN
+
+from .ha_common import MockConfigEntry
 
 GLOWRIUM_ADDRESS = "AA:BB:CC:DD:EE:FF"
 GLOWRIUM_NAME = "Glowrium-G7_1234"

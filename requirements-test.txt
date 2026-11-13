@@ -1,12 +1,18 @@
 # Installed by tools/stack.py, not by hand: it adds what cannot be written
 # here.
 #
-# The test plugin carries Home Assistant itself, one exact release per release
-# of its own. Left unpinned it is the newest, pre-releases included;
-# constraints-oldest.txt names the release for the oldest Home Assistant this
-# project supports. Home Assistant's Bluetooth and USB integrations then
-# require libraries at exact versions - the script reads those from the Home
-# Assistant it has just installed, and installs them as Home Assistant would.
-pytest-homeassistant-custom-component
+# What carries Home Assistant differs between the two stacks, and the script
+# names it: Home Assistant's own test package for the newest, and for the
+# oldest the plugin that came before it, held to one release by
+# constraints-oldest.txt. Home Assistant's Bluetooth, USB and Supervisor
+# integrations then require libraries at exact versions - the script reads
+# those from the Home Assistant it has just installed, and installs them as
+# Home Assistant would.
+#
+# The plugin brought pytest-cov (CI's --cov) and pytest-timeout (the timeout
+# in pyproject.toml) along with it; Home Assistant's package brings neither.
+# They are not pinned, so that on the oldest stack the plugin's own pins hold.
+pytest-cov
+pytest-timeout
 ruff~=0.16.10
 mypy~=2.4.0

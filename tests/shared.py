@@ -12,7 +12,6 @@ from unittest.mock import AsyncMock, MagicMock, patch
 from homeassistant.const import CONF_ADDRESS
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers import device_registry as dr, issue_registry as ir
-from pytest_homeassistant_custom_component.common import MockConfigEntry
 
 from custom_components.glowrium.const import (
     DOMAIN,
@@ -23,6 +22,7 @@ from custom_components.glowrium.const import (
 from custom_components.glowrium.coordinator import GlowriumCoordinator
 from custom_components.glowrium.keeper import EntryKeeper
 
+from .ha_common import MockConfigEntry
 from .lamp import LampLink, ScriptedLamp, in_range, link_of, nothing_heard
 
 

@@ -13,14 +13,18 @@ import re
 from types import ModuleType
 from typing import Any
 
+from packaging.requirements import Requirement
+from packaging.version import Version
 import pytest
 import yaml
 
 from .conftest import ROOT, load_tool
 
 _PLUGIN = "pytest-homeassistant-custom-component"
+# Home Assistant's own test package, released under Home Assistant's number.
+_PACKAGE = "pytest-homeassistant"
 
-# The shape of three Home Assistant manifests, with versions that are nobody's.
+# The shape of four Home Assistant manifests, with versions that are nobody's.
 _MANIFESTS: dict[str, dict[str, Any]] = {
     "bluetooth": {
         "domain": "bluetooth",
@@ -29,6 +33,10 @@ _MANIFESTS: dict[str, dict[str, Any]] = {
     "usb": {
         "domain": "usb",
         "requirements": ["aiousbwatcher==0.4.4", "serialx==0.5.5"],
+    },
+    "hassio": {
+        "domain": "hassio",
+        "requirements": ["aiohasupervisor==0.8.8"],
     },
     "esphome": {
         "domain": "esphome",
@@ -41,6 +49,7 @@ _REQUIRED = {
     "habluetooth": "0.3.3",
     "aiousbwatcher": "0.4.4",
     "serialx": "0.5.5",
+    "aiohasupervisor": "0.8.8",
     "aioesphomeapi": "0.6.6",
 }
 
@@ -68,10 +77,12 @@ def _pinned_plugin() -> str:
 def test_what_the_tests_need_is_what_home_assistants_integrations_require(
     stack: ModuleType,
 ) -> None:
-    """All of bluetooth and usb, and of esphome the one library serialx imports.
+    """All of bluetooth, usb and hassio; of esphome, the one library serialx imports.
 
     Read from the manifests, so that a library Home Assistant starts to
-    require tomorrow is installed tomorrow, with nothing edited here.
+    require tomorrow is installed tomorrow, with nothing edited here. usb
+    imports hassio (2026.10 does, 2026.7 did not), whose library the test
+    plugin used to bring along; Home Assistant's own test package does not.
     """
     assert stack.required(_MANIFESTS.__getitem__) == _REQUIRED
 
@@ -114,15 +125,18 @@ def test_the_oldest_stack_is_one_exact_release_of_the_test_plugin() -> None:
     assert _pinned_plugin()
 
 
-def test_the_oldest_stack_is_the_minimum_this_project_declares() -> None:
+def test_the_oldest_stack_is_the_minimum_this_project_declares(
+    stack: ModuleType,
+) -> None:
     """What hacs.json promises is what the oldest leg tests - checked on that leg.
 
     The plugin's number says nothing of the Home Assistant inside it, so the
     pin cannot be held to the promise by reading files. Where the installed
     plugin is the pinned one, the Home Assistant beside it can be. CI says
-    which leg it is running, and its oldest leg may not pass this by.
+    which leg it is running, and its oldest leg may not pass this by. On the
+    newest stack the plugin is not there at all.
     """
-    if importlib.metadata.version(_PLUGIN) != _pinned_plugin():
+    if stack.installed(_PLUGIN) != _pinned_plugin():
         assert os.environ.get("GLOWRIUM_STACK") != "oldest"
         pytest.skip("this is not the oldest stack")
 
@@ -141,7 +155,9 @@ def test_no_library_home_assistant_requires_is_named_in_the_requirements(
     Home Assistant these tests run on requires.
     """
     required = set(stack.required(stack.manifest_of))
-    assert {"bleak", "habluetooth", "dbus-fast", "serialx"} <= required
+    assert {"bleak", "habluetooth", "dbus-fast", "serialx", "aiohasupervisor"} <= (
+        required
+    )
 
     for name in ("requirements-test.txt", "constraints-oldest.txt"):
         named = {
@@ -167,19 +183,101 @@ def test_this_environment_is_one_the_script_would_have_left(
     )
 
 
-def test_each_stack_is_installed_from_the_same_requirements(
+def test_this_environment_is_one_stack_and_not_both(stack: ModuleType) -> None:
+    """One of the two packages that carry Home Assistant is here, never both.
+
+    They give the same fixtures, and Home Assistant's package says not to be
+    installed beside the plugin. Where CI says which leg this is, the package
+    is that leg's.
+    """
+    here = [
+        name for name, package in stack.PACKAGES.items() if stack.installed(package)
+    ]
+    assert len(here) == 1, here
+
+    leg = os.environ.get("GLOWRIUM_STACK")
+    if leg is not None:
+        assert here == [leg]
+
+
+def test_a_hang_is_cut_short_and_coverage_is_counted_on_either_stack(
+    pytestconfig: pytest.Config,
+) -> None:
+    """On either stack a hang is cut short, and coverage is counted.
+
+    The plugin brought pytest-timeout and pytest-cov along with it, Home
+    Assistant's own package brings neither. Without the first, the timeout in
+    pyproject.toml is an option pytest does not know and only warns about,
+    and a deadlock hangs CI again instead of failing it; without the second,
+    CI's --cov is refused.
+    """
+    assert pytestconfig.getini("timeout") == "60"
+    assert pytestconfig.pluginmanager.hasplugin("pytest_cov")
+    # Named in the requirements, so that the oldest stack - where the plugin
+    # brings them - says nothing on its own of what the newest would lack.
+    assert {"pytest-cov", "pytest-timeout"} <= set(
+        _requirements("requirements-test.txt")
+    )
+
+
+def test_each_stack_is_the_same_requirements_and_what_carries_its_home_assistant(
     stack: ModuleType,
 ) -> None:
-    """The oldest is the newest with one constraint more - and nothing else."""
+    """What the two share is one file; the package with Home Assistant in it differs.
+
+    The oldest is the plugin, held by constraints-oldest.txt to the release
+    with the minimum in it. The newest is Home Assistant's own package,
+    released under Home Assistant's number from 2026.11 on: its floor names a
+    pre-release, so pip takes a beta when one is the newest (PEP 440), and
+    never settles on the releases of 2020 under the same name - which a
+    Python too old for today's would otherwise get without a word.
+    """
     assert stack.STACKS == ("oldest", "newest")
+    assert stack.PACKAGES == {"oldest": _PLUGIN, "newest": _PACKAGE}
     oldest, newest = stack.FIRST["oldest"], stack.FIRST["newest"]
-    assert str(ROOT / "requirements-test.txt") in newest
-    assert str(ROOT / "requirements-test.txt") in oldest
+    for first in (oldest, newest):
+        assert first[first.index("-r") + 1] == str(ROOT / "requirements-test.txt")
+
+    assert _PLUGIN in oldest
     assert oldest[oldest.index("-c") + 1] == str(ROOT / "constraints-oldest.txt")
+    assert "--upgrade" not in oldest
+
+    (named,) = [part for part in newest if part.startswith(_PACKAGE)]
+    package = Requirement(named)
+    assert package.name == _PACKAGE
+    # Chosen among what the index has, as pip chooses: a beta newer than the
+    # newest release is taken, a release of 2020 never is.
+    index = ["0.1.3", "2026.11.0b4", "2026.11.1", "2026.12.0b1"]
+    chosen = list(package.specifier.filter(index))
+    assert max(chosen, key=Version) == "2026.12.0b1"
+    assert "0.1.3" not in chosen
     assert "-c" not in newest
     # An environment that has an older Home Assistant moves on to the newest.
     assert "--upgrade" in newest
-    assert "--upgrade" not in oldest
+
+
+@pytest.mark.parametrize(
+    ("stack_named", "in_the_way"), [("newest", _PLUGIN), ("oldest", _PACKAGE)]
+)
+def test_a_stack_is_not_installed_over_the_other(
+    stack: ModuleType,
+    monkeypatch: pytest.MonkeyPatch,
+    stack_named: str,
+    in_the_way: str,
+) -> None:
+    """An environment with the other stack's package in it is left as it is.
+
+    Installed beside each other the two would give every fixture twice; the
+    one already there is named, and nothing is installed.
+    """
+    asked: list[tuple[str, ...]] = []
+    monkeypatch.setattr(stack, "_pip_install", lambda *what: asked.append(what))
+    monkeypatch.setattr(stack, "installed", {in_the_way: "1.0"}.get)
+
+    with pytest.raises(SystemExit, match=rf"{in_the_way}.*new virtualenv"):
+        stack.main([stack_named])
+
+    assert not asked
 
 
 def test_a_stack_it_does_not_know_is_refused_before_anything_is_installed(
@@ -204,7 +302,8 @@ def test_the_libraries_are_installed_the_way_home_assistant_installs_them(
     and a library under a Home Assistant then runs on dependencies no
     installation of that release has. Which Home Assistant came of it is
     written where the run shows it; a library that came out at another
-    version fails the run.
+    version fails the run. Run again in an environment it built, a stack
+    moves on: its own package is no reason to refuse.
     """
     asked: list[tuple[str, ...]] = []
     summary = tmp_path / "summary.md"
@@ -212,7 +311,7 @@ def test_the_libraries_are_installed_the_way_home_assistant_installs_them(
     monkeypatch.setattr(stack, "_pip_install", lambda *what: asked.append(what))
     monkeypatch.setattr(stack, "manifest_of", _MANIFESTS.__getitem__)
     monkeypatch.setattr(stack, "_home_assistant", lambda: tmp_path)
-    there = _REQUIRED | {"homeassistant": "0.9.9"}
+    there = _REQUIRED | {"homeassistant": "0.9.9", _PLUGIN: "0.13.344"}
     monkeypatch.setattr(stack, "installed", there.get)
 
     assert stack.main(["oldest"]) == 0
@@ -227,7 +326,8 @@ def test_the_libraries_are_installed_the_way_home_assistant_installs_them(
     assert "### oldest: Home Assistant 0.9.9" in summary.read_text()
     assert "- `bleak` 0.1.1" in summary.read_text()
 
-    monkeypatch.setattr(stack, "installed", (there | {"bleak": "0.1.2"}).get)
+    newer = _REQUIRED | {"homeassistant": "0.9.9", _PACKAGE: "2026.11.1"}
+    monkeypatch.setattr(stack, "installed", (newer | {"bleak": "0.1.2"}).get)
     assert stack.main(["newest"]) == 1
     assert asked[2] == stack.FIRST["newest"]
 

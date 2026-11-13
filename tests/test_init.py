@@ -39,11 +39,6 @@ from homeassistant.helpers.event import async_track_state_change_event
 from homeassistant.helpers.icon import async_get_icons
 from homeassistant.helpers.translation import async_get_translations
 import pytest
-from pytest_homeassistant_custom_component.common import (
-    MockConfigEntry,
-    mock_restore_cache,
-    mock_restore_cache_with_extra_data,
-)
 
 from custom_components.glowrium import _UNCLOSED, PLATFORMS, cbor, models, protocol
 from custom_components.glowrium.const import (
@@ -80,6 +75,11 @@ from custom_components.glowrium.select import GlowriumLightingModeSelect
 from custom_components.glowrium.time import GlowriumTimerEnd, GlowriumTimerStart
 
 from .conftest import ROOT, anchors
+from .ha_common import (
+    MockConfigEntry,
+    mock_restore_cache,
+    mock_restore_cache_with_extra_data,
+)
 from .lamp import ScriptedLamp, in_range, link_of
 from .shared import (
     ADDRESS,

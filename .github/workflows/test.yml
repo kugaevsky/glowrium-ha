@@ -4,8 +4,8 @@ on:
   push:
   pull_request:
   schedule:
-    # Once a week with nothing pushed. The newest leg tests whatever the
-    # test plugin tracks that day, and the integration reaches into bleak's
+    # Once a week with nothing pushed. The newest leg tests the newest Home
+    # Assistant there is that day, and the integration reaches into bleak's
     # private attributes to close a client's bus (see _close_bus): a release
     # that moves them has to fail here before it reaches anybody's host. The
     # oldest leg holds Home Assistant still, but not the linters, which
@@ -35,8 +35,9 @@ jobs:
       fail-fast: false
       matrix:
         # oldest - the Home Assistant this project names as its minimum, held
-        #   to one release (constraints-oldest.txt).
-        # newest - whatever the test plugin tracks today, betas included.
+        #   to one release of the test plugin (constraints-oldest.txt).
+        # newest - Home Assistant's own test package at its newest release,
+        #   betas included.
         stack: [oldest, newest]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1

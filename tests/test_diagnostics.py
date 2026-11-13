@@ -14,7 +14,6 @@ from unittest.mock import AsyncMock, MagicMock, patch
 from homeassistant.const import CONF_ADDRESS, CONF_MODEL_ID
 from homeassistant.core import HomeAssistant
 import pytest
-from pytest_homeassistant_custom_component.common import MockConfigEntry
 
 from custom_components.glowrium import (
     cbor,
@@ -45,6 +44,7 @@ from custom_components.glowrium.const import (
 from custom_components.glowrium.coordinator import _parse_device_info
 from custom_components.glowrium.diagnostics import async_get_config_entry_diagnostics
 
+from .ha_common import MockConfigEntry
 from .lamp import (
     ScriptedLamp,
     flood,
