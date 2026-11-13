@@ -110,7 +110,9 @@ container under BlueZ, and in two btsnoop captures of the vendor app
   would mean holding back what the lamp reports, which nothing here does.
 - The app holds the Enhanced duration under one more bound, a length it
   works out from the day where the lamp is (9 h 46 min on one November
-  day). It is not held here: what it is worked out from has not been found,
-  and the day's length says where the lamp is. Past it, what a lamp does has
-  not been tried.
+  day). It is not held here - the maintainer's choice, the same day, over
+  taking sunrise and sunset from the lamp or the sun of Home Assistant's
+  home: what the app works it out from has not been found, and the day's
+  length says where the lamp is. Past it, what a lamp does has not been
+  tried.
 - Shown in hours, both round to whole hours, as the ramp does (README).
