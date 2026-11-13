@@ -50,7 +50,7 @@ All notable changes to this project are documented here. The format is based on
   reports the same.** A number that had shown `45` came back as `45.0` and
   went to `45` again with the lamp's first report: a change of state after
   a restart, in a setting nobody had touched, for a state trigger to take
-  for one. All three numbers now come back as the figure they showed. What
+  for one. Every number now comes back as the figure it showed. What
   an older version stored is read as it was, so the change is seen once
   more, when the lamp first reports after the update
   ([#35](https://github.com/kugaevsky/glowrium-ha/issues/35)).
@@ -63,7 +63,7 @@ All notable changes to this project are documented here. The format is based on
   the app's own request. Only a lamp that reported its state when asked is
   asked; the diagnostics download names the goal and the Enhanced duration,
   in minutes.
-- **HACS installs releases only, and a release is one file.** From the next
+- **HACS installs releases only, and a release is one file.** From this
   release on, a release carries `glowrium.zip` - the integration's directory
   as it is at the tag - and HACS is told to take it, so that GitHub counts
   how often each release is fetched. That count is fetches of the file, per
@@ -191,11 +191,15 @@ All notable changes to this project are documented here. The format is based on
   the app writes the goal. Both are minutes, within what the app takes: the
   goal from 2 minutes to 22 h 59 min, the Enhanced duration from 2 minutes
   to 11 h 59 min, and the goal never shorter than the Enhanced duration.
-  Shown in hours, they are rounded to whole ones.
+  Shown in hours, they are rounded to whole ones. A model with no profile of
+  its own - a G8 - has neither hidden by its preset: its presets are the
+  G7's, taken on trust, and a setting is not hidden on a guess.
 - **A profile for the G6** (`Glowrium-C011`). Its presets are the G7's, index
   for index - a capture of the vendor app with every one of them - so a G6 is
   shown as a Glowrium G6, is offered the presets it has, and gets no notice
-  about presets that are not confirmed.
+  about presets that are not confirmed. An owner has run a G6 on 0.4.0 for a
+  week through an ESPHome Bluetooth proxy
+  ([#66](https://github.com/kugaevsky/glowrium-ha/pull/66)).
 - **A notice for a lamp whose model has no profile**, under *Settings →
   System → Repairs*. Such a lamp - a G8, today - is offered the G7's presets
   under *Lighting mode* and is sent the G7's index for the one chosen, which
