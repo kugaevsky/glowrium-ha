@@ -182,6 +182,10 @@ All notable changes to this project are documented here. The format is based on
 
 ### Added
 
+- **A profile for the G6** (`Glowrium-C011`). Its presets are the G7's, index
+  for index - a capture of the vendor app with every one of them - so a G6 is
+  shown as a Glowrium G6, is offered the presets it has, and gets no notice
+  about presets that are not confirmed.
 - **A notice for a lamp whose model has no profile**, under *Settings →
   System → Repairs*. Such a lamp - a G8, today - is offered the G7's presets
   under *Lighting mode* and is sent the G7's index for the one chosen, which

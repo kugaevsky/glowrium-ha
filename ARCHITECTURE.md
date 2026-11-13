@@ -803,7 +803,9 @@ The light's icon is not part of the profile. It is named by a key in
 `icons.json` like every other icon here, which an icon chosen per model could
 not be.
 
-Only the **G7** (`Glowrium-C051`) is verified on hardware today.
+The **G7** (`Glowrium-C051`) and the **G6** (`Glowrium-C011`) are verified on
+hardware. They share one table of presets (`CIRCADIAN_PRESETS`): the G6 was
+captured with every preset, and its indices are the G7's.
 
 ### A model without a profile
 

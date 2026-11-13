@@ -25,25 +25,35 @@ class GlowriumModel:
     lighting_modes: dict[str, int]
 
 
+# The circadian presets the vendor app shows a G7 and a G6, with the index the
+# lighting-mode command carries for each. Captured with every preset on both:
+# the same eight under the same names, and the same indices (the G6 on
+# 2026-11-13). A model whose capture differs gets a table of its own.
+CIRCADIAN_PRESETS: Final[dict[str, int]] = {
+    "sun_sync": 1,
+    "before_sunrise": 2,
+    "sunrise_sync": 5,
+    "sunset_sync": 9,
+    "after_sunset": 16,
+    "two_phase": 18,
+    "balance": 19,
+    "enhanced_two_phase": 32,
+}
+
 # Glowrium G7 - 48W puck grow light (app model "Glowrium-C051"). Fully verified
 # on hardware; indices confirmed against btsnoop captures.
 G7: Final = GlowriumModel(
-    pkey="Glowrium-C051",
-    name="Glowrium G7",
-    lighting_modes={
-        "sun_sync": 1,
-        "before_sunrise": 2,
-        "sunrise_sync": 5,
-        "sunset_sync": 9,
-        "after_sunset": 16,
-        "two_phase": 18,
-        "balance": 19,
-        "enhanced_two_phase": 32,
-    },
+    pkey="Glowrium-C051", name="Glowrium G7", lighting_modes=CIRCADIAN_PRESETS
+)
+
+# Glowrium G6 - grow-light strip (app model "Glowrium-C011", firmware 6).
+# Verified on hardware; indices confirmed against a btsnoop capture.
+G6: Final = GlowriumModel(
+    pkey="Glowrium-C011", name="Glowrium G6", lighting_modes=CIRCADIAN_PRESETS
 )
 
 # Registry keyed by device-info pkey. Extend with other Glowrium models here.
-MODELS: Final[dict[str, GlowriumModel]] = {G7.pkey: G7}
+MODELS: Final[dict[str, GlowriumModel]] = {G7.pkey: G7, G6.pkey: G6}
 
 # Reference presets for a device whose pkey we do not have a profile for yet.
 DEFAULT_MODEL: Final = G7

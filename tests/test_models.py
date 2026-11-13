@@ -59,6 +59,7 @@ def test_an_unknown_model_gets_the_reference_presets_under_the_family_name() -> 
     ("pkey", "has_one"),
     [
         pytest.param("Glowrium-C051", True, id="the G7"),
+        pytest.param("Glowrium-C011", True, id="the G6"),
         pytest.param("Glowrium-C064", False, id="a model nobody has captured"),
     ],
 )
@@ -73,6 +74,28 @@ def test_a_model_id_has_a_profile_of_its_own_or_has_none(
     unconfirmed for that model, is asked apart, and is not read off the name.
     """
     assert has_profile(pkey) is has_one
+
+
+def test_the_g6_is_driven_by_the_presets_of_the_g7_under_its_own_name() -> None:
+    """A G6 was captured with every preset: the G7's eight, index for index.
+
+    So it is shown as what it is, and offered the presets it has - which are
+    no longer anybody's guess for it.
+    """
+    g6 = resolve_model("Glowrium-C011")
+
+    assert g6.name == "Glowrium G6"
+    assert g6.lighting_modes == {
+        "sun_sync": 1,
+        "before_sunrise": 2,
+        "sunrise_sync": 5,
+        "sunset_sync": 9,
+        "after_sunset": 16,
+        "two_phase": 18,
+        "balance": 19,
+        "enhanced_two_phase": 32,
+    }
+    assert g6.lighting_modes == resolve_model("Glowrium-C051").lighting_modes
 
 
 def test_a_profile_is_a_profile_whatever_it_is_called(
