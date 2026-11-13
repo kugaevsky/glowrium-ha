@@ -612,8 +612,9 @@ available = connected or advertising  # Link.in_reach
   `coordinator.preset_allows`): which preset takes which is
   `models.preset_takes` - the goal every preset but Sun SYNC, the Enhanced
   duration Enhanced Two-Phase alone, as the vendor app shows them - and a
-  preset not known hides nothing. Both are judged in the base entity's
-  `available`, and nowhere else.
+  preset not known hides nothing, nor does one of a lamp whose model is not
+  named or has no profile (its presets are the G7's, a guess). Both are
+  judged in the base entity's `available`, and nowhere else.
 
 ### Reconnect
 

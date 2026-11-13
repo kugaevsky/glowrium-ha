@@ -74,7 +74,10 @@ container under BlueZ, and in two btsnoop captures of the vendor app
   shows them: the goal with every preset but Sun SYNC, which follows the sun,
   and the Enhanced duration with Enhanced Two-Phase alone
   (`models.preset_takes`, judged in the base entity's `available`). A preset
-  not known hides nothing, as a mode not known does not.
+  not known hides nothing, as a mode not known does not - and a preset is
+  not known for a lamp that has not named its model, nor for a model with
+  no profile of its own, a G8 among them: both are driven by the G7's
+  presets taken on trust, and a setting is not hidden on a guess.
 
 ## Consequences
 

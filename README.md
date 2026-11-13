@@ -59,14 +59,15 @@ Three of these are written out under
 
 **Mode-dependent availability:** *Lighting mode*, *Ramp time*, *Daily light
 goal* and *Enhanced lighting duration* are available only in **Circadian**; the
-*Schedule* controls only in **Schedule**. The two of the program go further,
-as the vendor app shows them: the goal with every preset but Sun SYNC, which
+*Schedule* controls only in **Schedule**. The two of the program go further, as
+the vendor app shows them: the goal with every preset but Sun SYNC, which
 follows the sun, and the Enhanced duration with Enhanced Two-Phase alone. While
-the lamp has not said which mode or preset it is in, nothing is hidden. Switched
-into Circadian, the lamp is in Sun SYNC until the integration puts the preset
-back; for that moment the goal shows *unavailable*, as *Lighting mode* shows Sun
-SYNC. The integration drives the device's own native Circadian/Schedule engine
-rather than reimplementing it in Home Assistant.
+the lamp has not said which mode or preset it is in, nothing is hidden, and a
+model whose presets are not confirmed (a G8) has neither hidden by its preset.
+Switched into Circadian, the lamp is in Sun SYNC until the integration puts the
+preset back; for that moment the goal shows *unavailable*, as *Lighting mode*
+shows Sun SYNC. The integration drives the device's own native
+Circadian/Schedule engine rather than reimplementing it in Home Assistant.
 
 **Lengths of time.** *Ramp time* and *Schedule gradual* are durations in
 minutes, from 0 to 90; *Daily light goal* and *Enhanced lighting duration*,

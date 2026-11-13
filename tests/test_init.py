@@ -524,7 +524,9 @@ async def test_a_setting_of_the_program_is_there_with_a_preset_that_takes_it(
     no preset for - hides nothing, as a mode not known does not; and in
     another mode the setting is unavailable whatever the preset.
     """
-    entry = await _setup_without_bluetooth(hass)
+    entry = _entry(**{CONF_MODEL_ID: "Glowrium-C051"})
+    entry.add_to_hass(hass)
+    await _setup_without_bluetooth(hass, entry)
     coordinator = entry.runtime_data
 
     async def _available_with(reported: dict[int, Any]) -> bool:
@@ -541,6 +543,34 @@ async def test_a_setting_of_the_program_is_there_with_a_preset_that_takes_it(
     takes_both = models.G7.lighting_modes["enhanced_two_phase"]
     reported = {**_in_mode(MODE_SCHEDULE), KEY_LIGHTING_MODE: takes_both}
     assert not await _available_with(reported)
+
+
+@pytest.mark.parametrize(
+    "model_id",
+    [None, "Glowrium-C064"],
+    ids=["a lamp that has not named its model", "a model with no profile"],
+)
+async def test_a_preset_that_is_a_guess_hides_no_setting_of_the_program(
+    hass: HomeAssistant, model_id: str | None
+) -> None:
+    """Where the presets are the G7's taken on trust, a preset hides nothing.
+
+    A lamp that has not said its model yet, and a model with no profile of
+    its own - a G8 - are driven by the G7's presets, unconfirmed for them:
+    which preset an index is, is a guess, and a setting is not hidden on one.
+    """
+    entry = _entry(**({CONF_MODEL_ID: model_id} if model_id else {}))
+    entry.add_to_hass(hass)
+    await _setup_without_bluetooth(hass, entry)
+    sun_sync = models.G7.lighting_modes["sun_sync"]
+
+    entry.runtime_data._ingest(
+        cbor.encode({**_in_mode(MODE_CIRCADIAN), KEY_LIGHTING_MODE: sun_sync})
+    )
+    await hass.async_block_till_done()
+
+    for number in (_GOAL, _ENHANCED):
+        assert hass.states.get(number).state != STATE_UNAVAILABLE, number
 
 
 async def test_the_coordinate_sensors_start_disabled(hass: HomeAssistant) -> None:

@@ -55,7 +55,7 @@ from .link import (
     Unclosed,
 )
 from .mirror import Mirror
-from .models import GlowriumModel, preset_takes, resolve_model
+from .models import GlowriumModel, has_profile, preset_takes, resolve_model
 from .protocol import UNUSABLE, Unusable, usable
 
 _LOGGER = logging.getLogger(__name__)
@@ -427,9 +427,13 @@ class GlowriumCoordinator:
         while the mode is not. The preset is the model's whose index the lamp
         reported; none is found for an index not reported yet, for what was
         reported and is no index, and for an index the model has no preset
-        for. Which preset takes what is the models' to say
-        (``models.preset_takes``).
+        for. Nor is it known for a lamp that has not named its model, or for a
+        model with no profile of its own: both are driven by the G7's presets,
+        unconfirmed for them, and which preset an index is, is a guess. Which
+        preset takes what is the models' to say (``models.preset_takes``).
         """
+        if not self.model_id or not has_profile(self.model_id):
+            return True
         index = self.lighting_mode
         preset = next(
             (key for key, value in self.model.lighting_modes.items() if value == index),
