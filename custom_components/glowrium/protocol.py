@@ -32,7 +32,9 @@ from .const import (
     KEY_ACTIVATED,
     KEY_BRIGHTNESS,
     KEY_CIRCADIAN,
+    KEY_DAILY_LIGHT_GOAL,
     KEY_DST,
+    KEY_ENHANCED_DURATION,
     KEY_INDICATOR,
     KEY_LATITUDE,
     KEY_LIGHTING_MODE,
@@ -260,6 +262,54 @@ def ramp_seconds(state: Mapping[int, Any]) -> int | Unusable | None:
 def ramp_minutes(state: Mapping[int, Any]) -> int | Unusable | None:
     """Read the circadian ramp (0x2f) in minutes."""
     return _of(ramp_seconds(state), lambda seconds: seconds // 60)
+
+
+# --- the program's daily light goal (0x2c) and Enhanced duration (0x32) ---
+
+# Two bytes each, big-endian minutes: 660, 720 and 780 were seen under the goal,
+# 30, 60 and 90 under the Enhanced duration. Neither can be longer than a day.
+_MINUTES_LENGTH: Final = 2
+_A_DAY_IN_MINUTES: Final = 24 * 60
+
+
+def _reported_minutes(state: Mapping[int, Any], key: int) -> bytes | Unusable | None:
+    """Return two bytes of minutes under ``key`` as reported, when they are some."""
+    if key not in state:
+        return None
+    raw = _octets(state[key], _MINUTES_LENGTH)
+    if raw is None or int.from_bytes(raw, "big") > _A_DAY_IN_MINUTES:
+        return UNUSABLE
+    return raw
+
+
+def reported_daily_light_goal(state: Mapping[int, Any]) -> bytes | Unusable | None:
+    """Return the daily light goal (0x2c) as the lamp reported it, when it is one.
+
+    The two bytes themselves: the lighting-mode command carries the goal back
+    as the lamp holds it, or the owner's goal set in the vendor app would be
+    lost to whatever the command was sent with.
+    """
+    return _reported_minutes(state, KEY_DAILY_LIGHT_GOAL)
+
+
+def daily_light_goal_minutes(state: Mapping[int, Any]) -> int | Unusable | None:
+    """Read the daily light goal (0x2c): minutes of light in a day."""
+    return _of(reported_daily_light_goal(state), lambda raw: int.from_bytes(raw, "big"))
+
+
+def reported_enhanced_duration(state: Mapping[int, Any]) -> bytes | Unusable | None:
+    """Return the Enhanced duration (0x32) as the lamp reported it, when it is one.
+
+    Carried back by the lighting-mode command as the goal is.
+    """
+    return _reported_minutes(state, KEY_ENHANCED_DURATION)
+
+
+def enhanced_duration_minutes(state: Mapping[int, Any]) -> int | Unusable | None:
+    """Read the Enhanced Lighting Duration (0x32) of Enhanced Two-Phase, in minutes."""
+    return _of(
+        reported_enhanced_duration(state), lambda raw: int.from_bytes(raw, "big")
+    )
 
 
 # --- schedule slot (0x11) ---
@@ -566,5 +616,7 @@ PROPERTIES: Final[Mapping[int, tuple[str, Callable[[Mapping[int, Any]], object]]
     KEY_INDICATOR: ("indicator", indicator),
     KEY_LIGHTING_MODE: ("lighting mode", lighting_mode),
     KEY_RAMP: ("ramp", ramp_seconds),
+    KEY_DAILY_LIGHT_GOAL: ("daily light goal", daily_light_goal_minutes),
+    KEY_ENHANCED_DURATION: ("enhanced lighting duration", enhanced_duration_minutes),
     KEY_DST: ("daylight saving", daylight_saving),
 }

@@ -39,7 +39,9 @@ from .const import (
     KEY_BRIGHTNESS,
     KEY_CIRCADIAN,
     KEY_CURVE,
+    KEY_DAILY_LIGHT_GOAL,
     KEY_DST,
+    KEY_ENHANCED_DURATION,
     KEY_INDICATOR,
     KEY_LATITUDE,
     KEY_LIGHTING_MODE,
@@ -118,6 +120,11 @@ def _ramp(seconds: int) -> dict[str, Any]:
     return {"seconds": seconds}
 
 
+def _minutes(minutes: int) -> dict[str, Any]:
+    """Word a setting of the program kept in minutes: its minutes."""
+    return {"minutes": minutes}
+
+
 def _dst(slot: protocol.DaylightSaving) -> dict[str, Any]:
     """Word the daylight-saving slot: its flag and its offset in seconds."""
     return {"enabled": slot.enabled, "offset_seconds": slot.offset_seconds}
@@ -138,6 +145,8 @@ _READ: Final[dict[int, Callable[[Any], Any]]] = {
     KEY_INDICATOR: _as_it_is,
     KEY_LIGHTING_MODE: _as_it_is,
     KEY_RAMP: _ramp,
+    KEY_DAILY_LIGHT_GOAL: _minutes,
+    KEY_ENHANCED_DURATION: _minutes,
     KEY_DST: _dst,
 }
 # Known by name and private: what gives the lamp's place away (``PLACE_KEYS``)

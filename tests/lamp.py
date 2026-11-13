@@ -23,7 +23,7 @@ from bleak.exc import BleakError
 from homeassistant.core import HomeAssistant
 
 from custom_components.glowrium import cbor
-from custom_components.glowrium.const import NOTIFY_UUID
+from custom_components.glowrium.const import NOTIFY_UUID, WRITE_UUID
 from custom_components.glowrium.coordinator import GlowriumCoordinator, Keeper
 from custom_components.glowrium.link import Link, Turn, Unclosed
 
@@ -235,6 +235,8 @@ class ScriptedLamp:
         ) = None
         self._never_acknowledges = False
         self._acknowledges_when: asyncio.Event | None = None
+        # Commands, by their frame, and what the lamp reports once each is done.
+        self._reactions: dict[bytes, bytes] = {}
         self._never_reads = False
         self._read_answered_when: asyncio.Event | None = None
         self._read_fails: Exception | None = None
@@ -268,7 +270,9 @@ class ScriptedLamp:
 
         It carries every id asked for, zero unless ``values`` gives one, and
         only the ids in ``only`` if that is given - a lamp that knows some of
-        what it is asked. ``after`` holds the answer back for that long;
+        what it is asked. Nothing it was not asked for: a lamp asked twice in
+        an exchange does not report again, in its second answer, what the
+        first one carried. ``after`` holds the answer back for that long;
         ``frame`` is reported as it is given, in place of all of that. A lamp
         that answers is no longer one that never acknowledges a write.
         """
@@ -298,6 +302,14 @@ class ScriptedLamp:
     def never_acknowledges_a_write(self) -> None:
         """Keep every write waiting: it neither returns nor fails."""
         self._never_acknowledges = True
+
+    def reacts(self, to: bytes, *, saying: bytes) -> None:
+        """Report ``saying`` once the command written as ``to`` has gone through.
+
+        What the lamp tells of what a command made it do, before the write is
+        acknowledged: the soonest a report of it can come.
+        """
+        self._reactions[to] = saying
 
     def acknowledges_when(self, acknowledged: asyncio.Event) -> None:
         """Hold every write until ``acknowledged`` is set: a slow acknowledgement."""
@@ -386,13 +398,16 @@ class ScriptedLamp:
             if saying is not None:
                 link.say(saying(frame))
             raise error
+        if uuid == WRITE_UUID and frame in self._reactions:
+            link.say(self._reactions[frame])
         if uuid == NOTIFY_UUID and self._answer is not None:
             values, only, after, raw = self._answer
             if after:
                 await asyncio.sleep(after)
             if raw is None:
                 asked = [key for key in frame if only is None or key in only]
-                raw = cbor.encode(dict.fromkeys(asked, 0) | (values or {}))
+                given = values or {}
+                raw = cbor.encode({key: given.get(key, 0) for key in asked})
             link.say(raw)
 
     async def read_of(self, uuid: str) -> bytearray:

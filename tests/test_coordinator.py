@@ -47,6 +47,7 @@ from custom_components.glowrium.const import (
     KEY_TIMER,
     KNOWN_KEYS,
     NOTIFY_UUID,
+    PROGRAM_KEYS,
     STATE_KEYS,
     WRITE_UUID,
 )
@@ -150,6 +151,56 @@ async def test_set_lighting_mode_matches_capture(hass: HomeAssistant) -> None:
         (WRITE_UUID, bytes.fromhex("a4182b05182c4202d0182f420e10183242001e"))
     ]
     assert coordinator.state[KEY_LIGHTING_MODE] == 5
+
+
+# What the lamp keeps under 0x2c is the owner's Daily Light Goal Time in
+# minutes, set in the vendor app; 0x32 rides along with it. A G7 asked on
+# 13.11.2026 held 780 (13 h) and 30, a G6 660 (11 h) and 90 - while the
+# lighting-mode command wrote 720 and 30 whatever the lamp held.
+_GOAL, _BESIDE_THE_GOAL = 0x2C, 0x32
+
+
+@pytest.mark.parametrize(
+    ("goal", "beside"),
+    [
+        pytest.param("030c", "001e", id="G7, 13 h"),
+        pytest.param("0294", "005a", id="G6, 11 h"),
+    ],
+)
+@pytest.mark.parametrize(
+    "touch",
+    ["lighting mode", "ramp", "back into circadian"],
+)
+async def test_a_mode_command_carries_the_daily_light_goal_the_lamp_reported(
+    hass: HomeAssistant, goal: str, beside: str, touch: str
+) -> None:
+    """Every command that rewrites the mode writes back what the lamp holds.
+
+    The three things in Home Assistant that send the lighting-mode command -
+    the preset, the ramp, and switching back into Circadian with a ramp
+    remembered - each used to reset the owner's goal to 12 hours.
+    """
+    coordinator, lamp = _at_a_lamp(hass)
+    coordinator._ingest(
+        cbor.encode(
+            {
+                KEY_POWER: False,
+                KEY_LIGHTING_MODE: 5,
+                KEY_RAMP: bytes.fromhex("0e10"),
+                _GOAL: bytes.fromhex(goal),
+                _BESIDE_THE_GOAL: bytes.fromhex(beside),
+            }
+        )
+    )
+    if touch == "lighting mode":
+        await coordinator.async_set_lighting_mode(1)
+    elif touch == "ramp":
+        await coordinator.async_set_ramp(30)
+    else:
+        await coordinator.async_set_operating_mode("circadian")
+    sent = cbor.decode(lamp.written[-1][1])
+    assert sent[_GOAL] == bytes.fromhex(goal)
+    assert sent[_BESIDE_THE_GOAL] == bytes.fromhex(beside)
 
 
 async def test_set_ramp_preserves_mode(hass: HomeAssistant) -> None:
@@ -967,6 +1018,7 @@ async def test_ramp_refuses_when_lighting_mode_unread(hass: HomeAssistant) -> No
         await coordinator.async_set_ramp(30)
     assert err.value.translation_key == "lighting_mode_not_read"
     assert lamp.written == []
+    assert lamp.dials == 0  # refused before a link was taken for it
 
 
 # An array that holds a null, as the bytes of it: the encoder these tests
@@ -1004,6 +1056,38 @@ async def test_a_lighting_mode_is_not_written_with_a_ramp_that_cannot_be_used(
     """
     coordinator, lamp = _at_a_lamp(hass)
     coordinator._ingest(_reporting(KEY_RAMP, no_ramp))
+
+    await coordinator.async_set_lighting_mode(5)
+
+    assert lamp.written == [
+        (WRITE_UUID, bytes.fromhex("a4182b05182c4202d0182f420e10183242001e"))
+    ]
+
+
+_NO_MINUTES = [
+    pytest.param(b"\xff" * 5, id="five bytes"),
+    pytest.param(bytes.fromhex("05a1"), id="a day and a minute"),
+    pytest.param(780, id="a number"),
+    pytest.param(_A_NULL_INSIDE, id="an array holding null"),
+]
+
+
+@pytest.mark.parametrize(
+    "key", [_GOAL, _BESIDE_THE_GOAL], ids=["the goal", "the Enhanced duration"]
+)
+@pytest.mark.parametrize("no_minutes", _NO_MINUTES)
+async def test_a_mode_command_sends_back_nothing_the_lamp_could_not_have_meant(
+    hass: HomeAssistant, key: int, no_minutes: Any
+) -> None:
+    """What stands under the goal and is not minutes of a day is not sent back.
+
+    The command carries the goal and the Enhanced duration as the lamp
+    reported them - when they are two bytes of minutes, no more than a day.
+    Anything else gets what a lamp that reported nothing gets: the frame
+    captured from the vendor app.
+    """
+    coordinator, lamp = _at_a_lamp(hass)
+    coordinator._ingest(_reporting(key, no_minutes))
 
     await coordinator.async_set_lighting_mode(5)
 
@@ -1357,7 +1441,7 @@ async def test_the_first_exchange_primes_the_link_once_on_either_path(
         await link_of(coordinator).connect()
 
     assert lamp.links[0].subscribed  # or no state ever arrives
-    assert lamp.asked == [bytes(STATE_KEYS)]
+    assert lamp.asked == [bytes(STATE_KEYS), bytes(PROGRAM_KEYS)]
     assert coordinator.state[KEY_POWER] is True  # the properties actually landed
     assert lamp.read == [INFO_UUID]  # and the model
     assert coordinator.model_id == "Glowrium-C051"
@@ -1366,7 +1450,218 @@ async def test_the_first_exchange_primes_the_link_once_on_either_path(
     # And it is not asked again on every tick from then on.
     link_of(coordinator).tick()
     await hass.async_block_till_done()
+    assert lamp.asked == [bytes(STATE_KEYS), bytes(PROGRAM_KEYS)]
+
+
+async def test_the_first_exchange_asks_for_the_program_and_a_mode_command_carries_it(
+    hass: HomeAssistant,
+) -> None:
+    """The goal and the Enhanced duration are asked for as the vendor app asks.
+
+    Once the state has been reported, the lamp is asked for its program with
+    the request the app sends, word for word, and the goal and the Enhanced
+    duration it reports are what the next lighting-mode command carries back:
+    the owner set them in the app. The lamp reports them only when asked -
+    not with the rest of the state.
+    """
+    coordinator, lamp = _at_a_lamp(hass)
+    lamp.answers(
+        {
+            KEY_LIGHTING_MODE: 5,
+            KEY_RAMP: bytes.fromhex("0e10"),
+            _GOAL: bytes.fromhex("030c"),
+            _BESIDE_THE_GOAL: bytes.fromhex("005a"),
+        }
+    )
+    lamp.readable(INFO_UUID, b"brand:Glowrium;pkey:Glowrium-C051;version:4;;")
+
+    await link_of(coordinator).connect()
+    assert lamp.asked == [bytes(STATE_KEYS), bytes.fromhex("2c2d2e2f31323334")]
+
+    lamp.written.clear()
+    await coordinator.async_set_lighting_mode(1)
+    sent = cbor.decode(lamp.written[-1][1])
+    assert sent[_GOAL] == bytes.fromhex("030c")
+    assert sent[_BESIDE_THE_GOAL] == bytes.fromhex("005a")
+
+
+@pytest.mark.parametrize("why", ["refuses", "stays silent"])
+async def test_a_lamp_that_does_not_report_when_asked_is_not_asked_for_its_program(
+    hass: HomeAssistant, monkeypatch: pytest.MonkeyPatch, why: str
+) -> None:
+    """Only a lamp that reported when asked for its state is asked once more.
+
+    One that refuses the state request, as a G8 does, would refuse this one
+    too; one that stays silent would keep the link waiting for nothing. Either
+    is read, and asked for nothing else.
+    """
+    coordinator, lamp = _at_a_lamp(hass)
+    if why == "refuses":
+        _refusing(lamp)
+    else:
+        monkeypatch.setattr(coordinator_module, "_REPORT_TIMEOUT", 0.01)
+        lamp.readable(NOTIFY_UUID, cbor.encode({KEY_POWER: True}))
+    lamp.readable(INFO_UUID, b"brand:x;;")
+
+    await link_of(coordinator).connect()
+
     assert lamp.asked == [bytes(STATE_KEYS)]
+    assert lamp.read == [NOTIFY_UUID, INFO_UUID]  # read instead, and the model
+
+
+async def test_an_answer_that_leaves_out_what_the_lamp_does_not_have_is_a_report(
+    hass: HomeAssistant, caplog: pytest.LogCaptureFixture
+) -> None:
+    """A lamp's answer promises a pair for every id asked, and brings what it has.
+
+    A G6 and a G7 head the map with the number of ids they were asked for and
+    leave out those they do not have: asked eight, a lamp with two answers
+    ``a8`` and two pairs. What came is kept, and the frame is a report like
+    any other - nothing in it to warn about.
+    """
+    coordinator, _lamp = _at_a_lamp(hass)
+    before = coordinator._mirror.reports
+
+    with caplog.at_level(logging.WARNING):
+        coordinator._ingest(bytes.fromhex("a8182c42030c182f420e10"))
+
+    assert coordinator.state[_GOAL] == bytes.fromhex("030c")
+    assert coordinator.state[KEY_RAMP] == bytes.fromhex("0e10")
+    assert coordinator._mirror.reports == before + 1
+    assert [r for r in caplog.records if r.levelno >= logging.WARNING] == []
+
+
+def _a_lamp_with_a_program(goal: str) -> dict[int, Any]:
+    """Return what a lamp that reports when asked says: preset, ramp, program."""
+    return {
+        KEY_POWER: True,
+        KEY_LIGHTING_MODE: 5,
+        KEY_RAMP: bytes.fromhex("0e10"),
+        _GOAL: bytes.fromhex(goal),
+        _BESIDE_THE_GOAL: bytes.fromhex("005a"),
+    }
+
+
+async def test_a_mode_command_asks_the_lamp_for_its_program_first(
+    hass: HomeAssistant,
+) -> None:
+    """A goal changed in the vendor app while Home Assistant was away is not lost.
+
+    The lamp takes one link: the app is used while Home Assistant holds none,
+    and the mirror still has the goal the lamp said before. A command can make
+    its own link, with no first exchange on it, so it asks the lamp for its
+    program itself, and carries what the lamp holds now.
+    """
+    coordinator, lamp = _at_a_lamp(hass)
+    lamp.answers(_a_lamp_with_a_program("030c"))  # 13 h
+    lamp.readable(INFO_UUID, b"brand:Glowrium;pkey:Glowrium-C051;version:4;;")
+    await link_of(coordinator).connect()
+    lamp.lose()  # the app is used, and the goal set to 11 h
+    lamp.answers(_a_lamp_with_a_program("0294"))
+    lamp.forget()
+
+    await coordinator.async_set_lighting_mode(1)
+
+    assert lamp.asked == [bytes(PROGRAM_KEYS)]  # asked on the command's own link
+    sent = cbor.decode(lamp.written[-1][1])
+    assert sent[KEY_LIGHTING_MODE] == 1
+    assert sent[_GOAL] == bytes.fromhex("0294")
+
+
+async def test_a_lamp_that_does_not_report_when_asked_is_not_asked_before_a_command(
+    hass: HomeAssistant,
+) -> None:
+    """A lamp that refused the state request is not asked before a command either.
+
+    A G8 refuses a request and drops the link: asked before every mode command,
+    it would drop the link of every one.
+    """
+    coordinator, lamp = _at_a_lamp(hass)
+    lamp.fails_writes(_REFUSAL, of=NOTIFY_UUID)
+    lamp.readable(NOTIFY_UUID, cbor.encode({KEY_POWER: True, KEY_LIGHTING_MODE: 5}))
+    lamp.readable(INFO_UUID, b"brand:x;;")
+    await link_of(coordinator).connect()
+    lamp.forget()
+
+    await coordinator.async_set_lighting_mode(1)
+
+    assert lamp.asked == []
+    assert cbor.decode(lamp.written[-1][1])[KEY_LIGHTING_MODE] == 1
+
+
+async def test_back_into_circadian_the_command_carries_the_preset_from_before_it(
+    hass: HomeAssistant,
+) -> None:
+    """Circadian on resets the preset and the ramp, and the command puts them back.
+
+    A G6 reported Sun SYNC and a ramp of 30 minutes right after ``{0x09: true}``,
+    and kept its goal. The mode command that follows is built from the preset
+    as it was before the switch: a report of the reset that comes first - the
+    lamp is asked for its program before the command is built - would
+    otherwise be what it sent.
+    """
+    coordinator, lamp = _at_a_lamp(hass)
+    coordinator._ingest(
+        cbor.encode({KEY_LIGHTING_MODE: 9, KEY_RAMP: bytes.fromhex("0a8c")})
+    )  # Sunset Sync, 45 min: the ramp remembered from the report
+    lamp.reacts(
+        to=cbor.encode({KEY_CIRCADIAN: True}),
+        saying=cbor.encode({KEY_LIGHTING_MODE: 1, KEY_RAMP: bytes.fromhex("0708")}),
+    )
+
+    await coordinator.async_set_operating_mode("circadian")
+
+    sent = cbor.decode(lamp.written[-1][1])
+    assert sent[KEY_LIGHTING_MODE] == 9
+    assert sent[KEY_RAMP] == bytes.fromhex("0a8c")
+
+
+async def test_the_answer_about_the_program_does_not_vouch_for_a_failed_command(
+    hass: HomeAssistant, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """What vouches for a mode command is a report that came after it was written.
+
+    The answer to the program request reports the ramp, and a command that
+    sets the ramp the lamp already has would match it - a failed write taken
+    for a delivered one.
+    """
+    coordinator, lamp = _at_a_lamp(hass)
+    monkeypatch.setattr(link_module, "_CONFIRM_TIMEOUT", 0.05)
+    lamp.answers(_a_lamp_with_a_program("030c"))
+    lamp.readable(INFO_UUID, b"brand:x;;")
+    await link_of(coordinator).connect()
+    lamp.fails_writes(BleakError("Unlikely Error"), of=WRITE_UUID)
+
+    with pytest.raises(HomeAssistantError):
+        await coordinator.async_set_ramp(60)  # the lamp's own ramp
+
+
+@pytest.mark.parametrize("how", ["refused", "lost with the link", "not answered"])
+async def test_a_program_request_that_comes_to_nothing_is_let_go(
+    hass: HomeAssistant,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+    how: str,
+) -> None:
+    """The program is asked of a link that has answered: what fails here is let go.
+
+    A refusal, a link lost under the request, or a lamp that acknowledges and
+    reports nothing ends the asking - quietly, on the debug log - and the
+    exchange goes on to what is left of it.
+    """
+    coordinator, lamp, link = await _holding_a_link(hass)
+    monkeypatch.setattr(coordinator_module, "_REPORT_TIMEOUT", 0.01)
+    if how == "refused":
+        lamp.fails_writes(_REFUSAL, of=NOTIFY_UUID)
+    elif how == "lost with the link":
+        lamp.fails_writes(BleakError("Not connected"), of=NOTIFY_UUID)
+
+    with caplog.at_level(logging.DEBUG, logger=coordinator_module.__name__):
+        await coordinator._async_ask_program(turn_over(coordinator, link))
+
+    assert lamp.asked == [bytes(PROGRAM_KEYS)]
+    said = [record for record in caplog.records if "program request" in record.message]
+    assert [record.levelno for record in said] == [logging.DEBUG]
 
 
 @pytest.mark.parametrize("reached", ["by a background connect", "by the poll"])
@@ -1654,6 +1949,7 @@ async def test_the_device_info_is_the_last_thing_read_and_read_once(
     assert lamp.exchanges == [
         ("write", NOTIFY_UUID),  # state asked
         ("write", WRITE_UUID),  # clock written
+        ("write", NOTIFY_UUID),  # program asked
         ("read", INFO_UUID),  # info read
     ]
     assert coordinator.model_id == "Glowrium-C051"

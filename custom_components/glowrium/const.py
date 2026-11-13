@@ -45,11 +45,14 @@ KEY_CURVE: Final = 0x34
 # mirror, which finds a value in a frame by its bytes, what shape to look for
 # - it takes anything here but the curve for a float.
 PLACE_KEYS: Final = frozenset({KEY_LATITUDE, KEY_LONGITUDE, KEY_CURVE})
-# The two fixed parameters the lighting-mode command carries beside the mode
-# and the ramp (their values: MODE_PARAM_* below). The lamp never reports
-# them back.
-KEY_MODE_PARAM_2C: Final = 0x2C
-KEY_MODE_PARAM_32: Final = 0x32
+# Two settings of the circadian program, in minutes, by the names the vendor
+# app shows them under: the Daily Light Goal Time - how long the light is on
+# in a day, for every preset but Sun SYNC - and the Enhanced Lighting Duration
+# of Enhanced Two-Phase. Both ride in every lighting-mode command. The lamp
+# keeps them through Circadian off and on, and reports them when asked
+# (PROGRAM_KEYS) and after its clock is set (a G6 and a G7, 13.11.2026).
+KEY_DAILY_LIGHT_GOAL: Final = 0x2C  # bytes(2) big-endian minutes
+KEY_ENHANCED_DURATION: Final = 0x32  # bytes(2) big-endian minutes
 
 # Bring-up ("pairing") the vendor app performs on a factory-reset device so that
 # its light output is enabled - decoded from a fresh-pairing btsnoop, and purely
@@ -64,10 +67,14 @@ KEY_TIME_SYNCED: Final = 0x31  # set to 1 together with the clock (0x05)
 # Everything but the clock is what the vendor app asks for. The clock (0x05) was
 # added once it had been measured on a G7 (firmware 4, 2026-10-05): asked for
 # alone, with the power, and with all the rest, it was reported each time and
-# the link stayed up. Other ids have not been tried, and an early note here said
-# that ids the app does not request make the device disconnect - written before
-# it was known that a GATT read does (see coordinator._request_state), so it may
-# have blamed the wrong thing. Add one only after measuring it.
+# the link stayed up. An early note here said that ids the app does not request
+# make the device disconnect - written before it was known that a GATT read
+# does (see coordinator._request_state). On 13.11.2026 a G7 under BlueZ took a
+# hundred and twenty-five requests of one id each, most of them ids the app
+# never asks, on a link that had settled; whether a fresh link holds as well
+# was not told apart. An answer bigger than one notification hung a G6 - the
+# whole lamp, until it was unplugged for a minute. Add an id only after
+# measuring it, and keep every answer small.
 STATE_KEYS: Final = (
     KEY_TIME,
     KEY_POWER,
@@ -83,25 +90,43 @@ STATE_KEYS: Final = (
     KEY_RAMP,
     KEY_DST,
 )
-# Every property id the integration has a name for: what it asks the lamp for,
-# what only its commands write, and the curve. The state mirror keeps these
+# Asked for once the state has been reported, exactly as the vendor app asks it
+# (a G6 and a G7, 13.11.2026, three to four seconds into a link): the circadian
+# program's settings - the goal, 0x2e (the program's brightness, which the app
+# writes with the mode command), the ramp, the Enhanced duration - beside ids
+# nothing here reads and the curve. Asked apart rather than added to
+# STATE_KEYS: thirteen ids in one request is what both lamps have taken. The
+# ramp is among them, so a lamp that reports STATE_KEYS has something to
+# report here; one that has none of the rest leaves them out of its answer.
+PROGRAM_KEYS: Final = (
+    KEY_DAILY_LIGHT_GOAL,
+    0x2D,
+    0x2E,
+    KEY_RAMP,
+    KEY_TIME_SYNCED,
+    KEY_ENHANCED_DURATION,
+    0x33,
+    KEY_CURVE,
+)
+# Every property id the integration has a name for or asks for: what it asks
+# the lamp for, and what only its commands write. The state mirror keeps these
 # whatever else a lamp sends, and of the ids nobody named only a bounded number
 # (mirror.py).
 KNOWN_KEYS: Final = frozenset(
     {
         *STATE_KEYS,
+        *PROGRAM_KEYS,
         KEY_ACTIVATE_MISC,
-        KEY_TIME_SYNCED,
-        KEY_CURVE,
-        KEY_MODE_PARAM_2C,
-        KEY_MODE_PARAM_32,
     }
 )
 
-# A lighting-mode command is {mode, 0x2c, ramp(0x2f), 0x32} in this key order.
-# 0x2c/0x32 are constant; 0x2f is the ramp time and is preserved from state.
-MODE_PARAM_2C: Final = bytes.fromhex("02d0")
-MODE_PARAM_32: Final = bytes.fromhex("001e")
+# A lighting-mode command is {mode, goal (0x2c), ramp (0x2f), Enhanced (0x32)}
+# in this key order, as the vendor app sends it. It carries the lamp's goal and
+# Enhanced duration back as the lamp last reported them, and the ramp as
+# remembered; these are for a lamp that has said nothing of them - the values a
+# G7 was first captured sending.
+DAILY_LIGHT_GOAL_DEFAULT: Final = bytes.fromhex("02d0")  # 720 min = 12 h
+ENHANCED_DURATION_DEFAULT: Final = bytes.fromhex("001e")  # 30 min
 RAMP_DEFAULT: Final = bytes.fromhex("0e10")  # 3600s = 60 min
 
 # Circadian lighting-mode presets are model-specific - see models.py.

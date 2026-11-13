@@ -2,7 +2,8 @@
 
 - **Status:** accepted
 - **Date:** 2026-08-24 (newer than the write); 2026-10-05 (about the command);
-  2026-10-09 (a command that was never written fails at once)
+  2026-10-09 (a command that was never written fails at once); 2026-11-13
+  (`0x2c` and `0x32` are reported, though not with the state)
 
 ## Context
 
@@ -32,8 +33,11 @@ lamp reported the state the command asked for? Yes only when all three hold:
 
 - the write reached the characteristic (`said` in `Link.send`); a command that
   never got that far has nothing to be vouched for and fails at once;
-- every property of the command the lamp can report (keys in `STATE_KEYS`;
-  `0x2c` and `0x32` are never reported back) matches the mirror;
+- every property of the command that is in `STATE_KEYS` matches the mirror.
+  The goal and the Enhanced duration a mode command carries (`0x2c`, `0x32`)
+  are not among them: the lamp reports them only when asked for its program
+  or after its clock is set, and a mode command that had to wait for them
+  could not be vouched for;
 - at least one of them was reported since the command was taken up
   (`Mirror.reported_since`, against the mirror's report count noted before
   the wait for the lock). One, not all: the lamp reports what changed, and a

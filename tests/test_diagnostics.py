@@ -28,7 +28,9 @@ from custom_components.glowrium.const import (
     KEY_BRIGHTNESS,
     KEY_CIRCADIAN,
     KEY_CURVE,
+    KEY_DAILY_LIGHT_GOAL,
     KEY_DST,
+    KEY_ENHANCED_DURATION,
     KEY_INDICATOR,
     KEY_LATITUDE,
     KEY_LIGHTING_MODE,
@@ -81,6 +83,8 @@ NAMES = {
     KEY_INDICATOR: "0x17 indicator",
     KEY_LIGHTING_MODE: "0x2b lighting mode",
     KEY_RAMP: "0x2f ramp",
+    KEY_DAILY_LIGHT_GOAL: "0x2c daily light goal",
+    KEY_ENHANCED_DURATION: "0x32 enhanced lighting duration",
     KEY_DST: "0x35 daylight saving",
 }
 
@@ -129,6 +133,8 @@ def _report(coordinator: Any) -> None:
                 KEY_TIMER: SCHEDULE,
                 KEY_LIGHTING_MODE: 5,
                 KEY_RAMP: bytes.fromhex("0e10"),
+                KEY_DAILY_LIGHT_GOAL: bytes.fromhex("030c"),
+                KEY_ENHANCED_DURATION: bytes.fromhex("001e"),
                 KEY_DST: bytes.fromhex("0100000e10"),
             }
         )
@@ -184,7 +190,9 @@ async def test_the_download_says_what_the_lamp_reported(hass: HomeAssistant) -> 
             "fade_seconds": 0,
         },
         "0x2b lighting mode": 5,
+        "0x2c daily light goal": {"minutes": 780},
         "0x2f ramp": {"seconds": 3600},
+        "0x32 enhanced lighting duration": {"minutes": 30},
         "0x35 daylight saving": {"enabled": True, "offset_seconds": 3600},
         "other_properties": 0,
         # In the file since the mirror was bounded: how many times a property
@@ -536,6 +544,8 @@ _READERS = {
     KEY_INDICATOR: protocol.indicator,
     KEY_LIGHTING_MODE: protocol.lighting_mode,
     KEY_RAMP: protocol.ramp_seconds,
+    KEY_DAILY_LIGHT_GOAL: protocol.daily_light_goal_minutes,
+    KEY_ENHANCED_DURATION: protocol.enhanced_duration_minutes,
     KEY_DST: protocol.daylight_saving,
 }
 
@@ -553,6 +563,8 @@ async def test_the_file_calls_unusable_what_the_entities_are_shown_as_unusable(
     it cannot be used.
     """
     assert set(_READERS) == set(NAMES)
+    # Every property the integration reads, but what gives the place away.
+    assert set(NAMES) == set(protocol.PROPERTIES) - PLACE_KEYS
     entry = await _a_lamp_that_has_reported(hass)
     mirror = entry.runtime_data._mirror
 
@@ -859,7 +871,7 @@ async def _hold(
                 "available": True,
                 "client": "NothingBehind",
                 "primed": True,
-                "reports": 2,  # the lamp answered the first exchange
+                "reports": 3,  # the lamp answered both requests of the first exchange
             },
             id="a primed link",
         ),

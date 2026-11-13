@@ -26,6 +26,8 @@ from custom_components.glowrium.const import (
     KEY_LATITUDE,
     KEY_LONGITUDE,
     KEY_POWER,
+    PROGRAM_KEYS,
+    STATE_KEYS,
     WRITE_UUID,
 )
 from custom_components.glowrium.coordinator import (
@@ -378,7 +380,8 @@ async def test_the_bench_drives_a_lamp_as_the_setup_of_an_entry_does(
     assert "brightness     70" in printed
     assert printed.rstrip().endswith("disconnected")
     assert lamp.dials == 1
-    assert len(lamp.asked) == 1  # the first exchange: the state, asked for
+    # The first exchange: the state, then the program, asked for.
+    assert lamp.asked == [bytes(STATE_KEYS), bytes(PROGRAM_KEYS)]
     assert lamp.read == [INFO_UUID]  # and the device info, read last
     assert not [uuid for uuid, _frame in lamp.written if uuid == WRITE_UUID]
     assert lamp.links[0].hung_up == 1

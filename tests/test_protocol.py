@@ -11,7 +11,9 @@ from custom_components.glowrium.const import (
     KEY_ACTIVATED,
     KEY_BRIGHTNESS,
     KEY_CIRCADIAN,
+    KEY_DAILY_LIGHT_GOAL,
     KEY_DST,
+    KEY_ENHANCED_DURATION,
     KEY_INDICATOR,
     KEY_LATITUDE,
     KEY_LIGHTING_MODE,
@@ -295,6 +297,10 @@ _READERS: dict[_Reader, int] = {
     protocol.ramp_seconds: KEY_RAMP,
     protocol.ramp_minutes: KEY_RAMP,
     protocol.reported_ramp: KEY_RAMP,
+    protocol.daily_light_goal_minutes: KEY_DAILY_LIGHT_GOAL,
+    protocol.reported_daily_light_goal: KEY_DAILY_LIGHT_GOAL,
+    protocol.enhanced_duration_minutes: KEY_ENHANCED_DURATION,
+    protocol.reported_enhanced_duration: KEY_ENHANCED_DURATION,
     protocol.daylight_saving: KEY_DST,
     protocol.dst_enabled: KEY_DST,
     protocol.schedule: KEY_TIMER,
@@ -435,6 +441,55 @@ def test_a_ramp_is_two_bytes_of_seconds_and_no_longer_than_two_hours() -> None:
     for read in (protocol.ramp_seconds, protocol.ramp_minutes, protocol.reported_ramp):
         for odd in not_a_ramp:
             assert read({KEY_RAMP: odd}) is UNUSABLE, repr(odd)
+        assert read({}) is None
+
+
+@pytest.mark.parametrize(
+    ("key", "minutes", "reported"),
+    [
+        pytest.param(
+            KEY_DAILY_LIGHT_GOAL,
+            protocol.daily_light_goal_minutes,
+            protocol.reported_daily_light_goal,
+            id="the daily light goal",
+        ),
+        pytest.param(
+            KEY_ENHANCED_DURATION,
+            protocol.enhanced_duration_minutes,
+            protocol.reported_enhanced_duration,
+            id="the Enhanced duration",
+        ),
+    ],
+)
+def test_a_setting_of_the_program_is_two_bytes_of_minutes_and_no_longer_than_a_day(
+    key: int, minutes: Any, reported: Any
+) -> None:
+    """Minutes in two bytes, big-endian: 780 for 13 hours, and a day at most.
+
+    A G7 held 780 under the goal and 30 under the Enhanced duration, a G6
+    660 and 90. What a command sends back is the two bytes, and only when
+    they are minutes of a day.
+    """
+    assert minutes({key: bytes.fromhex("030c")}) == 780
+    assert minutes({key: bytes.fromhex("0000")}) == 0
+    assert minutes({key: bytes.fromhex("05a0")}) == 24 * 60
+    as_reported = reported({key: bytearray.fromhex("005a")})
+    assert as_reported == bytes.fromhex("005a")
+    assert type(as_reported) is bytes
+    not_minutes = (
+        b"",
+        b"\x03",
+        bytes.fromhex("05a1"),  # a minute over a day
+        bytes.fromhex("ffff"),
+        bytes.fromhex("030c00"),  # in place, and one byte more
+        780,
+        "030c",
+        [3, 12],
+        None,
+    )
+    for read in (minutes, reported):
+        for odd in not_minutes:
+            assert read({key: odd}) is UNUSABLE, repr(odd)
         assert read({}) is None
 
 

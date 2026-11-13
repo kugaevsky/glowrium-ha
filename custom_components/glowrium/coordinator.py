@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Callable, Coroutine, Mapping
+from collections.abc import Awaitable, Callable, Coroutine, Mapping
 from datetime import datetime, time
 from enum import Enum, auto
 import logging
@@ -16,19 +16,21 @@ from homeassistant.util import dt as dt_util
 from . import cbor, identity, protocol
 from .const import (
     ACTIVATE_MISC_VALUE,
+    DAILY_LIGHT_GOAL_DEFAULT,
     DOMAIN,
+    ENHANCED_DURATION_DEFAULT,
     INFO_UUID,
     KEY_ACTIVATE_MISC,
     KEY_ACTIVATED,
     KEY_BRIGHTNESS,
     KEY_CIRCADIAN,
+    KEY_DAILY_LIGHT_GOAL,
     KEY_DST,
+    KEY_ENHANCED_DURATION,
     KEY_INDICATOR,
     KEY_LATITUDE,
     KEY_LIGHTING_MODE,
     KEY_LONGITUDE,
-    KEY_MODE_PARAM_2C,
-    KEY_MODE_PARAM_32,
     KEY_POWER,
     KEY_RAMP,
     KEY_SCHEDULE,
@@ -36,10 +38,9 @@ from .const import (
     KEY_TIMER,
     KNOWN_KEYS,
     MODE_CIRCADIAN,
-    MODE_PARAM_2C,
-    MODE_PARAM_32,
     MODE_SCHEDULE,
     NOTIFY_UUID,
+    PROGRAM_KEYS,
     RAMP_DEFAULT,
     STATE_KEYS,
     WRITE_UUID,
@@ -288,6 +289,9 @@ class GlowriumCoordinator:
         # How many times in a row the lamp has refused the state request.
         # At _REFUSALS_THAT_END_THE_ASKING it is asked no more - see _request_state.
         self._state_request_refusals = 0
+        # Whether the lamp reported when it was last asked for its state: only a
+        # lamp that does is asked for its program as well (see _greet).
+        self._reports_when_asked = False
         # How many writes reached the characteristic: a count, not a value,
         # so that a write that raised still counts (see _write_on).
         self._writes_sent = 0
@@ -359,14 +363,18 @@ class GlowriumCoordinator:
         exchange there: the link is told nothing, and lets go (what counts as
         an answer: ``_request_state``). Then whatever has to be written - the
         bring-up of a lamp that is not activated, a clock that has drifted -
-        and only then is the link called one that works. The device info is
-        read after that, and last: on BlueZ the link does not outlive a read.
+        and only then is the link called one that works. A lamp that reported
+        when asked is asked for its program as well (``_async_ask_program``).
+        The device info is read after that, and last: on BlueZ the link does
+        not outlive a read.
         """
         if not await self._request_state(turn):
             return
         await self._async_activate_if_needed(turn)
         await self._async_sync_clock_if_needed(turn)
         turn.answered()
+        if self._reports_when_asked:
+            await self._async_ask_program(turn)
         await self._async_read_device_info(turn)
 
     async def _probe(self, turn: Turn) -> None:
@@ -707,6 +715,7 @@ class GlowriumCoordinator:
         if self._asked_no_more:
             return await self._async_read_state(turn)
         asked = await self._async_ask_state(turn)
+        self._reports_when_asked = asked is _Asked.REPORTED
         if asked is _Asked.REPORTED:
             return True
         read = await self._async_read_state(turn)
@@ -721,6 +730,33 @@ class GlowriumCoordinator:
             return False
         self._ingest(raw)
         return True
+
+    async def _async_ask_program(self, turn: Turn) -> None:
+        """Ask the lamp for its circadian program's settings, as the vendor app does.
+
+        The goal and the Enhanced duration among them are the owner's, set in
+        the vendor app, and every lighting-mode command carries them back
+        (``_mode_payload``). Asked on each link, a change made in the app while
+        Home Assistant was away is what the next command sends. Asked apart
+        from ``STATE_KEYS``, and only of a lamp that answered those; the first
+        report after the asking ends the wait - one notification carries the
+        answer, and leaves out what the lamp does not have.
+        """
+        before = self._mirror.reports
+        try:
+            await turn.write(NOTIFY_UUID, bytes(PROGRAM_KEYS))
+        except (RefusedError, LinkLostError) as err:
+            _LOGGER.debug("%s program request failed: %s", self.address, err)
+            return
+        try:
+            async with asyncio.timeout(_REPORT_TIMEOUT):
+                while self._mirror.reports == before:
+                    await self._mirror.next_report()
+        except TimeoutError:
+            _LOGGER.debug(
+                "%s acknowledged the program request and reported nothing",
+                self.address,
+            )
 
     async def _async_ask_state(self, turn: Turn) -> _Asked:
         """Write the state request and wait for the lamp to report."""
@@ -853,12 +889,46 @@ class GlowriumCoordinator:
         link, and that may have been all that made the lamp reachable. A
         failure is a ``HomeAssistantError`` (see ``_async_deliver``).
         """
+
+        async def as_it_is(_turn: Turn) -> tuple[dict[int, Any], bool]:
+            return payload, False
+
         try:
-            await self._async_deliver(payload)
+            await self._async_deliver(as_it_is)
         finally:
             self._async_notify_listeners()
 
-    async def _async_deliver(self, payload: dict[int, Any]) -> None:
+    async def _async_write_mode(
+        self, *, mode: int | None = None, ramp: bytes | None = None
+    ) -> None:
+        """Send a lighting-mode command, built from the lamp's program as it is now.
+
+        The command carries the goal and the Enhanced duration back
+        (``_mode_payload``). It may make its own link, with no first exchange on
+        it, and the mirror can be older than what the lamp holds: the vendor app
+        is used while Home Assistant holds no link. So a lamp known to report
+        when asked is asked for its program on the command's link first. One
+        that is not - a G8 refuses a request and drops the link - is sent what
+        the mirror has. What the command would refuse to be built on, it
+        refuses before a link is taken.
+        """
+        self._mode_payload(mode=mode, ramp=ramp)
+
+        async def from_the_program(turn: Turn) -> tuple[dict[int, Any], bool]:
+            asked = self._reports_when_asked
+            if asked:
+                await self._async_ask_program(turn)
+            return self._mode_payload(mode=mode, ramp=ramp), asked
+
+        try:
+            await self._async_deliver(from_the_program)
+        finally:
+            self._async_notify_listeners()
+
+    async def _async_deliver(
+        self,
+        build: Callable[[Turn], Awaitable[tuple[dict[int, Any], bool]]],
+    ) -> None:
         """Hand a command to the link, and say in the user's words if it failed.
 
         The link delivers it: under its lock, on a link it dials if none is
@@ -869,14 +939,30 @@ class GlowriumCoordinator:
 
         Every failure is reported as a ``HomeAssistantError`` so the user gets
         a readable message rather than a stack trace after a long hang.
+
+        The command is built on each turn by ``build``, which says whether it
+        asked the lamp anything first.
         """
         # Noted before the wait for the lock: a report that comes while the
         # command waits is as fresh as one that comes after it.
         reports_before = self._mirror.reports
+        sent: dict[int, Any] = {}
+
+        async def say(turn: Turn) -> None:
+            nonlocal reports_before
+            payload, asked = await build(turn)
+            if asked:
+                # The answer to what was asked is a report the command did not
+                # make: what vouches for the command is what came after it.
+                reports_before = self._mirror.reports
+            sent.clear()
+            sent.update(payload)
+            await self._write_on(turn, payload)
+
         try:
             await self._link.send(
-                lambda turn: self._write_on(turn, payload),
-                vouch=lambda: self._async_device_confirms(payload, reports_before),
+                say,
+                vouch=lambda: self._async_device_confirms(sent, reports_before),
             )
         except NoNewLinkError as err:
             # What stopped it, when it was the link itself: "out of range,
@@ -906,9 +992,10 @@ class GlowriumCoordinator:
 
         The notification path is an independent channel, so it settles the
         question the acknowledgement could not. Only keys in ``STATE_KEYS`` are
-        compared - a mode command also carries fixed parameters (0x2c, 0x32) the
-        device never reports back, and requiring those to match would mean no
-        mode command could ever confirm.
+        compared - a mode command also carries the goal and the Enhanced duration
+        (0x2c, 0x32), which the lamp reports only when asked or after its clock
+        is set, and requiring those to match would mean no mode command could
+        ever confirm.
 
         A match alone proves nothing, which is why ``reports_before`` exists.
         The mirror is never invalidated - a disconnect clears the client, not
@@ -1090,21 +1177,28 @@ class GlowriumCoordinator:
         # that is remembered only when it is a ramp (see _ingest): whatever
         # stood under the id used to go back, five bytes of it or a text.
         ramp_value = ramp if ramp is not None else self._desired_ramp or RAMP_DEFAULT
+        # The goal and the Enhanced duration go back as the lamp last reported
+        # them: they are the owner's, set in the vendor app, and the lamp keeps
+        # both through Circadian off and on, so the last report is the one to
+        # trust. Whatever else stood under the id is not sent back. A lamp that
+        # has said nothing of them gets what a G7 was first captured sending.
+        goal = usable(protocol.reported_daily_light_goal(self.state))
+        enhanced = usable(protocol.reported_enhanced_duration(self.state))
         return {
             KEY_LIGHTING_MODE: mode_value,
-            KEY_MODE_PARAM_2C: MODE_PARAM_2C,
+            KEY_DAILY_LIGHT_GOAL: goal or DAILY_LIGHT_GOAL_DEFAULT,
             KEY_RAMP: ramp_value,
-            KEY_MODE_PARAM_32: MODE_PARAM_32,
+            KEY_ENHANCED_DURATION: enhanced or ENHANCED_DURATION_DEFAULT,
         }
 
     async def async_set_lighting_mode(self, index: int) -> None:
         """Select a circadian lighting mode by its index."""
-        await self._async_write(self._mode_payload(mode=index))
+        await self._async_write_mode(mode=index)
 
     async def async_set_ramp(self, minutes: int) -> None:
         """Set the circadian ramp time in minutes (0 = Sun Sync auto)."""
         ramp = protocol.be2_minutes_to_bytes(minutes)
-        await self._async_write(self._mode_payload(ramp=ramp))
+        await self._async_write_mode(ramp=ramp)
         # Remembered only once the lamp has it. Building the command can
         # refuse and the write can fail; a ramp kept from either would be
         # re-applied by the next switch to Circadian, which then fails on
@@ -1114,12 +1208,15 @@ class GlowriumCoordinator:
     async def async_set_operating_mode(self, mode: str) -> None:
         """Set the mutually-exclusive Manual/Circadian/Schedule mode."""
         if mode == MODE_CIRCADIAN:
+            # Switching Circadian on resets the preset to Sun SYNC and the ramp
+            # to 30 min, and keeps the goal (a G6, 2026-11-13): the command that
+            # puts them back carries the preset as it was before the switch -
+            # not one the lamp reported since - and the ramp remembered.
+            before = usable(self.lighting_mode)
             await self._async_write({KEY_SCHEDULE: False})
             await self._async_write({KEY_CIRCADIAN: True})
-            # Enabling circadian resets the device's ramp to a default; re-apply
-            # the user's ramp (with the current lighting mode) so it persists.
             if self._desired_ramp is not None:
-                await self._async_write(self._mode_payload())
+                await self._async_write_mode(mode=before)
         elif mode == MODE_SCHEDULE:
             await self._async_write({KEY_CIRCADIAN: False})
             await self._async_write({KEY_SCHEDULE: True})

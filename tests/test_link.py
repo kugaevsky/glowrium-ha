@@ -32,6 +32,8 @@ from custom_components.glowrium.const import (
     KEY_ACTIVATED,
     KEY_POWER,
     NOTIFY_UUID,
+    PROGRAM_KEYS,
+    STATE_KEYS,
     WRITE_UUID,
 )
 from custom_components.glowrium.coordinator import GlowriumCoordinator
@@ -268,7 +270,8 @@ async def test_two_ticks_do_not_make_the_first_exchange_twice(
     link_of(coordinator).tick()
     await hass.async_block_till_done()
 
-    assert len(lamp.asked) == 1
+    # One first exchange: the state and the program, each asked once.
+    assert lamp.asked == [bytes(STATE_KEYS), bytes(PROGRAM_KEYS)]
 
 
 async def test_a_failed_reconnect_does_not_wedge_reconnection(

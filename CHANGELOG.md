@@ -8,6 +8,19 @@ All notable changes to this project are documented here. The format is based on
 
 ### Fixed
 
+- **Changing the lighting mode, the ramp, or going back to Circadian no
+  longer resets the lamp's daily light goal and its Enhanced lighting
+  duration.** The lighting-mode command carried two values a G7 had first
+  been captured sending - 12 hours of light and 30 minutes - and wrote them
+  every time: an owner who had set 13 hours in the vendor app got 12 back
+  from any of the three. They are the vendor app's *Daily Light Goal Time*
+  and *Set Enhanced Lighting Duration*, and the command now carries them back
+  as the lamp holds them, as the app does: the lamp is asked for them on
+  every connect, and once more right before each such command, so a goal
+  changed in the app while Home Assistant was away is kept too. A mode
+  command sent after Home Assistant starts and before it has first spoken to
+  the lamp still sends the two old values; so does every one to a lamp that
+  refuses to be asked, as a G8 does.
 - **The bring-up of a factory-reset lamp is not settled by a value that
   only reads as yes.** Whether a lamp has to be brought up is asked once a
   session, and a number or a text under the activation flag settled it as
@@ -44,6 +57,12 @@ All notable changes to this project are documented here. The format is based on
 
 ### Changed
 
+- **The lamp is asked for its circadian program on every connect,** after
+  its state, and right before each lighting-mode command: the daily light
+  goal, the Enhanced duration and what the vendor app asks for with them, in
+  the app's own request. Only a lamp that reported its state when asked is
+  asked; the diagnostics download names the goal and the Enhanced duration,
+  in minutes.
 - **HACS installs releases only, and a release is one file.** From the next
   release on, a release carries `glowrium.zip` - the integration's directory
   as it is at the tag - and HACS is told to take it, so that GitHub counts
