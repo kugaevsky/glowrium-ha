@@ -36,6 +36,12 @@
       "ramp": {
         "name": "Время рампы"
       },
+      "daily_light_goal": {
+        "name": "Цель светового дня"
+      },
+      "enhanced_lighting_duration": {
+        "name": "Длительность усиленного освещения"
+      },
       "schedule_gradual": {
         "name": "Плавность расписания"
       },

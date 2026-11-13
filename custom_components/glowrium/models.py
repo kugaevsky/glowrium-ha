@@ -9,8 +9,11 @@ field of the device-info string (``facebd80``). Add a new model by adding one
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Final
+
+from .const import KEY_DAILY_LIGHT_GOAL, KEY_ENHANCED_DURATION
 
 
 @dataclass(frozen=True)
@@ -39,6 +42,22 @@ CIRCADIAN_PRESETS: Final[dict[str, int]] = {
     "balance": 19,
     "enhanced_two_phase": 32,
 }
+
+# Which presets take a setting of the program besides the ramp, by the id the
+# setting goes out under. The vendor app shows the daily light goal with every
+# preset but Sun SYNC, which keeps to the sun, and the Enhanced duration with
+# Enhanced Two-Phase alone (2026-11-13). By the preset's key, so that a model
+# with a table of its own is judged by the same rule.
+_TAKEN_BY: Final[dict[int, Callable[[str], bool]]] = {
+    KEY_DAILY_LIGHT_GOAL: lambda preset: preset != "sun_sync",
+    KEY_ENHANCED_DURATION: lambda preset: preset == "enhanced_two_phase",
+}
+
+
+def preset_takes(preset: str, setting: int) -> bool:
+    """Tell whether ``preset`` takes the setting of the program under ``setting``."""
+    return _TAKEN_BY[setting](preset)
+
 
 # Glowrium G7 - 48W puck grow light (app model "Glowrium-C051"). Fully verified
 # on hardware; indices confirmed against btsnoop captures.

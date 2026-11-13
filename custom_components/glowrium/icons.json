@@ -22,6 +22,12 @@
       "ramp": {
         "default": "mdi:tunnel"
       },
+      "daily_light_goal": {
+        "default": "mdi:sun-clock"
+      },
+      "enhanced_lighting_duration": {
+        "default": "mdi:weather-sunset"
+      },
       "schedule_gradual": {
         "default": "mdi:transition"
       },

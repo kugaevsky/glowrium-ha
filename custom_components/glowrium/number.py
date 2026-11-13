@@ -14,8 +14,13 @@ from homeassistant.const import PERCENTAGE, EntityCategory, UnitOfTime
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 
-from . import GlowriumConfigEntry
-from .const import MODE_CIRCADIAN, MODE_SCHEDULE
+from . import GlowriumConfigEntry, protocol
+from .const import (
+    KEY_DAILY_LIGHT_GOAL,
+    KEY_ENHANCED_DURATION,
+    MODE_CIRCADIAN,
+    MODE_SCHEDULE,
+)
 from .coordinator import GlowriumCoordinator
 from .entity import GlowriumSettingEntity
 
@@ -34,6 +39,8 @@ async def async_setup_entry(
     async_add_entities(
         [
             GlowriumRampNumber(coordinator),
+            GlowriumDailyLightGoalNumber(coordinator),
+            GlowriumEnhancedDurationNumber(coordinator),
             GlowriumTimerGradual(coordinator),
             GlowriumTimerBrightness(coordinator),
         ]
@@ -122,6 +129,71 @@ class GlowriumRampNumber(_GlowriumNumber):
     async def async_set_native_value(self, value: float) -> None:
         """Set the ramp time in minutes, to the nearest whole one."""
         await self._coordinator.async_set_ramp(_whole_minutes(value))
+
+
+class _GlowriumProgramNumber(_GlowriumNumber):
+    """A setting of the circadian program kept in whole minutes: 0x2c or 0x32.
+
+    Of the Circadian mode, and of the presets that take it. Both bounds are
+    the protocol's (``protocol.PROGRAM_MINUTES_MIN`` and ``_MAX``). Whole
+    minutes, and meant to be read in minutes, as the ramp is: in hours Home
+    Assistant shows them to no decimals.
+    """
+
+    _attr_entity_category = EntityCategory.CONFIG
+    _only_in_mode = MODE_CIRCADIAN
+    _attr_native_min_value = protocol.PROGRAM_MINUTES_MIN
+    _attr_native_max_value = protocol.PROGRAM_MINUTES_MAX
+    _attr_native_step = 1
+    _attr_device_class = NumberDeviceClass.DURATION
+    _attr_native_unit_of_measurement = UnitOfTime.MINUTES
+    _attr_mode = NumberMode.BOX
+
+    def __init__(self, coordinator: GlowriumCoordinator) -> None:
+        """Initialize the number under the unique id its translation key gives."""
+        super().__init__(coordinator)
+        self._attr_unique_id = f"{coordinator.address}_{self._attr_translation_key}"
+
+
+class GlowriumDailyLightGoalNumber(_GlowriumProgramNumber):
+    """The daily light goal (0x2c): how many minutes of light a day has.
+
+    Every preset but Sun SYNC keeps to it - from sunrise, up to sunset, around
+    the middle of the day, or, where daylight falls short of it, before
+    sunrise and after sunset - and the lamp works out when.
+    """
+
+    _attr_translation_key = "daily_light_goal"
+    _only_with_a_preset_taking = KEY_DAILY_LIGHT_GOAL
+
+    @property
+    def native_value(self) -> float | None:
+        """Return the goal in minutes."""
+        return self._or_remembered(
+            self._coordinator.daily_light_goal_minutes, self._restored_number
+        )
+
+    async def async_set_native_value(self, value: float) -> None:
+        """Set the goal in minutes, to the nearest whole one."""
+        await self._coordinator.async_set_daily_light_goal(_whole_minutes(value))
+
+
+class GlowriumEnhancedDurationNumber(_GlowriumProgramNumber):
+    """Enhanced Lighting Duration (0x32) of Enhanced Two-Phase, in minutes."""
+
+    _attr_translation_key = "enhanced_lighting_duration"
+    _only_with_a_preset_taking = KEY_ENHANCED_DURATION
+
+    @property
+    def native_value(self) -> float | None:
+        """Return the Enhanced duration in minutes."""
+        return self._or_remembered(
+            self._coordinator.enhanced_duration_minutes, self._restored_number
+        )
+
+    async def async_set_native_value(self, value: float) -> None:
+        """Set the Enhanced duration in minutes, to the nearest whole one."""
+        await self._coordinator.async_set_enhanced_duration(_whole_minutes(value))
 
 
 class _GlowriumTimerNumber(_GlowriumNumber):

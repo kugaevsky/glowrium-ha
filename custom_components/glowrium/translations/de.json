@@ -36,6 +36,12 @@
       "ramp": {
         "name": "Rampenzeit"
       },
+      "daily_light_goal": {
+        "name": "Tägliches Lichtziel"
+      },
+      "enhanced_lighting_duration": {
+        "name": "Dauer der verstärkten Beleuchtung"
+      },
       "schedule_gradual": {
         "name": "Zeitplan-Übergang"
       },

@@ -169,7 +169,13 @@ _GOAL, _BESIDE_THE_GOAL = 0x2C, 0x32
 )
 @pytest.mark.parametrize(
     "touch",
-    ["lighting mode", "ramp", "back into circadian"],
+    [
+        "lighting mode",
+        "ramp",
+        "back into circadian",
+        "the goal",
+        "the Enhanced duration",
+    ],
 )
 async def test_a_mode_command_carries_the_daily_light_goal_the_lamp_reported(
     hass: HomeAssistant, goal: str, beside: str, touch: str
@@ -178,7 +184,9 @@ async def test_a_mode_command_carries_the_daily_light_goal_the_lamp_reported(
 
     The three things in Home Assistant that send the lighting-mode command -
     the preset, the ramp, and switching back into Circadian with a ramp
-    remembered - each used to reset the owner's goal to 12 hours.
+    remembered - each used to reset the owner's goal to 12 hours. The two
+    that set the goal and the Enhanced duration write what they set, and
+    carry the other back as the lamp holds it.
     """
     coordinator, lamp = _at_a_lamp(hass)
     coordinator._ingest(
@@ -192,15 +200,21 @@ async def test_a_mode_command_carries_the_daily_light_goal_the_lamp_reported(
             }
         )
     )
+    expected = {_GOAL: bytes.fromhex(goal), _BESIDE_THE_GOAL: bytes.fromhex(beside)}
     if touch == "lighting mode":
         await coordinator.async_set_lighting_mode(1)
     elif touch == "ramp":
         await coordinator.async_set_ramp(30)
-    else:
+    elif touch == "back into circadian":
         await coordinator.async_set_operating_mode("circadian")
+    elif touch == "the goal":
+        await coordinator.async_set_daily_light_goal(750)
+        expected[_GOAL] = bytes.fromhex("02ee")
+    else:
+        await coordinator.async_set_enhanced_duration(60)
+        expected[_BESIDE_THE_GOAL] = bytes.fromhex("003c")
     sent = cbor.decode(lamp.written[-1][1])
-    assert sent[_GOAL] == bytes.fromhex(goal)
-    assert sent[_BESIDE_THE_GOAL] == bytes.fromhex(beside)
+    assert {key: sent[key] for key in expected} == expected
 
 
 async def test_set_ramp_preserves_mode(hass: HomeAssistant) -> None:
@@ -1011,11 +1025,19 @@ async def test_schedule_setters_refuse_when_slot_unread(hass: HomeAssistant) -> 
     assert lamp.written == []
 
 
-async def test_ramp_refuses_when_lighting_mode_unread(hass: HomeAssistant) -> None:
-    """Setting the ramp must not silently reset the lighting mode to index 1."""
+@pytest.mark.parametrize("setting", ["the ramp", "the goal", "the Enhanced duration"])
+async def test_ramp_refuses_when_lighting_mode_unread(
+    hass: HomeAssistant, setting: str
+) -> None:
+    """Setting the ramp must not silently reset the lighting mode to index 1.
+
+    Nor setting the goal or the Enhanced duration: each goes in the same
+    command, with the preset in it.
+    """
     coordinator, lamp = _at_a_lamp(hass)
+    set_it = getattr(coordinator, _SETTERS[setting])
     with pytest.raises(HomeAssistantError) as err:
-        await coordinator.async_set_ramp(30)
+        await set_it(30)
     assert err.value.translation_key == "lighting_mode_not_read"
     assert lamp.written == []
     assert lamp.dials == 0  # refused before a link was taken for it
@@ -1094,6 +1116,99 @@ async def test_a_mode_command_sends_back_nothing_the_lamp_could_not_have_meant(
     assert lamp.written == [
         (WRITE_UUID, bytes.fromhex("a4182b05182c4202d0182f420e10183242001e"))
     ]
+
+
+# What sets each of the three that go in the lighting-mode command besides the
+# preset. By name, so that a case is not held up by another one's setter.
+_SETTERS = {
+    "the ramp": "async_set_ramp",
+    "the goal": "async_set_daily_light_goal",
+    "the Enhanced duration": "async_set_enhanced_duration",
+}
+
+
+# A lamp in Sunrise Sync with a ramp of an hour, a goal of 12 hours and an
+# Enhanced duration of an hour and a half: the G6 on 13.11.2026.
+_A_PROGRAM_OF_TWELVE_HOURS: dict[int, Any] = {
+    KEY_LIGHTING_MODE: 5,
+    KEY_RAMP: bytes.fromhex("0e10"),
+    _GOAL: bytes.fromhex("02d0"),
+    _BESIDE_THE_GOAL: bytes.fromhex("005a"),
+}
+
+
+@pytest.mark.parametrize(
+    ("setting", "minutes", "frame"),
+    [
+        pytest.param(
+            "the goal",
+            750,
+            "a4182b05182c4202ee182f420e10183242005a",
+            id="the goal, as the vendor app sets it",
+        ),
+        pytest.param(
+            "the Enhanced duration",
+            60,
+            "a4182b05182c4202d0182f420e10183242003c",
+            id="the Enhanced duration",
+        ),
+    ],
+)
+async def test_a_setting_of_the_program_goes_in_the_lighting_mode_command(
+    hass: HomeAssistant, setting: str, minutes: int, frame: str
+) -> None:
+    """The goal and the Enhanced duration are set with the command that carries them.
+
+    The vendor app raised a G6's goal by half an hour with this very frame
+    (2026-11-13): 750 minutes in two bytes of minutes - not of seconds, as
+    the ramp beside them is - with the preset, the ramp and the Enhanced
+    duration the lamp held. The Enhanced duration goes the same way; a G6
+    kept one of 60 minutes written so.
+    """
+    coordinator, lamp = _at_a_lamp(hass)
+    coordinator._ingest(cbor.encode(_A_PROGRAM_OF_TWELVE_HOURS))
+
+    if setting == "the goal":
+        await coordinator.async_set_daily_light_goal(minutes)
+    else:
+        await coordinator.async_set_enhanced_duration(minutes)
+
+    assert lamp.written == [(WRITE_UUID, bytes.fromhex(frame))]
+
+
+@pytest.mark.parametrize(
+    ("minutes", "written"),
+    [(0, "0000"), (1439, "059f"), (5000, "059f")],
+    ids=["none", "the longest", "longer than the longest"],
+)
+@pytest.mark.parametrize("setting", ["the goal", "the Enhanced duration"])
+async def test_what_a_setting_of_the_program_is_set_to_is_what_it_then_reads(
+    hass: HomeAssistant, setting: str, minutes: int, written: str
+) -> None:
+    """A value set is written as it is, and read back as one.
+
+    No minutes are a value, and go out as none - not as the default a lamp
+    that reported nothing gets. More than the longest a setting takes goes
+    out as the longest: what was written is echoed into the mirror, and more
+    than a day would read there as nothing that can be used, so the next
+    mode command would quietly send the default in its place.
+    """
+    coordinator, lamp = _at_a_lamp(hass)
+    coordinator._ingest(cbor.encode(_A_PROGRAM_OF_TWELVE_HOURS))
+
+    if setting == "the goal":
+        key = _GOAL
+        await coordinator.async_set_daily_light_goal(minutes)
+        read = coordinator.daily_light_goal_minutes
+    else:
+        key = _BESIDE_THE_GOAL
+        await coordinator.async_set_enhanced_duration(minutes)
+        read = coordinator.enhanced_duration_minutes
+
+    assert cbor.decode(lamp.written[-1][1])[key] == bytes.fromhex(written)
+    assert read == int(written, 16)
+    await coordinator.async_set_lighting_mode(9)
+    assert cbor.decode(lamp.written[-1][1])[key] == bytes.fromhex(written)
 
 
 @pytest.mark.parametrize("no_ramp", _NO_RAMP)
@@ -1531,41 +1646,57 @@ async def test_an_answer_that_leaves_out_what_the_lamp_does_not_have_is_a_report
     assert [r for r in caplog.records if r.levelno >= logging.WARNING] == []
 
 
-def _a_lamp_with_a_program(goal: str) -> dict[int, Any]:
+def _a_lamp_with_a_program(goal: str, beside: str = "005a") -> dict[int, Any]:
     """Return what a lamp that reports when asked says: preset, ramp, program."""
     return {
         KEY_POWER: True,
         KEY_LIGHTING_MODE: 5,
         KEY_RAMP: bytes.fromhex("0e10"),
         _GOAL: bytes.fromhex(goal),
-        _BESIDE_THE_GOAL: bytes.fromhex("005a"),
+        _BESIDE_THE_GOAL: bytes.fromhex(beside),
     }
 
 
+@pytest.mark.parametrize(
+    "touch", ["lighting mode", "the goal", "the Enhanced duration"]
+)
 async def test_a_mode_command_asks_the_lamp_for_its_program_first(
-    hass: HomeAssistant,
+    hass: HomeAssistant, touch: str
 ) -> None:
     """A goal changed in the vendor app while Home Assistant was away is not lost.
 
     The lamp takes one link: the app is used while Home Assistant holds none,
     and the mirror still has the goal the lamp said before. A command can make
     its own link, with no first exchange on it, so it asks the lamp for its
-    program itself, and carries what the lamp holds now.
+    program itself, and carries what the lamp holds now - the goal and the
+    Enhanced duration both, but the one the command sets.
     """
     coordinator, lamp = _at_a_lamp(hass)
-    lamp.answers(_a_lamp_with_a_program("030c"))  # 13 h
+    lamp.answers(_a_lamp_with_a_program("030c", "001e"))  # 13 h, 30 min
     lamp.readable(INFO_UUID, b"brand:Glowrium;pkey:Glowrium-C051;version:4;;")
     await link_of(coordinator).connect()
-    lamp.lose()  # the app is used, and the goal set to 11 h
-    lamp.answers(_a_lamp_with_a_program("0294"))
+    lamp.lose()  # the app is used: the goal set to 11 h, Enhanced to 90 min
+    lamp.answers(_a_lamp_with_a_program("0294", "005a"))
     lamp.forget()
 
-    await coordinator.async_set_lighting_mode(1)
+    expected = {
+        KEY_LIGHTING_MODE: 5,
+        _GOAL: bytes.fromhex("0294"),
+        _BESIDE_THE_GOAL: bytes.fromhex("005a"),
+    }
+    if touch == "lighting mode":
+        await coordinator.async_set_lighting_mode(1)
+        expected[KEY_LIGHTING_MODE] = 1
+    elif touch == "the goal":
+        await coordinator.async_set_daily_light_goal(750)
+        expected[_GOAL] = bytes.fromhex("02ee")
+    else:
+        await coordinator.async_set_enhanced_duration(60)
+        expected[_BESIDE_THE_GOAL] = bytes.fromhex("003c")
 
     assert lamp.asked == [bytes(PROGRAM_KEYS)]  # asked on the command's own link
     sent = cbor.decode(lamp.written[-1][1])
-    assert sent[KEY_LIGHTING_MODE] == 1
-    assert sent[_GOAL] == bytes.fromhex("0294")
+    assert {key: sent[key] for key in expected} == expected
 
 
 async def test_a_lamp_that_does_not_report_when_asked_is_not_asked_before_a_command(
@@ -1616,24 +1747,29 @@ async def test_back_into_circadian_the_command_carries_the_preset_from_before_it
     assert sent[KEY_RAMP] == bytes.fromhex("0a8c")
 
 
+@pytest.mark.parametrize(
+    ("setting", "its_own"),
+    [("the ramp", 60), ("the goal", 780), ("the Enhanced duration", 90)],
+)
 async def test_the_answer_about_the_program_does_not_vouch_for_a_failed_command(
-    hass: HomeAssistant, monkeypatch: pytest.MonkeyPatch
+    hass: HomeAssistant, monkeypatch: pytest.MonkeyPatch, setting: str, its_own: int
 ) -> None:
     """What vouches for a mode command is a report that came after it was written.
 
-    The answer to the program request reports the ramp, and a command that
-    sets the ramp the lamp already has would match it - a failed write taken
-    for a delivered one.
+    The answer to the program request reports the ramp, the goal and the
+    Enhanced duration, and a command that sets one to what the lamp already
+    has would match it - a failed write taken for a delivered one.
     """
     coordinator, lamp = _at_a_lamp(hass)
     monkeypatch.setattr(link_module, "_CONFIRM_TIMEOUT", 0.05)
-    lamp.answers(_a_lamp_with_a_program("030c"))
+    lamp.answers(_a_lamp_with_a_program("030c"))  # 13 h, and 90 min
     lamp.readable(INFO_UUID, b"brand:x;;")
     await link_of(coordinator).connect()
     lamp.fails_writes(BleakError("Unlikely Error"), of=WRITE_UUID)
+    set_it = getattr(coordinator, _SETTERS[setting])
 
     with pytest.raises(HomeAssistantError):
-        await coordinator.async_set_ramp(60)  # the lamp's own ramp
+        await set_it(its_own)  # what the lamp holds already
 
 
 @pytest.mark.parametrize("how", ["refused", "lost with the link", "not answered"])

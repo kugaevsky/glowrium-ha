@@ -47,7 +47,9 @@ from custom_components.glowrium.const import (
     KEY_ACTIVATED,
     KEY_BRIGHTNESS,
     KEY_CIRCADIAN,
+    KEY_DAILY_LIGHT_GOAL,
     KEY_DST,
+    KEY_ENHANCED_DURATION,
     KEY_INDICATOR,
     KEY_LATITUDE,
     KEY_LIGHTING_MODE,
@@ -67,6 +69,8 @@ from custom_components.glowrium.keeper import EntryKeeper
 from custom_components.glowrium.light import GlowriumLight
 from custom_components.glowrium.models import GlowriumModel
 from custom_components.glowrium.number import (
+    GlowriumDailyLightGoalNumber,
+    GlowriumEnhancedDurationNumber,
     GlowriumRampNumber,
     GlowriumTimerBrightness,
     GlowriumTimerGradual,
@@ -388,7 +392,13 @@ async def test_an_action_aimed_at_the_lamps_room_reaches_the_light_and_no_settin
 
 @pytest.mark.parametrize(
     ("domain", "unique"),
-    [("switch", "indicator"), ("switch", "dst"), ("button", "sync_location")],
+    [
+        ("switch", "indicator"),
+        ("switch", "dst"),
+        ("button", "sync_location"),
+        ("number", "daily_light_goal"),
+        ("number", "enhanced_lighting_duration"),
+    ],
 )
 async def test_a_setting_of_the_lamp_is_registered_as_a_setting(
     hass: HomeAssistant, domain: str, unique: str
@@ -432,6 +442,13 @@ def _in_mode(mode: str) -> dict[int, bool]:
 _OF_ONE_MODE = [
     ("select", "lighting_mode", GlowriumLightingModeSelect, MODE_CIRCADIAN),
     ("number", "ramp", GlowriumRampNumber, MODE_CIRCADIAN),
+    ("number", "daily_light_goal", GlowriumDailyLightGoalNumber, MODE_CIRCADIAN),
+    (
+        "number",
+        "enhanced_lighting_duration",
+        GlowriumEnhancedDurationNumber,
+        MODE_CIRCADIAN,
+    ),
     ("number", "schedule_gradual", GlowriumTimerGradual, MODE_SCHEDULE),
     ("number", "schedule_brightness", GlowriumTimerBrightness, MODE_SCHEDULE),
     ("time", "schedule_start", GlowriumTimerStart, MODE_SCHEDULE),
@@ -478,6 +495,52 @@ async def test_an_entity_of_one_mode_is_unavailable_in_another(
     link_of(coordinator).advertising(False)  # out of reach, in its own mode
     await hass.async_block_till_done()
     assert _unavailable()
+
+
+# The two settings of the program that some presets take and others do not.
+_GOAL = "number.glowrium_g7_1234_daily_light_goal"
+_ENHANCED = "number.glowrium_g7_1234_enhanced_lighting_duration"
+
+
+@pytest.mark.parametrize(
+    ("number", "taken_by"),
+    [
+        pytest.param(
+            _GOAL,
+            set(models.CIRCADIAN_PRESETS) - {"sun_sync"},
+            id="the goal",
+        ),
+        pytest.param(_ENHANCED, {"enhanced_two_phase"}, id="the Enhanced duration"),
+    ],
+)
+async def test_a_setting_of_the_program_is_there_with_a_preset_that_takes_it(
+    hass: HomeAssistant, number: str, taken_by: set[str]
+) -> None:
+    """In Circadian a setting of the program is available where its preset takes it.
+
+    The vendor app shows the goal with every preset but Sun SYNC, which keeps
+    to the sun, and the Enhanced duration with Enhanced Two-Phase alone. A
+    preset not known - none reported yet, no index, or an index the model has
+    no preset for - hides nothing, as a mode not known does not; and in
+    another mode the setting is unavailable whatever the preset.
+    """
+    entry = await _setup_without_bluetooth(hass)
+    coordinator = entry.runtime_data
+
+    async def _available_with(reported: dict[int, Any]) -> bool:
+        coordinator._ingest(cbor.encode(reported))
+        await hass.async_block_till_done()
+        return hass.states.get(number).state != STATE_UNAVAILABLE
+
+    assert await _available_with(_in_mode(MODE_CIRCADIAN))  # no preset reported
+    for preset, index in models.G7.lighting_modes.items():
+        available = await _available_with({KEY_LIGHTING_MODE: index})
+        assert available is (preset in taken_by), preset
+    for not_a_preset in (True, 250):
+        assert await _available_with({KEY_LIGHTING_MODE: not_a_preset}), not_a_preset
+    takes_both = models.G7.lighting_modes["enhanced_two_phase"]
+    reported = {**_in_mode(MODE_SCHEDULE), KEY_LIGHTING_MODE: takes_both}
+    assert not await _available_with(reported)
 
 
 async def test_the_coordinate_sensors_start_disabled(hass: HomeAssistant) -> None:
@@ -1000,6 +1063,16 @@ def _call(domain: str, service: str, entity: str, **data: object) -> tuple:
             (45,),
         ),
         (
+            _call("number", "set_value", "_daily_light_goal", value=750),
+            "async_set_daily_light_goal",
+            (750,),
+        ),
+        (
+            _call("number", "set_value", "_enhanced_lighting_duration", value=60),
+            "async_set_enhanced_duration",
+            (60,),
+        ),
+        (
             _call("number", "set_value", "_schedule_gradual", value=15),
             "async_set_timer_gradual",
             (15,),
@@ -1102,22 +1175,36 @@ async def test_a_value_remembered_in_a_shape_it_no_longer_has_is_let_go(
     assert hass.states.get("time.glowrium_g7_1234_schedule_end").state == "18:30:00"
 
 
-# --- The two numbers that hold a length of time ---
+# --- The numbers that hold a length of time ---
 
 _RAMP = "number.glowrium_g7_1234_ramp_time"
 _FADE = "number.glowrium_g7_1234_schedule_gradual"
 
-# What the lamp reports of each when it is 45 minutes. It counts both in
-# seconds, two bytes, and 2700 of them are 0a8c: a ramp, and the last two
+# What the lamp reports of each when it is 45 minutes. It counts the first two
+# in seconds, two bytes, and 2700 of them are 0a8c: a ramp, and the last two
 # bytes of a schedule's slot - whose brightness, the byte before, is 70 %.
 _A_RAMP_OF_45: dict[int, Any] = {KEY_LIGHTING_MODE: 5, KEY_RAMP: bytes.fromhex("0a8c")}
 _A_FADE_OF_45: dict[int, Any] = {KEY_TIMER: bytes.fromhex("01000000061e1200460a8c")}
+# The goal and the Enhanced duration it counts in minutes, two bytes: 45 are
+# 002d. Each with a preset that takes it: Sunrise Sync, Enhanced Two-Phase.
+_A_GOAL_OF_45: dict[int, Any] = {
+    KEY_LIGHTING_MODE: 5,
+    KEY_DAILY_LIGHT_GOAL: bytes.fromhex("002d"),
+}
+_AN_ENHANCED_DURATION_OF_45: dict[int, Any] = {
+    KEY_LIGHTING_MODE: 32,
+    KEY_ENHANCED_DURATION: bytes.fromhex("002d"),
+}
 
 _each_length_of_time = pytest.mark.parametrize(
     ("number", "report"),
     [
         pytest.param(_RAMP, _A_RAMP_OF_45, id="the ramp"),
         pytest.param(_FADE, _A_FADE_OF_45, id="the schedule's fade"),
+        pytest.param(_GOAL, _A_GOAL_OF_45, id="the goal"),
+        pytest.param(
+            _ENHANCED, _AN_ENHANCED_DURATION_OF_45, id="the Enhanced duration"
+        ),
     ],
 )
 
@@ -1174,6 +1261,10 @@ async def test_a_number_shown_in_another_unit_is_remembered_in_its_own(
             _A_FADE_OF_45,
             "70",
             id="the schedule's brightness",
+        ),
+        pytest.param(_GOAL, _A_GOAL_OF_45, "45", id="the goal"),
+        pytest.param(
+            _ENHANCED, _AN_ENHANCED_DURATION_OF_45, "45", id="the Enhanced duration"
         ),
     ],
 )
@@ -1262,21 +1353,33 @@ async def test_a_value_stored_beside_the_state_that_is_no_number_is_let_go(
     assert hass.states.get(_RAMP).state == "unknown"
 
 
-# What the lamp has reported before either number is set: a ramp of 30 minutes
-# and a schedule that fades over 10. A command is refused until what it is
-# written together with has been read.
+# What the lamp has reported before a number is set: a ramp of 30 minutes, a
+# schedule that fades over 10, and Enhanced Two-Phase - a preset that takes
+# the goal and the Enhanced duration both. A command is refused until what it
+# is written together with has been read.
 _WHAT_A_COMMAND_BUILDS_ON: dict[int, Any] = {
-    KEY_LIGHTING_MODE: 5,
+    KEY_LIGHTING_MODE: 32,
     KEY_RAMP: bytes.fromhex("0708"),
     KEY_TIMER: bytes.fromhex("01000000061e1200460258"),
 }
 
+# Under which id each number goes out: its own, among those the command carries.
+_WRITTEN_UNDER = {
+    _RAMP: KEY_RAMP,
+    _FADE: KEY_TIMER,
+    _GOAL: KEY_DAILY_LIGHT_GOAL,
+    _ENHANCED: KEY_ENHANCED_DURATION,
+}
+# The most each number takes, in its own minutes.
+_LONGEST = {_RAMP: 90, _FADE: 90, _GOAL: 1439, _ENHANCED: 1439}
+
 
 async def _set_to(hass: HomeAssistant, number: str, value: float) -> dict[int, str]:
-    """Set one of the two numbers through its service; return its bytes as written.
+    """Set one of the numbers through its service; return its bytes as written.
 
     In hex, under the id they went out under: the ramp's two bytes of
-    seconds, or the whole slot of the schedule, whose last two are its fade's.
+    seconds, the whole slot of the schedule, whose last two are its fade's,
+    or the two bytes of minutes of the goal or the Enhanced duration.
     """
     lamp = ScriptedLamp()
     with in_range(lamp):
@@ -1288,7 +1391,7 @@ async def _set_to(hass: HomeAssistant, number: str, value: float) -> dict[int, s
     return {
         key: sent.hex()
         for key, sent in cbor.decode(payload).items()
-        if key in (KEY_RAMP, KEY_TIMER)
+        if key == _WRITTEN_UNDER[number]
     }
 
 
@@ -1302,21 +1405,38 @@ async def _set_to(hass: HomeAssistant, number: str, value: float) -> dict[int, s
             "mdi:transition",
             {KEY_TIMER: "01000000061e1200460a8c"},
         ),
+        (
+            _GOAL,
+            "Daily light goal",
+            "mdi:sun-clock",
+            {KEY_DAILY_LIGHT_GOAL: "002d"},
+        ),
+        (
+            _ENHANCED,
+            "Enhanced lighting duration",
+            "mdi:weather-sunset",
+            {KEY_ENHANCED_DURATION: "002d"},
+        ),
     ],
-    ids=["the ramp", "the schedule's fade"],
+    ids=["the ramp", "the schedule's fade", "the goal", "the Enhanced duration"],
 )
 async def test_a_number_of_minutes_is_a_duration_and_is_otherwise_what_it_was(
-    hass: HomeAssistant, number: str, name: str, icon: str, written: dict[int, str]
+    hass: HomeAssistant,
+    number: str,
+    name: str,
+    icon: str,
+    written: dict[int, str],
 ) -> None:
-    """The ramp and the schedule's fade say what their minutes are: a duration.
+    """A number that holds minutes says what they are: a duration.
 
     Home Assistant has a device class for a length of time, and a name
     ("Duration"), an icon and a converter between units of time come with it.
     The first two are not to be seen, and the third does nothing to a number
     left in its own unit. Each keeps the name its translation gives it, the
     icon its key has in the icon file, its minutes, its limits and its step -
-    and what it is set to still reaches the lamp as that many minutes, which
-    the lamp counts in seconds: 45 of them are 2700, two bytes, 0a8c.
+    and what it is set to still reaches the lamp as that many minutes: the
+    ramp and the fade in seconds, 45 of them are 2700, two bytes, 0a8c; the
+    goal and the Enhanced duration in minutes, 002d.
     """
     entry = await _setup_without_bluetooth(hass)
     entry.runtime_data._ingest(cbor.encode(_WHAT_A_COMMAND_BUILDS_ON))
@@ -1336,7 +1456,7 @@ async def test_a_number_of_minutes_is_a_duration_and_is_otherwise_what_it_was(
         "device_class": "duration",
         "unit_of_measurement": "min",
         "min": 0,
-        "max": 90,
+        "max": _LONGEST[number],
         "step": 1,
         "mode": "box",
     }
@@ -1367,6 +1487,20 @@ async def test_a_number_of_minutes_is_a_duration_and_is_otherwise_what_it_was(
             {KEY_TIMER: "01000000061e1200460ac8"},
             id="a fade of 45 minutes and 40 seconds",
         ),
+        pytest.param(
+            _GOAL,
+            "s",
+            2740,
+            {KEY_DAILY_LIGHT_GOAL: "002e"},
+            id="a goal of 45 minutes and 40 seconds",
+        ),
+        pytest.param(
+            _ENHANCED,
+            "s",
+            2740,
+            {KEY_ENHANCED_DURATION: "002e"},
+            id="an Enhanced duration of 45 minutes and 40 seconds",
+        ),
     ],
 )
 async def test_a_part_of_a_minute_is_written_as_the_nearest_minute(
@@ -1393,30 +1527,50 @@ async def test_a_part_of_a_minute_is_written_as_the_nearest_minute(
 
 
 @pytest.mark.parametrize(
-    ("ramp", "shown"),
-    [("0708", "0.0"), ("0a8c", "1.0"), ("1518", "2.0")],
-    ids=["30 minutes", "45 minutes", "90 minutes"],
+    ("number", "reported", "shown", "longest"),
+    [
+        pytest.param(_RAMP, {KEY_RAMP: "0708"}, "0.0", 2, id="a ramp of 30 minutes"),
+        pytest.param(_RAMP, {KEY_RAMP: "0a8c"}, "1.0", 2, id="a ramp of 45 minutes"),
+        pytest.param(_RAMP, {KEY_RAMP: "1518"}, "2.0", 2, id="a ramp of 90 minutes"),
+        pytest.param(
+            _GOAL,
+            {KEY_DAILY_LIGHT_GOAL: "02ee"},
+            "12.0",
+            24,
+            id="a goal of 12 hours and a half",
+        ),
+    ],
 )
 async def test_minutes_shown_in_hours_are_shown_as_whole_hours(
-    hass: HomeAssistant, ramp: str, shown: str
+    hass: HomeAssistant,
+    number: str,
+    reported: dict[int, str],
+    shown: str,
+    longest: int,
 ) -> None:
-    """Minutes are the unit the two are meant to be read in, and this is why.
+    """Minutes are the unit these are meant to be read in, and this is why.
 
     The number platform shows a value in a chosen unit to as many decimals as
-    the value itself is written with, and has no precision to be given. The
-    two report whole minutes, so in hours they show whole hours: half an hour
-    as none, and the limit of an hour and a half as two. The README says so;
-    a Home Assistant in which this fails has changed what the README says.
+    the value itself is written with, and has no precision to be given. They
+    report whole minutes, so in hours they show whole hours, a half rounded
+    to the even one: a ramp of half an hour as none, its limit of an hour and
+    a half as two, and a goal of 12 hours and a half as 12. The README says
+    so; a Home Assistant in which this fails has changed what the README says.
     """
     entry = await _setup_without_bluetooth(hass)
     entry.runtime_data._ingest(
-        cbor.encode({**_A_RAMP_OF_45, KEY_RAMP: bytes.fromhex(ramp)})
+        cbor.encode(
+            {
+                KEY_LIGHTING_MODE: 5,
+                **{key: bytes.fromhex(value) for key, value in reported.items()},
+            }
+        )
     )
-    _choose_unit(hass, _RAMP, UnitOfTime.HOURS)
+    _choose_unit(hass, number, UnitOfTime.HOURS)
     await hass.async_block_till_done()
 
-    assert _state_and_unit(hass, _RAMP) == (shown, "h")
-    assert hass.states.get(_RAMP).attributes["max"] == 2
+    assert _state_and_unit(hass, number) == (shown, "h")
+    assert hass.states.get(number).attributes["max"] == longest
 
 
 async def test_the_brightness_of_the_schedule_is_given_no_device_class(
@@ -1489,7 +1643,8 @@ async def test_a_level_that_is_not_a_whole_number_is_still_a_level(
     assert hass.states.get("light.glowrium_g7_1234").attributes["brightness"] == shown
 
 
-# A lamp as it reports when all is well; its three modes are below.
+# A lamp as it reports when all is well; its three modes are below. Its preset
+# is Enhanced Two-Phase, which takes the goal and the Enhanced duration both.
 _WELL: dict[int, Any] = {
     KEY_POWER: True,
     KEY_BRIGHTNESS: 70,
@@ -1498,8 +1653,10 @@ _WELL: dict[int, Any] = {
     KEY_TIMER: bytes.fromhex("01000000061e1200460258"),
     KEY_ACTIVATED: True,
     KEY_INDICATOR: True,
-    KEY_LIGHTING_MODE: 5,
+    KEY_LIGHTING_MODE: 32,
     KEY_RAMP: bytes.fromhex("0708"),
+    KEY_DAILY_LIGHT_GOAL: bytes.fromhex("02d0"),
+    KEY_ENHANCED_DURATION: bytes.fromhex("005a"),
     KEY_DST: bytes.fromhex("0000000e10"),
 }
 _MODES: tuple[dict[int, Any], ...] = (
@@ -1553,6 +1710,8 @@ _SHOWS: dict[str, Callable[[Mapping[int, Any]], Any]] = {
     "switch.glowrium_g7_1234_daylight_saving_time": protocol.dst_enabled,
     "select.glowrium_g7_1234_operating_mode": protocol.operating_mode,
     "number.glowrium_g7_1234_ramp_time": protocol.ramp_minutes,
+    _GOAL: protocol.daily_light_goal_minutes,
+    _ENHANCED: protocol.enhanced_duration_minutes,
     "number.glowrium_g7_1234_schedule_brightness": protocol.schedule_brightness,
     "number.glowrium_g7_1234_schedule_gradual": protocol.schedule_gradual_minutes,
     "time.glowrium_g7_1234_schedule_start": protocol.schedule_start,
@@ -1957,6 +2116,8 @@ _BEFORE = {
     "switch.glowrium_g7_1234_indicator_light": "on",
     "select.glowrium_g7_1234_lighting_mode": "balance",
     "number.glowrium_g7_1234_ramp_time": "45",
+    _GOAL: "720",
+    _ENHANCED: "90",
     "switch.glowrium_g7_1234_daylight_saving_time": "on",
     "number.glowrium_g7_1234_schedule_brightness": "55",
     "time.glowrium_g7_1234_schedule_start": "07:30:00",
@@ -2004,6 +2165,16 @@ async def _every_entity(hass: HomeAssistant) -> MockConfigEntry:
             "number.glowrium_g7_1234_ramp_time",
             {KEY_RAMP: b"\xff" * 5},
             id="five bytes for the ramp",
+        ),
+        pytest.param(
+            _GOAL,
+            {KEY_DAILY_LIGHT_GOAL: bytes.fromhex("05a1")},
+            id="a day and a minute for the goal",
+        ),
+        pytest.param(
+            _ENHANCED,
+            {KEY_ENHANCED_DURATION: 90},
+            id="a number for the Enhanced duration",
         ),
         pytest.param(
             "switch.glowrium_g7_1234_daylight_saving_time",
@@ -2068,6 +2239,20 @@ async def test_a_value_that_cannot_be_used_is_shown_as_unknown(
             "30",
             {KEY_RAMP: b"\xff" * 5},
             id="the ramp",
+        ),
+        pytest.param(
+            _GOAL,
+            {KEY_DAILY_LIGHT_GOAL: bytes.fromhex("02d0")},
+            "720",
+            {KEY_DAILY_LIGHT_GOAL: bytes.fromhex("05a1")},
+            id="the goal",
+        ),
+        pytest.param(
+            _ENHANCED,
+            {KEY_ENHANCED_DURATION: bytes.fromhex("005a")},
+            "90",
+            {KEY_ENHANCED_DURATION: 90},
+            id="the Enhanced duration",
         ),
         pytest.param(
             "switch.glowrium_g7_1234_daylight_saving_time",
@@ -2181,6 +2366,8 @@ async def test_nothing_goes_unavailable_for_a_mode_that_cannot_be_used(
     for of_a_mode in (
         "select.glowrium_g7_1234_lighting_mode",
         "number.glowrium_g7_1234_ramp_time",
+        _GOAL,
+        _ENHANCED,
         "time.glowrium_g7_1234_schedule_start",
         "time.glowrium_g7_1234_schedule_end",
         "number.glowrium_g7_1234_schedule_gradual",

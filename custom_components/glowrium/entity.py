@@ -27,6 +27,11 @@ class GlowriumEntity(Entity):
     # is in another mode, and available while its mode is not known yet, so
     # that nothing collapses to unavailable before the first state arrives.
     _only_in_mode: str | None = None
+    # The setting of the program an entity is, by the id it goes out under, if
+    # it is one that some presets take and others do not: the goal and the
+    # Enhanced duration. Such an entity is unavailable with a preset that does
+    # not take it, and available while the preset is not known, as above.
+    _only_with_a_preset_taking: int | None = None
 
     def __init__(self, coordinator: GlowriumCoordinator) -> None:
         """Attach the entity to the coordinator's device."""
@@ -62,11 +67,18 @@ class GlowriumEntity(Entity):
 
     @property
     def available(self) -> bool:
-        """Return True while the lamp is in reach and in the entity's mode, if any."""
+        """Return True while the lamp is in reach, and in the entity's mode and preset.
+
+        The mode and the preset where the entity is of one, and while either
+        is not known.
+        """
         if not self._coordinator.available:
             return False
         mode = self._only_in_mode
-        return mode is None or self._coordinator.mode_allows(mode)
+        if mode is not None and not self._coordinator.mode_allows(mode):
+            return False
+        setting = self._only_with_a_preset_taking
+        return setting is None or self._coordinator.preset_allows(setting)
 
 
 class GlowriumSettingEntity(GlowriumEntity, RestoreEntity):

@@ -182,6 +182,14 @@ All notable changes to this project are documented here. The format is based on
 
 ### Added
 
+- **Daily light goal and Enhanced lighting duration**, two settings under
+  *Configuration* - the vendor app's *Daily Light Goal Time* and *Set
+  Enhanced Lighting Duration*. The goal is how many minutes of light a day
+  has, and every preset but Sun SYNC keeps to it; the Enhanced duration is
+  Enhanced Two-Phase's. Each is available in Circadian with a preset that
+  takes it, as in the app, and is written with the lighting-mode command, as
+  the app writes the goal. Both are minutes, from 0 to 1439; shown in hours,
+  they are rounded to whole ones.
 - **A profile for the G6** (`Glowrium-C011`). Its presets are the G7's, index
   for index - a capture of the vendor app with every one of them - so a G6 is
   shown as a Glowrium G6, is offered the presets it has, and gets no notice

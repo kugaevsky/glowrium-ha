@@ -55,7 +55,7 @@ from .link import (
     Unclosed,
 )
 from .mirror import Mirror
-from .models import GlowriumModel, resolve_model
+from .models import GlowriumModel, preset_takes, resolve_model
 from .protocol import UNUSABLE, Unusable, usable
 
 _LOGGER = logging.getLogger(__name__)
@@ -419,6 +419,24 @@ class GlowriumCoordinator:
         current = self.operating_mode
         return current is None or current is UNUSABLE or current == mode
 
+    def preset_allows(self, setting: int) -> bool:
+        """Return True if the lamp's preset takes ``setting``, or it is not known.
+
+        A setting of the program (by the id it goes out under) is kept
+        available while the preset is not known, as an entity of a mode is
+        while the mode is not. The preset is the model's whose index the lamp
+        reported; none is found for an index not reported yet, for what was
+        reported and is no index, and for an index the model has no preset
+        for. Which preset takes what is the models' to say
+        (``models.preset_takes``).
+        """
+        index = self.lighting_mode
+        preset = next(
+            (key for key, value in self.model.lighting_modes.items() if value == index),
+            None,
+        )
+        return preset is None or preset_takes(preset, setting)
+
     # What the platforms read: each property of the lamp by what it means. The
     # layouts and the rules for what a value is live in protocol.py, and every
     # one of these answers a value, None while the lamp has reported nothing
@@ -459,6 +477,16 @@ class GlowriumCoordinator:
     def ramp_minutes(self) -> int | Unusable | None:
         """Circadian ramp duration in minutes (0x2f)."""
         return protocol.ramp_minutes(self.state)
+
+    @property
+    def daily_light_goal_minutes(self) -> int | Unusable | None:
+        """The daily light goal in minutes (0x2c): how long a day's light lasts."""
+        return protocol.daily_light_goal_minutes(self.state)
+
+    @property
+    def enhanced_duration_minutes(self) -> int | Unusable | None:
+        """Enhanced Lighting Duration of Enhanced Two-Phase in minutes (0x32)."""
+        return protocol.enhanced_duration_minutes(self.state)
 
     @property
     def schedule_start(self) -> time | Unusable | None:
@@ -899,26 +927,37 @@ class GlowriumCoordinator:
             self._async_notify_listeners()
 
     async def _async_write_mode(
-        self, *, mode: int | None = None, ramp: bytes | None = None
+        self,
+        *,
+        mode: int | None = None,
+        ramp: bytes | None = None,
+        goal: bytes | None = None,
+        enhanced: bytes | None = None,
     ) -> None:
         """Send a lighting-mode command, built from the lamp's program as it is now.
 
         The command carries the goal and the Enhanced duration back
-        (``_mode_payload``). It may make its own link, with no first exchange on
-        it, and the mirror can be older than what the lamp holds: the vendor app
-        is used while Home Assistant holds no link. So a lamp known to report
-        when asked is asked for its program on the command's link first. One
-        that is not - a G8 refuses a request and drops the link - is sent what
-        the mirror has. What the command would refuse to be built on, it
-        refuses before a link is taken.
+        (``_mode_payload``) - but the one it sets. It may make its own link,
+        with no first exchange on it, and the mirror can be older than what the
+        lamp holds: the vendor app is used while Home Assistant holds no link.
+        So a lamp known to report when asked is asked for its program on the
+        command's link first. One that is not - a G8 refuses a request and
+        drops the link - is sent what the mirror has. What the command would
+        refuse to be built on, it refuses before a link is taken.
         """
-        self._mode_payload(mode=mode, ramp=ramp)
+
+        def build() -> dict[int, Any]:
+            return self._mode_payload(
+                mode=mode, ramp=ramp, goal=goal, enhanced=enhanced
+            )
+
+        build()
 
         async def from_the_program(turn: Turn) -> tuple[dict[int, Any], bool]:
             asked = self._reports_when_asked
             if asked:
                 await self._async_ask_program(turn)
-            return self._mode_payload(mode=mode, ramp=ramp), asked
+            return build(), asked
 
         try:
             await self._async_deliver(from_the_program)
@@ -1154,7 +1193,12 @@ class GlowriumCoordinator:
         await self._async_write(payload)
 
     def _mode_payload(
-        self, *, mode: int | None = None, ramp: bytes | None = None
+        self,
+        *,
+        mode: int | None = None,
+        ramp: bytes | None = None,
+        goal: bytes | None = None,
+        enhanced: bytes | None = None,
     ) -> dict[int, Any]:
         """Build a lighting-mode command, preserving the other fields.
 
@@ -1182,12 +1226,16 @@ class GlowriumCoordinator:
         # stood under the id used to go back, five bytes of it or a text.
         ramp_value = ramp if ramp is not None else self._desired_ramp or RAMP_DEFAULT
         # The goal and the Enhanced duration go back as the lamp last reported
-        # them: they are the owner's, set in the vendor app, and the lamp keeps
-        # both through Circadian off and on, so the last report is the one to
-        # trust. Whatever else stood under the id is not sent back. A lamp that
-        # has said nothing of them gets what a G7 was first captured sending.
-        goal = usable(protocol.reported_daily_light_goal(self.state))
-        enhanced = usable(protocol.reported_enhanced_duration(self.state))
+        # them, but the one the command sets: they are the owner's, set in the
+        # vendor app, and the lamp keeps both through Circadian off and on, so
+        # the last report is the one to trust. Whatever else stood under the
+        # id is not sent back. A lamp that has said nothing of them gets what a
+        # G7 was first captured sending. What the command sets goes as it is:
+        # two bytes, and none of either - 0000 - is a value too.
+        if goal is None:
+            goal = usable(protocol.reported_daily_light_goal(self.state))
+        if enhanced is None:
+            enhanced = usable(protocol.reported_enhanced_duration(self.state))
         return {
             KEY_LIGHTING_MODE: mode_value,
             KEY_DAILY_LIGHT_GOAL: goal or DAILY_LIGHT_GOAL_DEFAULT,
@@ -1208,6 +1256,24 @@ class GlowriumCoordinator:
         # re-applied by the next switch to Circadian, which then fails on
         # something the user was already told had not happened.
         self._desired_ramp = ramp
+
+    async def async_set_daily_light_goal(self, minutes: int) -> None:
+        """Set the daily light goal: how many minutes of light a day has.
+
+        It goes in the lighting-mode command, as the vendor app sends it. Not
+        remembered as the ramp is: the lamp keeps it through Circadian off and
+        on, which resets the preset and the ramp.
+        """
+        await self._async_write_mode(goal=protocol.program_minutes_to_bytes(minutes))
+
+    async def async_set_enhanced_duration(self, minutes: int) -> None:
+        """Set the Enhanced Lighting Duration of Enhanced Two-Phase, in minutes.
+
+        In the lighting-mode command, as the goal is.
+        """
+        await self._async_write_mode(
+            enhanced=protocol.program_minutes_to_bytes(minutes)
+        )
 
     async def async_set_operating_mode(self, mode: str) -> None:
         """Set the mutually-exclusive Manual/Circadian/Schedule mode."""

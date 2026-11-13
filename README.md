@@ -46,6 +46,8 @@ Three of these are written out under
 | Operating mode | `select` | **Manual** / **Circadian** / **Schedule** |
 | Lighting mode | `select` | 8 circadian presets (Sun SYNC, Sunrise Sync, …) — *Circadian only* |
 | Ramp time | `number` | Sunrise/sunset ramp, minutes — *Circadian only* |
+| Daily light goal | `number` | How many minutes of light a day has — *Circadian, every preset but Sun SYNC* |
+| Enhanced lighting duration | `number` | Minutes of Enhanced Two-Phase — *Circadian, Enhanced Two-Phase only* |
 | Schedule start / end | `time` | On/off times — *Schedule only* |
 | Schedule gradual | `number` | Fade duration, minutes — *Schedule only* |
 | Schedule brightness | `number` | Target brightness, % — *Schedule only* |
@@ -55,21 +57,30 @@ Three of these are written out under
 | Latitude / Longitude | `sensor` | Diagnostic — the coordinates stored on the device; *disabled until you enable them* |
 | Activated | `binary_sensor` | Diagnostic — provisioning status (see [Provisioning](#provisioning)) |
 
-**Mode-dependent availability:** *Lighting mode* and *Ramp time* are available
-only in **Circadian**; the *Schedule* controls only in **Schedule**. The
-integration drives the device's own native Circadian/Schedule engine rather than
-reimplementing it in Home Assistant.
+**Mode-dependent availability:** *Lighting mode*, *Ramp time*, *Daily light
+goal* and *Enhanced lighting duration* are available only in **Circadian**; the
+*Schedule* controls only in **Schedule**. The two of the program go further,
+as the vendor app shows them: the goal with every preset but Sun SYNC, which
+follows the sun, and the Enhanced duration with Enhanced Two-Phase alone. While
+the lamp has not said which mode or preset it is in, nothing is hidden. Switched
+into Circadian, the lamp is in Sun SYNC until the integration puts the preset
+back; for that moment the goal shows *unavailable*, as *Lighting mode* shows Sun
+SYNC. The integration drives the device's own native Circadian/Schedule engine
+rather than reimplementing it in Home Assistant.
 
 **Lengths of time.** *Ramp time* and *Schedule gradual* are durations in
-minutes, from 0 to 90. Home Assistant lets another unit be chosen for either
-in the entity's settings, and minutes are the unit the two are meant to be read
-in: in hours they are shown rounded to whole hours — 30 minutes as 0, 45 as 1,
-the limit of 90 as 2. Whatever either is set to is written to the lamp as the
-nearest whole minute.
+minutes, from 0 to 90; *Daily light goal* and *Enhanced lighting duration*,
+from 0 to 1439 — a minute short of a day. Home Assistant lets another unit be
+chosen for any of them in the entity's settings, and minutes are the unit they
+are meant to be read in: in hours they are shown rounded to whole hours, a half
+to the even one — a ramp of 30 minutes as 0, 45 as 1, the limit of 90 as 2, and
+a goal of 12 hours 30 minutes as 12. Whatever one is set to is written to the
+lamp as the nearest whole minute.
 
 **Controls and settings.** The light and the operating mode are the lamp's
-controls. Everything else that can be set — lighting mode, ramp, the schedule,
-the indicator, daylight saving time, *Sync location* — is a setting: it sits
+controls. Everything else that can be set — lighting mode, ramp, the daily light
+goal and the Enhanced duration, the schedule, the indicator, daylight saving
+time, *Sync location* — is a setting: it sits
 under *Configuration* on the device page, and Home Assistant passes it over
 when an action is aimed at a room or at the device as a whole. "Turn on every
 switch in this room" does not set the daylight-saving flag; an action that
@@ -170,7 +181,8 @@ a clear write-up is enough, and I'll help with the rest.
    - Light — on/off and brightness;
    - Operating mode — Manual / Circadian / Schedule;
    - Lighting mode — the circadian presets (do the names/effects match?);
-   - Ramp time; Schedule start/end, gradual, and brightness;
+   - Ramp time, Daily light goal, Enhanced lighting duration;
+   - Schedule start/end, gradual, and brightness;
    - Indicator light; Daylight saving time; Sync location;
    - Diagnostic Latitude/Longitude sensors (enable them first) and the Activated sensor;
    - Bringing up a **factory-reset** unit (if you tried it).
@@ -335,9 +347,10 @@ actions:
       entity_id: switch.glowrium_g7_xxxxxx_indicator_light
 ```
 
-The other entities go the same way: `number.set_value` for *Ramp time* and the
-two schedule numbers, `time.set_value` for *Schedule start* and *end*,
-`button.press` for *Sync location*.
+The other entities go the same way: `number.set_value` for *Ramp time*, *Daily
+light goal*, *Enhanced lighting duration* and the two schedule numbers,
+`time.set_value` for *Schedule start* and *end*, `button.press` for *Sync
+location*.
 
 ## How state is updated
 

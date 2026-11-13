@@ -469,7 +469,11 @@ resent. The command is a four-key map written **in this key order**
 
 The goal and the Enhanced duration go back as the lamp last reported them,
 and only when they are two bytes of minutes, no more than a day; a lamp that
-has reported neither gets `0x02d0` (12 h) and `0x001e` (30 min). Every
+has reported neither gets `0x02d0` (12 h) and `0x001e` (30 min). Setting
+either is this same command with the one set in it - as the vendor app sets
+the goal - in minutes, not the seconds of the ramp beside it, from
+`protocol.PROGRAM_MINUTES_MIN` to `PROGRAM_MINUTES_MAX`; past a bound it is
+written as that bound, so that the echo reads back as a value. Every
 lighting-mode command (`_async_write_mode`) first asks a lamp known to
 report when asked for its program, on the command's own link, and is built
 from the answer; one not known to is sent what the mirror has. What vouches
@@ -600,9 +604,16 @@ available = connected or advertising  # Link.in_reach
   from the rest, nor does its exception reach whoever brought the news. It is
   named in the log by its entity with its trace, once; until it has managed a
   round its failures go to DEBUG.
-- Mode-dependent entities (Lighting mode, Ramp, Schedule controls) gate
-  themselves further on the operating mode (`_only_in_mode`,
-  `coordinator.mode_allows`), and stay available while it is not known.
+- Mode-dependent entities (Lighting mode, Ramp, Daily light goal, Enhanced
+  lighting duration, Schedule controls) gate themselves further on the
+  operating mode (`_only_in_mode`, `coordinator.mode_allows`), and stay
+  available while it is not known. The goal and the Enhanced duration gate
+  themselves on the preset as well (`_only_with_a_preset_taking`,
+  `coordinator.preset_allows`): which preset takes which is
+  `models.preset_takes` - the goal every preset but Sun SYNC, the Enhanced
+  duration Enhanced Two-Phase alone, as the vendor app shows them - and a
+  preset not known hides nothing. Both are judged in the base entity's
+  `available`, and nowhere else.
 
 ### Reconnect
 

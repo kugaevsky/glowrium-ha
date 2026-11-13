@@ -3,7 +3,8 @@
 - **Status:** accepted
 - **Date:** 2026-11-13 (decided by the maintainer the same day: that the
   command carries back what the lamp holds, and that a mode command asks
-  for it first)
+  for it first); 2026-11-13 (both set from Home Assistant, each with the
+  presets that take it)
 
 ## Context
 
@@ -62,6 +63,18 @@ container under BlueZ, and in two btsnoop captures of the vendor app
   ramp the lamp already has would match it.
 - The mode command sent after switching Circadian on carries the preset as
   it was before the switch, not one the lamp reported since.
+- Both are set from Home Assistant, as two numbers under Configuration, and
+  setting either is this same command with the one set in it: the vendor app
+  set a G6's goal so, and a G6 kept an Enhanced duration written so in a
+  round of commands from the bench. In minutes - two bytes of them, not the
+  seconds of the ramp - from `protocol.PROGRAM_MINUTES_MIN` to `_MAX`; what
+  is set past a bound is written as that bound, so that the echo of it reads
+  back as a value and the next mode command carries it on.
+- Each is available in Circadian with a preset that takes it, as the app
+  shows them: the goal with every preset but Sun SYNC, which follows the sun,
+  and the Enhanced duration with Enhanced Two-Phase alone
+  (`models.preset_takes`, judged in the base entity's `available`). A preset
+  not known hides nothing, as a mode not known does not.
 
 ## Consequences
 
@@ -81,3 +94,11 @@ container under BlueZ, and in two btsnoop captures of the vendor app
   came about 300 ms after, and the lamp applies its commands in order - two
   seconds later the preset, the ramp, the goal and the Enhanced duration were
   the user's.
+- Switched into Circadian from Home Assistant, the lamp is in Sun SYNC until
+  the preset is put back, and for that moment the goal reads unavailable, as
+  the lighting mode reads Sun SYNC and the ramp 30 minutes. Not hidden: that
+  would mean holding back what the lamp reports, which nothing here does.
+- Neither bound is the app's: what its wheels offer at the top has not been
+  confirmed, and a whole day has not been tried on a lamp. The two are kept
+  together in `protocol.py`, so that a confirmed bound is one change.
+- Shown in hours, both round to whole hours, as the ramp does (README).

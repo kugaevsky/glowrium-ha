@@ -493,6 +493,29 @@ def test_a_setting_of_the_program_is_two_bytes_of_minutes_and_no_longer_than_a_d
         assert read({}) is None
 
 
+def test_a_setting_of_the_program_is_written_as_it_is_read() -> None:
+    """Two bytes of minutes, not of seconds as the ramp's, up to the longest.
+
+    750 minutes are 02ee: the vendor app wrote a goal of 12 h 30 min so. The
+    two bounds a setting of the program takes are kept together, here; what
+    is set past one is written as that one, so that nothing written reads
+    back as something that cannot be used.
+    """
+    assert protocol.PROGRAM_MINUTES_MIN == 0
+    assert protocol.PROGRAM_MINUTES_MAX == 24 * 60 - 1  # under a day
+    assert protocol.program_minutes_to_bytes(750) == bytes.fromhex("02ee")
+    assert protocol.program_minutes_to_bytes(0) == bytes.fromhex("0000")
+    assert protocol.program_minutes_to_bytes(24 * 60) == bytes.fromhex("059f")
+    assert protocol.program_minutes_to_bytes(-1) == bytes.fromhex("0000")
+    for minutes in (0, 750, protocol.PROGRAM_MINUTES_MAX):
+        written = protocol.program_minutes_to_bytes(minutes)
+        for key, read in (
+            (KEY_DAILY_LIGHT_GOAL, protocol.daily_light_goal_minutes),
+            (KEY_ENHANCED_DURATION, protocol.enhanced_duration_minutes),
+        ):
+            assert read({key: written}) == minutes
+
+
 def test_daylight_saving_is_a_flag_byte_and_an_offset_in_five_bytes() -> None:
     """On or off in the first byte, then seconds; no offset is over two hours.
 

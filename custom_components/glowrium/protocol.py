@@ -312,6 +312,24 @@ def enhanced_duration_minutes(state: Mapping[int, Any]) -> int | Unusable | None
     )
 
 
+# What either setting of the program is set to, both bounds in one place: from
+# none to a minute short of a day. Past a day a value reads as nothing that can
+# be used (above); whether a lamp takes a whole day has not been tried.
+PROGRAM_MINUTES_MIN: Final = 0
+PROGRAM_MINUTES_MAX: Final = _A_DAY_IN_MINUTES - 1
+
+
+def program_minutes_to_bytes(minutes: int) -> bytes:
+    """Encode a setting of the program as the lamp keeps it: two bytes of minutes.
+
+    Minutes, not the seconds the ramp beside it is kept in. A value past a
+    bound is written as that bound, so that what is written - and echoed into
+    the mirror - reads back as a value, and a later command carries it on.
+    """
+    held = max(PROGRAM_MINUTES_MIN, min(minutes, PROGRAM_MINUTES_MAX))
+    return held.to_bytes(_MINUTES_LENGTH, "big")
+
+
 # --- schedule slot (0x11) ---
 
 # The slot is eleven bytes: [enabled, 00, 00, 00, start_h, start_m, end_h,

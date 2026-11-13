@@ -36,6 +36,12 @@
       "ramp": {
         "name": "渐变时间"
       },
+      "daily_light_goal": {
+        "name": "每日光照目标"
+      },
+      "enhanced_lighting_duration": {
+        "name": "增强照明时长"
+      },
       "schedule_gradual": {
         "name": "定时渐变"
       },
