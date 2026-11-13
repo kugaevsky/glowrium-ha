@@ -149,22 +149,18 @@ that answers: nothing is read.
 
 - **What is asked for.** `STATE_KEYS` is what the vendor app asks for, plus
   the clock (`0x05`), which the lamp reports all the same. Add an id only
-  after measuring it, and keep every answer small: an answer bigger than one
-  notification hung a G6 - the whole lamp, its button too - until it was
-  unplugged for a minute (2026-11-12).
+  after measuring it, and keep every answer within one notification (ADR
+  0018).
 - **Then the program, of a lamp that reported** (`_async_ask_program`):
-  `PROGRAM_KEYS` - `2c 2d 2e 2f 31 32 33 34`, the request the vendor app
-  sends, word for word, three to four seconds into a link (a G6 and a G7,
-  2026-11-13) - once the state has arrived and whatever had to be written
-  has been, and before the device info is read. It carries the daily light
-  goal and the Enhanced duration the lighting-mode command has to send back.
-  Asked apart from `STATE_KEYS` rather than added to it: thirteen ids in one
-  request is what both lamps have taken. The first report after it ends the
-  wait (`_REPORT_TIMEOUT`); a lamp leaves out of its answer the ids it does
-  not have, and the ramp is among them, so one that reported the state has
-  something to report here. A lamp that refused the state request or was
-  silent is not asked; a refusal, a lost link or no answer here ends the
-  asking and nothing else.
+  `PROGRAM_KEYS` - the vendor app's own request, `2c 2d 2e 2f 31 32 33 34` -
+  once the state has arrived and whatever had to be written has been, and
+  before the device info is read. It carries the daily light goal and the
+  Enhanced duration the lighting-mode command sends back. The first report
+  after it ends the wait (`_REPORT_TIMEOUT`); a lamp leaves out of its
+  answer the ids it does not have, and the ramp is among them. A refusal, a
+  lost link or no answer ends the asking and nothing else. A lamp that
+  refused the state request or was silent is not asked. Why apart from
+  `STATE_KEYS`: ADR 0018.
 - **The answer is waited for, briefly** (`_REPORT_TIMEOUT`, 3 s): the keys of
   every notification since the request are collected - a model may spread its
   map over several - and priming is done when they cover `STATE_KEYS`. A lamp
@@ -471,45 +467,26 @@ resent. The command is a four-key map written **in this key order**
 { 0x2b: <mode index>, 0x2c: <daily light goal>, 0x2f: <ramp>, 0x32: <Enhanced duration> }
 ```
 
-The goal and the Enhanced duration go back as the lamp last reported them.
-Both are the owner's, set in the vendor app, and the app sends them back the
-same way in every mode command (a capture of a G6, 2026-11-13). Until then the
-command carried the two values a G7 was first captured sending - `0x02d0`
-(12 h) and `0x001e` (30 min) - and every preset, ramp or switch back to
-Circadian made from Home Assistant reset the owner's goal to twelve hours. A
-lamp that has reported neither still gets those two. The lamp keeps both
-through Circadian off and on, and its clock being set does not touch them, so
-the last report is the one to trust; what stands under an id and is not
-minutes of a day is not sent back.
-
-A command can make its own link, with no first exchange on it, and the
-mirror can be older than what the lamp holds: the vendor app is used while
-Home Assistant holds no link. So every lighting-mode command
-(`_async_write_mode`) first asks a lamp known to report when asked for its
-program, on the command's own link, and is built from the answer. A lamp not
-known to - one that refused the state request or was silent, or one not yet
-asked anything since Home Assistant started - is sent what the mirror has:
-a G8 refuses a request and drops the link, and asked before every command it
-would drop the link of every one. That leaves one case: a mode command sent
-after Home Assistant starts and before the lamp's first exchange carries the
-two old values. The answer to the program request is itself a report, and a
-command that set the ramp the lamp already has would match it; what vouches
-for a mode command is a report newer than that answer. What the command
-would refuse to be built on - a lighting mode not read - it refuses before a
-link is taken.
+The goal and the Enhanced duration go back as the lamp last reported them,
+and only when they are two bytes of minutes, no more than a day; a lamp that
+has reported neither gets `0x02d0` (12 h) and `0x001e` (30 min). Every
+lighting-mode command (`_async_write_mode`) first asks a lamp known to
+report when asked for its program, on the command's own link, and is built
+from the answer; one not known to is sent what the mirror has. What vouches
+for a failed mode command is a report newer than that answer. What the
+command would refuse to be built on - a lighting mode not read - it refuses
+before a link is taken. Why, what was measured, and what is left open - a
+mode command sent before the lamp's first exchange, and a lamp that refuses
+to be asked: ADR 0018.
 
 The ramp is preserved from a remembered value (or state, or the `0x0e10` = 60 min
 default). Because enabling Circadian resets the device's ramp to a default, the
 coordinator re-applies the user's chosen ramp after a mode switch so it persists.
-What `{0x09: true}` resets was measured on a G6 (2026-11-13, one lamp): the
-preset to Sun SYNC (`1`) and the ramp to 30 min, and not the goal or the
-Enhanced duration; `0x0d` writes reset nothing. The mode command re-sent right
-after carries the preset as it was before the switch - asked for its program
-first, the lamp may report the reset before the command is built - and the
-lamp, which applies its commands in order, kept it: two seconds later the
-preset, the ramp, the goal and the Enhanced duration were the user's (the G6,
-with the command sent as soon as the switch was acknowledged). A lamp whose ramp was never reported or written has
-no ramp remembered, and nothing is re-sent: it stays on Sun SYNC.
+Switching Circadian on (`{0x09: true}`) resets the preset to Sun SYNC (`1`)
+and the ramp to 30 min, and keeps the goal and the Enhanced duration; the
+mode command re-sent after it carries the preset as it was before the
+switch (ADR 0018). A lamp whose ramp was never reported or written has no
+ramp remembered, and nothing is re-sent: it stays on Sun SYNC.
 A ramp is remembered once the lamp has it - seeded from what the lamp reports,
 or kept after a write that went through. Not before: a ramp that was refused,
 or whose write failed, would otherwise be re-applied by the next switch to
