@@ -3,7 +3,8 @@
 - **Status:** accepted
 - **Date:** 2026-10-13 (#28: decided by the maintainer on 2026-10-07; that it
   is switched on with the next tag and no file is put on the releases that
-  exist, on 2026-10-12, on #43 and #53)
+  exist, on 2026-10-12, on #43 and #53); 2026-11-14 (no rehearsal: the first
+  release made so is the run, by the maintainer's word)
 
 ## Context
 
@@ -133,6 +134,7 @@ fails.
 
 ## Revisit when
 
-A rehearsal against a live HACS shows that it does not do what its source
-reads as; or HACS releases the fix for a first install of an older version,
-and the sentence about it can leave the README.
+The first release made this way, or an install of it with a live HACS, shows
+that GitHub or HACS does not do what was read of it; or HACS releases the fix
+for a first install of an older version, and the sentence about it can leave
+the README.

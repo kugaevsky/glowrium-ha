@@ -263,14 +263,6 @@ release must never be public without it, and the order below sees to that.
 4. Write the draft's notes, see that it carries `glowrium.zip` and no other file, and publish
    it.
 
-**None of this has been run against GitHub or a live HACS yet.** What the workflow tells `gh`
-is tested against a stand-in, and what HACS does with the file was read in its source
-([ADR 0017](docs/adr/0017-a-release-is-one-archive-and-hacs-installs-nothing-else.md)). Before
-the first release that depends on it, rehearse it in a scratch repository: push a tag and see
-the draft and its file; run the workflow again on the tag, which now has a draft; publish, then
-install it with HACS, update to it from a release without a file, and go back. Take this
-paragraph out once that is done.
-
 What the order rests on:
 
 - **Do not create the release by hand before the draft is there.** A release that exists when
