@@ -3,7 +3,8 @@
 - **Status:** accepted
 - **Date:** 2026-10-05; 2026-10-09 (no frame above debug; the place found under
   more of its spellings); 2026-10-12 (the diagnostics name the sunrise and
-  sunset times as hidden; one list of what places the lamp)
+  sunset times as hidden; one list of what places the lamp); 2026-11-15 (the
+  sun times and the windows of the program join the list)
 
 ## Context
 
@@ -15,7 +16,10 @@ visible without debug logging, in a log that is posted for reasons that have
 nothing to do with this integration.
 A frame can hold the lamp's coordinates (`0x0a`, `0x0b`, float64 degrees) and
 the sunrise and sunset times it works out from them (`0x34`), which give the
-place away as well. These are exactly the frames that could not be decoded to
+place away as well. So do three more ids a G6 and a G7 were found to report
+on 2026-11-13: the sun times of the lamp's program (`0x0c`, six bytes) and its
+two windows (`0x28`, `0x29`, eleven bytes each, a start and an end that are
+times of day), which a G7 sends by itself once its clock is set. These are exactly the frames that could not be decoded to
 their end, so what to blank cannot be found by decoding. The first version
 skipped past each match; a false match swallowed the real key and a coordinate
 was printed whole (caught in review, 2026-10-05).
@@ -44,11 +48,11 @@ each ends. A deny-list over the mirror would be a list of what one lamp sent.
   written. What the lamp chose is not repeated where nobody asked for it: the
   log follows the diagnostics.
 - Every frame that is printed goes through `mirror._for_the_log`: the
-  coordinates, each a float, and the curve, a byte string, are found by their
-  bytes at every offset independently and put down as `xx` - an id by its
-  last byte, so under every width it can be written in; behind any tags; the
-  curve under every head a byte string can have, an indefinite length among
-  them. The search does not skip past a match. A new line that prints a frame
+  coordinates, each a float, and the curve, the sun times and the windows of
+  the program, each a byte string, are found by their bytes at every offset
+  independently and put down as `xx` - an id by its last byte, so under every
+  width it can be written in; behind any tags; a byte string under every head
+  it can have, an indefinite length among them. The search does not skip past a match. A new line that prints a frame
   goes through the same function, and is a debug line.
 - The search is linear in the frame. No more than four tags, and no more than
   four pieces of a string of indefinite length, are stepped over from one

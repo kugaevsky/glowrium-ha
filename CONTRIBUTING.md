@@ -92,9 +92,11 @@ coordinates it was given for its circadian curve, and both a notify frame and
 a read of `facebd02` can carry them. In hex they are the ids `0a` and `0b`,
 each followed by `fb` and eight more bytes — blank those eight. The sunrise
 and sunset times the lamp works out from them (`1834`, then a byte string)
-give the place away as well. Where the integration's own log lines print a
-frame, both are replaced by `xx` - as far as they can be found, which is by
-their bytes: a frame that begins part-way through one of them has nothing to
+give the place away as well, and so do the sun times and the windows of its
+program (`0c`, `1828` and `1829`, each then a byte string). Where the
+integration's own log lines print a frame, all of them are replaced by `xx` -
+as far as they can be found, which is by their bytes: a frame that begins
+part-way through one of them has nothing to
 find it by, so look such a line over all the same. In a capture, in a read
 taken with another tool, and in what the Bluetooth libraries write into a
 debug log, nothing is replaced. The device-info string carries the serial
@@ -229,8 +231,8 @@ A macOS/Linux machine with a Bluetooth adapter can drive the coordinator against
 `tools/bench.py` starts the integration's coordinator as Home Assistant does, reports what the
 lamp said, and never writes a setting of its own accord - nor brings up a lamp that says it is
 not activated.
-What it prints can be shown to others as it is: the coordinates, the sunrise and sunset times
-and the serial number are left out, and the lamp's address is printed by its last characters
+What it prints can be shown to others as it is: the coordinates, the times the lamp works out
+from them and the serial number are left out, and the lamp's address is printed by its last characters
 only, in the integration's own log lines and in the Bluetooth stack's errors too. The name the
 lamp advertises is printed as it is. `--show-private` prints everything.
 Docker on macOS has **no** access to the host's Bluetooth; use an ESPHome Bluetooth Proxy or

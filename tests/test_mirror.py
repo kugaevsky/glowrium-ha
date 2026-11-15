@@ -19,6 +19,7 @@ from custom_components.glowrium.const import (
     KEY_LONGITUDE,
     KEY_POWER,
     KEY_TIME,
+    PLACE_KEYS,
 )
 from custom_components.glowrium.mirror import Mirror, _for_the_log
 
@@ -268,6 +269,11 @@ _WHERE = {KEY_LATITUDE: 12.3456, KEY_LONGITUDE: 65.4321}
 _LATITUDE_HEX = cbor.encode(12.3456).hex()[2:]  # the eight bytes after fb
 _LONGITUDE_HEX = cbor.encode(65.4321).hex()[2:]
 _CURVE = bytes(range(0x40, 0x5C))  # 28 bytes of sunrise and sunset times
+# Made up, in the shapes a G6 and a G7 report them: six bytes under 0x0c, of
+# which four are the times of the program's sun; eleven under each of 0x28 and
+# 0x29, a slot of the program whose start and end are times of day.
+_SUN_TIMES = bytes(range(0x60, 0x66))
+_WINDOW = bytes(range(0x70, 0x7B))
 
 
 @pytest.mark.parametrize(
@@ -277,6 +283,16 @@ _CURVE = bytes(range(0x40, 0x5C))  # 28 bytes of sunrise and sunset times
             cbor.encode({KEY_POWER: True} | _WHERE | {KEY_BRIGHTNESS: 70}).hex(),
             "a406f5" + "0afb" + "xx" * 8 + "0bfb" + "xx" * 8 + "081846",
             id="both coordinates, among other things",
+        ),
+        pytest.param(
+            "a2" + "0c46" + _SUN_TIMES.hex() + "06f5",
+            "a2" + "0c46" + "xx" * 6 + "06f5",
+            id="the sun times of the program",
+        ),
+        pytest.param(
+            "a3" + "18284b" + _WINDOW.hex() + "18294b" + _WINDOW.hex() + "06f5",
+            "a3" + "18284b" + "xx" * 11 + "18294b" + "xx" * 11 + "06f5",
+            id="the two windows of the program",
         ),
         pytest.param(
             "a2" + "1834581c" + _CURVE.hex() + "06f5",
@@ -457,6 +473,35 @@ def test_a_frame_goes_into_the_log_without_what_says_where_the_lamp_is(
     """
     assert _for_the_log(bytes.fromhex(frame)) == shown
     assert len(shown) == len(frame)
+
+
+# A value of the kind each id on the list of what places the lamp holds, made
+# up. An id put on the list has to be given one here.
+_A_VALUE_OF = {
+    0x0A: 12.3456,
+    0x0B: 65.4321,
+    0x0C: _SUN_TIMES,
+    0x28: _WINDOW,
+    0x29: _WINDOW,
+    0x34: _CURVE,
+}
+
+
+@pytest.mark.parametrize("key", sorted(PLACE_KEYS), ids=lambda key: f"0x{key:02x}")
+def test_every_id_on_the_list_is_found_in_a_logged_frame(key: int) -> None:
+    """The list says what to look for, and the search has to know its shape.
+
+    A value is found by the head it is written under: the coordinates are
+    floats, the rest of the list byte strings. An id put on the list whose
+    value is looked for in another shape would be printed whole.
+    """
+    value = _A_VALUE_OF[key]
+    written = cbor.encode(value)[1:] if isinstance(value, float) else value
+
+    shown = _for_the_log(cbor.encode({KEY_POWER: True, key: value}))
+
+    assert written.hex() not in shown
+    assert "xx" * len(written) in shown
 
 
 def test_wherever_it_stands_in_whatever_noise_a_coordinate_is_blanked() -> None:

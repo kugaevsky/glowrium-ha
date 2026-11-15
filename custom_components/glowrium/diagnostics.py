@@ -47,8 +47,11 @@ from .const import (
     KEY_LIGHTING_MODE,
     KEY_LONGITUDE,
     KEY_POWER,
+    KEY_PROGRAM_SECOND_WINDOW,
+    KEY_PROGRAM_WINDOW,
     KEY_RAMP,
     KEY_SCHEDULE,
+    KEY_SUN_TIMES,
     KEY_TIME,
     KEY_TIMER,
     PLACE_KEYS,
@@ -150,14 +153,18 @@ _READ: Final[dict[int, Callable[[Any], Any]]] = {
     KEY_DST: _dst,
 }
 # Known by name and private: what gives the lamp's place away (``PLACE_KEYS``)
-# - the home's coordinates, and the times of sunrise and sunset the lamp works
-# out from them. Each is said to be there, so that it can be seen the lamp has
-# it, and never read out. The list says which ids are hidden; here is what
-# each is called in the file, and ids called the same share an entry. An id
-# put on the list has to be given its words here, which a test holds.
+# - the home's coordinates, and the times the lamp works out from them: the
+# curve of sunrise and sunset, and the sun times and the windows of its
+# program. Each is said to be there, so that it can be seen the lamp has it,
+# and never read out. The list says which ids are hidden; here is what each is
+# called in the file, and ids called the same share an entry. An id put on the
+# list has to be given its words here, which a test holds.
 _HIDDEN_AS: Final = {
     KEY_LATITUDE: "coordinates",
     KEY_LONGITUDE: "coordinates",
+    KEY_SUN_TIMES: "sun times of the program",
+    KEY_PROGRAM_WINDOW: "windows of the program",
+    KEY_PROGRAM_SECOND_WINDOW: "windows of the program",
     KEY_CURVE: "sunrise and sunset times",
 }
 

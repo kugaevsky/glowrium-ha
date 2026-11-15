@@ -462,9 +462,10 @@ messages worth acting on, and two symptoms that come without one.
   decoder would not trust. The frame as hex is exactly what an issue needs,
   and it is in the debug log, not in this message: enable debug logging
   (below) and the next such frame is printed. A frame can hold the
-  coordinates the lamp stores and the sunrise and sunset times it works out
-  from them; in the log both are already replaced by `xx`. Give the line one
-  look all the same before posting it.
+  coordinates the lamp stores and the times it works out from them - the
+  sunrise and sunset, and the sun times and windows of its program; in the
+  log all of them are already replaced by `xx`. Give the line one look all
+  the same before posting it.
 - **`sent a frame with an item this integration cannot read`** — the lamp
   reports something no reading has been written for. What came before it in
   the frame is kept, so the lamp goes on working; what follows it is lost.

@@ -45,6 +45,10 @@ _CURVE = b"".join(
     seconds.to_bytes(4, "big")
     for seconds in (21600, 25200, 30000, 40000, 50000, 60000, 64800)
 )
+# Made up, in the shapes a G6 and a G7 report them: the program's sun times
+# under 0x0c, and a window of the program under each of 0x28 and 0x29.
+_SUN_TIMES = bytes(range(0x60, 0x66))
+_WINDOW = bytes(range(0x70, 0x7B))
 _SERIAL = "CST-0001"
 _ADDRESS = "AA:BB:CC:DD:EE:FF"
 _IN_INFO = "A1B2C3D4E5F6"
@@ -66,6 +70,9 @@ def _a_lamp() -> GlowriumCoordinator:
             KEY_LATITUDE: 12.3456,
             KEY_LONGITUDE: 65.4321,
             _CURVE_KEY: _CURVE,
+            0x0C: _SUN_TIMES,
+            0x28: _WINDOW,
+            0x29: _WINDOW,
         }
     )
     coordinator.device_info = _parse_device_info(
@@ -130,7 +137,17 @@ async def test_work_the_bench_is_asked_to_start_is_held_until_it_is_done(
     assert running() is None  # and nothing holds work that is done
 
 
-_PRIVATE = ("12.3456", "65.4321", _CURVE.hex(), "06:00", "18:00", _SERIAL, _IN_INFO)
+_PRIVATE = (
+    "12.3456",
+    "65.4321",
+    _CURVE.hex(),
+    "06:00",
+    "18:00",
+    _SUN_TIMES.hex(),
+    _WINDOW.hex(),
+    _SERIAL,
+    _IN_INFO,
+)
 # Asked for everything, the curve is shown as the times it holds, not as bytes.
 _SHOWN = tuple(private for private in _PRIVATE if private != _CURVE.hex())
 
@@ -152,6 +169,9 @@ def test_the_report_leaves_out_what_places_or_identifies_the_lamp(
     assert "latitude" in printed
     assert "longitude" in printed
     assert "0x34" in printed
+    assert "0x0c" in printed
+    assert "0x28" in printed
+    assert "0x29" in printed
     # And the rest is as useful as it was.
     assert "brightness     70" in printed
     assert "model Glowrium-C051, firmware 4" in printed

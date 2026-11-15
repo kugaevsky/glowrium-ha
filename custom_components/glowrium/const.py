@@ -37,14 +37,35 @@ KEY_DST: Final = 0x35  # bytes: [enabled, offset_be_4] (offset 0x0e10 = 3600s = 
 # coordinates: seconds from midnight, four bytes each. Nothing reads them; the
 # id has a name because the times give the place away as the coordinates do.
 KEY_CURVE: Final = 0x34
+# Two more things the lamp works out from where it is (a G6 and a G7,
+# 13.11.2026): 0x0c, six bytes of its program - the brightness, the ramp in
+# minutes and four bytes of the times of its sun; and 0x28 and 0x29, the
+# windows of its program, slots laid out as the schedule's, whose start and
+# end are times of day - in Sun SYNC the first runs from sunrise to sunset. A
+# G7 sends 0x28 and on by itself once its clock is set, and 0x0c comes with
+# the curve. Nothing reads them; the ids have names because they give the
+# place away as the curve does.
+KEY_SUN_TIMES: Final = 0x0C
+KEY_PROGRAM_WINDOW: Final = 0x28
+KEY_PROGRAM_SECOND_WINDOW: Final = 0x29
 # What gives away where the lamp is: the coordinates of the home, and the
-# times of sunrise and sunset the lamp works out from them. The one list for
-# everything that keeps such a thing from being shown: the frames the state
-# mirror logs, the diagnostics, the bench. An id put on it is hidden by the
-# bench as it is; the diagnostics have to be told what to call it, and the
-# mirror, which finds a value in a frame by its bytes, what shape to look for
-# - it takes anything here but the curve for a float.
-PLACE_KEYS: Final = frozenset({KEY_LATITUDE, KEY_LONGITUDE, KEY_CURVE})
+# times the lamp works out from them - the curve, and the sun times and the
+# windows of its program. The one list for everything that keeps such a thing
+# from being shown: the frames the state mirror logs, the diagnostics, the
+# bench. An id put on it is hidden by the bench as it is; the diagnostics have
+# to be told what to call it, and the mirror, which finds a value in a frame by
+# its bytes, what shape to look for - it takes the coordinates for floats and
+# anything else here for a byte string.
+PLACE_KEYS: Final = frozenset(
+    {
+        KEY_LATITUDE,
+        KEY_LONGITUDE,
+        KEY_SUN_TIMES,
+        KEY_PROGRAM_WINDOW,
+        KEY_PROGRAM_SECOND_WINDOW,
+        KEY_CURVE,
+    }
+)
 # Two settings of the circadian program, in minutes, by the names the vendor
 # app shows them under: the Daily Light Goal Time - how long the light is on
 # in a day, for every preset but Sun SYNC - and the Enhanced Lighting Duration
@@ -109,13 +130,14 @@ PROGRAM_KEYS: Final = (
     KEY_CURVE,
 )
 # Every property id the integration has a name for or asks for: what it asks
-# the lamp for, and what only its commands write. The state mirror keeps these
-# whatever else a lamp sends, and of the ids nobody named only a bounded number
-# (mirror.py).
+# the lamp for, what only its commands write, and what gives its place away.
+# The state mirror keeps these whatever else a lamp sends, and of the ids
+# nobody named only a bounded number (mirror.py).
 KNOWN_KEYS: Final = frozenset(
     {
         *STATE_KEYS,
         *PROGRAM_KEYS,
+        *PLACE_KEYS,
         KEY_ACTIVATE_MISC,
     }
 )

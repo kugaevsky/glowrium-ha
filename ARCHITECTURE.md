@@ -900,9 +900,10 @@ diagnostics module rebuilds what leaves the host from what it can read:
 - The clock is given as how far it was from the host's at the moment it came
   into the mirror, with how long ago that was: the mirror is not emptied when
   a link drops.
-- The coordinates, and the sunrise and sunset times the lamp computes from
-  them (`0x34`), are marked as redacted: the ids of one list (`PLACE_KEYS`),
-  which a logged frame is blanked by and the bench prints by.
+- The coordinates, and the times the lamp computes from them - the curve
+  (`0x34`), and the sun times (`0x0c`) and the windows (`0x28`, `0x29`) of its
+  program - are marked as redacted: the ids of one list (`PLACE_KEYS`), which
+  a logged frame is blanked by and the bench prints by.
 - Whatever has no name here is **counted**: neither its value, its size nor
   its id is shown. The fields of the device-info string are counted too, and
   the model id and the firmware are shown only when each is, from end to

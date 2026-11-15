@@ -25,7 +25,7 @@ import logging
 from typing import Any, Final
 
 from . import cbor
-from .const import KEY_CURVE, KEY_TIME, PLACE_KEYS
+from .const import KEY_LATITUDE, KEY_LONGITUDE, KEY_TIME, PLACE_KEYS
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -50,6 +50,9 @@ _IN_THE_DEBUG_LOG = (
 )
 # How many bytes follow the head of a CBOR float: double, single, half.
 _FLOAT_BYTES = {b"\xfb": 8, b"\xfa": 4, b"\xf9": 2}
+# Of what places the lamp (PLACE_KEYS), the ids whose value is a float: the
+# coordinates. Every other id on that list holds a byte string.
+_FLOATS = frozenset({KEY_LATITUDE, KEY_LONGITUDE})
 # The head of a CBOR item (RFC 8949, 3). Its three high bits say what the item
 # is. Its five low bits are its argument - a tag's number, a string's length -
 # when that is up to 23; 24 to 27 put the argument in the next one, two, four
@@ -145,10 +148,10 @@ def _private_at(frame: bytes, at: int) -> tuple[int, int]:
     value_at = _past_tags(frame, at + 1)
     if value_at is None:
         return 1, len(frame)
-    if frame[at] == KEY_CURVE:
-        head, value = _byte_string_at(frame, value_at)
-    else:
+    if frame[at] in _FLOATS:
         head, value = 1, _FLOAT_BYTES.get(frame[value_at : value_at + 1], 0)
+    else:
+        head, value = _byte_string_at(frame, value_at)
     return value_at - at + head, value
 
 
@@ -156,8 +159,9 @@ def _for_the_log(frame: bytes) -> str:
     """Return ``frame`` as hex, with what says where the lamp is put down as xx.
 
     A frame goes into the log so that it can be posted, and a frame can hold
-    the coordinates the lamp was given and the sunrise and sunset times it
-    works out from them, which give the place away as well. Asking whoever
+    the coordinates the lamp was given and the times it works out from them -
+    the curve, and the sun times and the windows of its program - which give
+    the place away as well. Asking whoever
     posts it to blank hex by hand is asking for it to be forgotten.
 
     The frame being logged is one that could not be read to its end, so the

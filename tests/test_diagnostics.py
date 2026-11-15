@@ -370,8 +370,42 @@ async def test_what_the_integration_cannot_name_is_only_counted(
 _SAID_TO_BE_HIDDEN = {
     KEY_LATITUDE: "0x0a 0x0b coordinates",
     KEY_LONGITUDE: "0x0a 0x0b coordinates",
+    0x0C: "0x0c sun times of the program",
+    0x28: "0x28 0x29 windows of the program",
+    0x29: "0x28 0x29 windows of the program",
     KEY_CURVE: "0x34 sunrise and sunset times",
 }
+
+# Made up, in the shapes a G6 and a G7 report them: six bytes of the
+# program's brightness, ramp and sun times; eleven of a window of the program.
+_SUN_TIMES = bytes(range(0x60, 0x66))
+_WINDOW = bytes(range(0x70, 0x7B))
+
+
+async def test_the_sun_times_and_windows_of_the_program_are_said_to_be_hidden(
+    hass: HomeAssistant,
+) -> None:
+    """The lamp works them out from where it is, as it works out the curve.
+
+    So they are named as hidden, as the curve is, and are not among what is
+    only counted; the curve's own entry stays as it was.
+    """
+    entry = await _a_lamp_that_has_reported(hass)
+    nothing_heard(entry.runtime_data)
+    entry.runtime_data._mirror.echo(
+        {0x0C: _SUN_TIMES, 0x28: _WINDOW, 0x29: _WINDOW, 0x34: CURVE}
+    )
+
+    data = await _downloaded(hass, entry)
+
+    assert data["state"] == {
+        "0x0c sun times of the program": "**REDACTED**",
+        "0x28 0x29 windows of the program": "**REDACTED**",
+        "0x34 sunrise and sunset times": "**REDACTED**",
+        "other_properties": 0,
+        "times_a_property_was_not_kept": 0,
+    }
+    _nothing_private_in(data, _SUN_TIMES.hex(), _WINDOW.hex(), CURVE.hex())
 
 
 @pytest.mark.parametrize("key", sorted(PLACE_KEYS), ids=lambda key: f"0x{key:02x}")
