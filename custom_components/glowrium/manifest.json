@@ -2,6 +2,7 @@
   "domain": "glowrium",
   "name": "Glowrium",
   "bluetooth": [{ "local_name": "Glowrium-*" }],
+  "categories": ["lighting", "garden_plants"],
   "codeowners": ["@kugaevsky"],
   "config_flow": true,
   "dependencies": ["bluetooth_adapters"],
