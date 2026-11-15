@@ -4,7 +4,8 @@
 - **Date:** 2026-10-13 (#28: decided by the maintainer on 2026-10-07; that it
   is switched on with the next tag and no file is put on the releases that
   exist, on 2026-10-12, on #43 and #53); 2026-11-14 (no rehearsal: the first
-  release made so is the run, by the maintainer's word)
+  release made so is the run, by the maintainer's word); 2026-11-15 (Home
+  Assistant 2026.11 built HACS in as the Marketplace, which reads the same keys)
 
 ## Context
 
@@ -105,6 +106,15 @@ fails.
 - GitHub's immutable releases are off for this repository (asked on
   2026-10-13). With them on, a file could not be put on a release already
   published; draft first is the order GitHub documents for them.
+- Home Assistant 2026.11 made HACS a part of itself, the Marketplace, and HACS
+  can no longer be installed there. The Marketplace reads the same catalog and
+  the same `hacs.json`, and, as its code in 2026.11.1 reads: it downloads the
+  file a release carries; it looks for the file for the default branch too,
+  finds none, and keeps the files it had; it reads the `hacs.json` of the
+  version it installs, so the first install of 0.4.0 or older that HACS 2.0.5
+  is expected to fail is not expected to fail there; and the count it shows
+  is that of the file `hacs.json` names. Nothing has been installed through
+  it here.
 
 ## Evidence
 
@@ -131,10 +141,12 @@ fails.
   `::test_one_job_may_write_and_no_script_but_the_attaching_one_has_the_token`,
   `::test_hacs_is_told_to_take_the_archive_and_not_to_offer_the_default_branch`.
 - What was read in HACS and measured of GitHub: the triage notes on #28.
+- What was read in the Marketplace: `homeassistant/components/marketplace` in
+  Home Assistant 2026.11.1, on 2026-11-15.
 
 ## Revisit when
 
-The first release made this way, or an install of it with a live HACS, shows
-that GitHub or HACS does not do what was read of it; or HACS releases the fix
-for a first install of an older version, and the sentence about it can leave
-the README.
+The first release made this way, or an install of it with a live HACS or
+Marketplace, shows that GitHub, HACS or the Marketplace does not do what was
+read of it; or HACS releases the fix for a first install of an older version,
+and the sentence about it can leave the README.

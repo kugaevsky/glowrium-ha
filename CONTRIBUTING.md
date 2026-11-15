@@ -253,8 +253,10 @@ was tested on hardware.
 
 A release is one file, `glowrium.zip`: the integration's directory as it is at the tag, with
 `manifest.json` at the archive's root. `hacs.json` tells HACS to take that file, and HACS - as
-its source reads - does not fall back to the tag's source when the file is missing. So a
-release must never be public without it, and the order below sees to that.
+its source reads - does not fall back to the tag's source when the file is missing. Nor does
+the Marketplace, which HACS became inside Home Assistant 2026.11: it reads the same `hacs.json`
+and, as its code in 2026.11.1 reads, takes the same file. So a release must never be public
+without it, and the order below sees to that.
 
 1. The commit to release is on `main` with CI green; its manifest has the new `version` and
    the changelog a heading for it.
@@ -279,7 +281,8 @@ What the order rests on:
   change under whoever has installed it. What is wrong with a published release is put right
   by the next one.
 - **No second file on a release.** HACS, as its source reads, reports the count of the first
-  file a release has. The workflow says so when it finds one, and takes nothing off.
+  file a release has; the Marketplace, as its code reads, that of the file `hacs.json` names.
+  The workflow says so when it finds one, and takes nothing off.
 - The workflow publishes nothing, edits the title and notes of no release, and makes, moves
   and deletes no tag. Its one job that can write hands the token to one script, the one that
   talks to GitHub; the two actions the job uses get the job's token as in any job.
