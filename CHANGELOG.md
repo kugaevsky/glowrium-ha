@@ -14,9 +14,12 @@ All notable changes to this project are documented here. The format is based on
   `0x0c`, the program's brightness, its ramp and the times of its sun, and
   `0x28` and `0x29`, the windows of its program, whose start and end are
   times of day - in Sun SYNC the first runs from sunrise to sunset. A G7
-  sends the windows by itself once its clock is set. Nothing hid them: a
-  frame printed in the debug log carried them, the bench printed them, and a
-  debug log is what the contributor guide asks an owner for. They are on the
+  sends the windows by itself once its clock is set. Nothing hid them: the
+  bench printed them as they were, though the contributor guide says what it
+  prints can be shown to others as it is, and a frame the decoder could not
+  read to its end - the only kind the debug log prints - would have carried
+  them too. A lamp's ordinary reports are decoded and not printed, so an
+  ordinary debug log did not hold them. They are on the
   list of what places the lamp now, as the coordinates and the curve are:
   put down as `xx` in a logged frame, left out by the bench unless it is
   asked to show everything, and named in the diagnostics as
