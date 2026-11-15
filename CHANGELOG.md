@@ -4,6 +4,19 @@ All notable changes to this project are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Changed
+
+- **The README says where Glowrium is installed on Home Assistant 2026.11
+  and later.** Home Assistant 2026.11 built HACS in as the *Marketplace*,
+  under *Settings*, and HACS can no longer be installed there; the README
+  sent everyone to HACS all the same. It names the Marketplace from 2026.11
+  on and HACS before it, for installing the integration and for removing
+  it, and says what the Marketplace does with a release - read from its
+  code, not seen. Glowrium is in the list both read, so an installation has
+  nothing to do.
+
 ## [0.5.0] - 2026-11-14
 
 The G6 is driven as the G7 is: a profile of its own, with the presets the

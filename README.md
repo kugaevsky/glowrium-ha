@@ -229,16 +229,22 @@ a clear write-up is enough, and I'll help with the rest.
 
 ## Installation
 
-### HACS (recommended)
+### Marketplace or HACS (recommended)
 
-Glowrium is in HACS' default list since October 2026.
+Glowrium is in HACS' default list since October 2026. Home Assistant 2026.11
+built HACS in as the **Marketplace**, which reads the same list, and HACS can
+no longer be installed there: from 2026.11 on Glowrium is installed from the
+Marketplace, before it from HACS.
 
-1. In HACS, search for **Glowrium** and open it.
+1. Open **Settings → Marketplace** (before 2026.11: HACS), search for
+   **Glowrium** and open it.
 2. **Download**, then restart Home Assistant.
 
-HACS installs **releases** only. A release after 0.4.0 carries one file,
-`glowrium.zip`, and that file is what HACS downloads. The default branch is
-not offered: a commit that is not a release cannot be installed through HACS.
+Both install **releases** only. A release after 0.4.0 carries one file,
+`glowrium.zip`, and that file is what they download. A commit that is not a
+release cannot be installed through either: the file is looked for on a
+release, and the default branch has none. HACS does not offer the branch at
+all, and `hacs.json` tells the Marketplace the same.
 
 Releases up to 0.4.0 carry no such file, and for them HACS takes the tag's
 source, as it always has. One case is expected to fail on HACS 2.0.5, the
@@ -247,6 +253,11 @@ picking one of those older versions. HACS then goes by the latest release's
 settings and looks for a file the older release does not have. This is read
 from HACS' code and has not been seen to happen. The way round it is to
 install the latest release first and choose the older version afterwards.
+The Marketplace goes by the settings of the version it installs, and so takes
+the tag's source for those releases, the first time too.
+
+What is said here of how the Marketplace installs a release is read from its
+code in Home Assistant 2026.11.1, and has not been seen.
 
 ### Manual
 
@@ -547,8 +558,8 @@ too. Blank what you would rather not publish.
 ## Removing the integration
 
 Delete it like any other: **Settings → Devices & services → Glowrium → ⋮ →
-Delete**. If it was installed through HACS, remove it there as well and
-restart Home Assistant.
+Delete**. If it was installed through the Marketplace or HACS, remove it there
+as well and restart Home Assistant.
 
 Nothing is left behind on the lamp. It keeps its settings, its schedule, its
 clock and its activation, and goes on running its own program; the vendor app
