@@ -41,10 +41,11 @@ All notable changes to this project are documented here. The format is based on
 
 ### Added
 
-- **The manifest names the integration's categories**, `lighting` and
-  `garden_plants`. The catalog that HACS and the Marketplace read carries
-  the categories a manifest names, and the check HACS runs on the
-  repository warned that Glowrium named none.
+- **The manifest names the integration's categories**: Bulbs & lamps under
+  Lighting (`lighting.bulbs_lamps`), and Garden & plants (`garden_plants`).
+  The catalog that HACS and the Marketplace read carries the categories a
+  manifest names, and the check HACS runs on the repository warned that
+  Glowrium named none.
 
 ## [0.5.0] - 2026-11-14
 
