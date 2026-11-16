@@ -68,7 +68,7 @@ HOST_NOW = HEARD_AT + timedelta(minutes=5)
 CLOCK = bytes.fromhex("07ea0a05080f1e")  # 2026-10-05 08:15:30
 CLOCK_RIGHT = bytes.fromhex("07ea0a0508101e")  # 2026-10-05 08:16:30
 SCHEDULE = bytes.fromhex("0100000006001200640000")  # 06:00-18:00, 100 %
-CURVE = bytes.fromhex("000041dc0000489400004948")  # 04:41, 05:10, 05:13 ...
+CURVE = bytes(range(0x40, 0x4C))  # made up: a lamp's own times say where it is
 UNKNOWN_TEXT = "HomeNetwork-5G"
 PRIVATE = (ADDRESS, ADDRESS.lower(), "AABBCCDDEEFF", TITLE, "DDEEFF", SERIAL)
 
