@@ -422,10 +422,10 @@ What the integration cannot do, as distinct from what it gets wrong.
   location* writes the home coordinates Home Assistant is set to, and there is
   no giving it others. *Latitude* and *Longitude* show what the lamp holds and
   cannot be set.
-- **The circadian presets are confirmed for one model, the G7.** A model
-  without a profile of its own is offered the G7's presets and sends the G7's
-  indices until its own are known, and Home Assistant shows a notice that
-  says so (see [Supported devices](#supported-devices)).
+- **The circadian presets are confirmed for two models, the G7 and the
+  G6.** A model without a profile of its own is offered the G7's presets and
+  sends the G7's indices until its own are known, and Home Assistant shows a
+  notice that says so (see [Supported devices](#supported-devices)).
 - **A Linux host, and the G8.** Both are described where they show, and not
   again here: what a read of the lamp costs on a Linux host is under
   [Troubleshooting](#troubleshooting), and what is and is not confirmed on a
